@@ -1,5 +1,15 @@
 # Kết quả kiểm tra
 
+## Quyền source trong image triển khai — 2026-10-11
+
+Log VPS sau build báo `ERR_MODULE_NOT_FOUND` tại `/app/server/data/index` ở bước inspect chỉ đọc; wrapper dừng trước khi dừng app hoặc xóa dữ liệu. Đã tái hiện đúng lỗi trong runtime Docker image: `umask 077` tạo thư mục học liệu 0700; `COPY --chown=node:node` chuyển chủ sở hữu sang `node`, nên CLI root không capability không đọc được thư mục. Manifest chạy bằng `node` vẫn đạt trong chính image lỗi. Kiểm tra pipeline trước đó chưa bao phủ quyền thư mục sau giải nén.
+
+Hai wrapper nay chuẩn hóa riêng thư mục con source công khai thành 0755, kể cả parent không được liệt kê trực tiếp trong tar. Source root và mọi credentials/audit/backup giữ quyền riêng. Không đổi ứng dụng, dữ liệu, Dockerfile, tsconfig hoặc cấp thêm capability. **64/64 kiểm thử wrapper đạt, không skip**, gồm 20 kiểm thử mới chạy chính mã `PYEXTRACT` với `umask 077`, kiểm quyền/hash/chủ sở hữu private giữ nguyên và archive nguy hiểm bị từ chối trước mọi ghi/chmod. Full `npm run typecheck`, cú pháp Bash và `git diff --check` đạt.
+
+**Native runtime image đã đạt inspect → apply → verify** trên MongoDB riêng, hai tài khoản giả và exact legacy bank. Dùng source production đối chiếu byte/hash với repo, dependencies/bundle đã build từ lockfile; runtime copy đúng danh sách của Dockerfile release, không có tsconfig. CLI giữ root, cap-drop ALL, no-new-privileges, filesystem readonly, pids 64 và tmpfs noexec; giới hạn 512 MiB, không thêm swap, CPU 0.5. RAM cao nhất lần lượt khoảng 131/186/100 MiB, không OOM. Verify xác nhận giữ đúng hai danh tính, dữ liệu học riêng trống và bộ fresh v2 đủ 270 bài luyện/52 đề/216 từ/160 câu đầu vào; backup thực vẫn 0700/0600.
+
+Chạy `npm start` bằng USER node trong cùng image đạt API/MongoDB, phone-only Duo, demo tắt, SPA và JS/CSS/SVG thật, RAM cao nhất khoảng 194 MiB, không OOM. Container thử nghiệm chỉ dùng mạng riêng, không publish cổng và đã dừng sau kiểm tra; không dùng database học viên. Đây là bằng chứng runtime image và CLI, không phải full Dockerfile build/download trên VPS. Log và report riêng ở ignored `.local/inspect-diagnosis-temp`. Cần output/receipt từ lệnh SSH ghim commit/checksums mới xác nhận VPS cập nhật.
+
 ## Build trên VPS ít RAM — 2026-10-11
 
 VPS báo `MemAvailable` 1661 MiB nên guard 2 GiB của bản trước dừng trước tải/build, dừng app hoặc ghi database. Bản sửa giảm giới hạn build từ 1024 xuống **512 MiB**, giữ **1024 MiB dự phòng**: build/manifest/CLI cần tối thiểu 1536 MiB. Đọc lại RAM trước từng bước và trước mutation marker; giới hạn khởi động lấy từ app đang chạy, đối chiếu với Compose, không dùng giá trị mặc định thay thực tế. Giữ nguyên policy khôi phục trước mutation và offline sau mutation.

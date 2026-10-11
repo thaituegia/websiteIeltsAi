@@ -315,6 +315,13 @@ with tarfile.open(archive,'r:gz') as bundle:
    os.makedirs(os.path.dirname(target),mode=0o755,exist_ok=True)
    with bundle.extractfile(member) as source,open(target,'xb') as output:output.write(source.read())
    os.chmod(target,0o644)
+# umask 077 protects this private release and its credentials, but masks
+# makedirs(0755) to 0700. The runtime COPY changes public source ownership to
+# node; a capability-free root CLI must still traverse its subdirectories.
+# Normalize only public source children, including implicit tar parents. Keep
+# destination and every release/audit/credential/backup ancestor private.
+for parent,directories,_ in os.walk(destination):
+ for name in directories:os.chmod(os.path.join(parent,name),0o755)
 PYEXTRACT
 for file in "$source_dir/deploy/Dockerfile.release" "$source_dir/.dockerignore" "$source_dir/deploy/compose.sh" "$source_dir/server/bank-upgrade-cli.ts"; do [[ -f "$file" && ! -L "$file" ]] || die 'Archive thiếu file build/wrapper đã kiểm tra.'; done
 bash -n "$source_dir/deploy/compose.sh"
