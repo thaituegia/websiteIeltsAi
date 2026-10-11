@@ -1,0 +1,23 @@
+# For a commit typechecked and tested in cloud before publishing its pinned
+# source archive. On the VPS, run the same strict TypeScript options in two
+# sequential programs, covering every production source, to reduce peak RAM.
+# The standard Dockerfile keeps the complete development/test typecheck.
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+ENV NODE_OPTIONS=--max-old-space-size=384
+COPY package*.json ./
+RUN npm ci --no-audit --no-fund
+COPY . .
+RUN npm run build:release && npm prune --omit=dev --no-audit --no-fund
+
+FROM node:24-bookworm-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/server ./server
+COPY --from=build --chown=node:node /app/shared ./shared
+COPY --from=build --chown=node:node /app/package.json ./package.json
+USER node
+EXPOSE 3001
+CMD ["npm", "start"]

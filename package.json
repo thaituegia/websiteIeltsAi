@@ -11,6 +11,7 @@
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
+    "build:release": "tsc -p tsconfig.client.json && tsc -p tsconfig.server.json && vite build",
     "typecheck": "tsc --noEmit",
     "start": "tsx server/index.ts",
     "seed": "tsx scripts/seed.ts",

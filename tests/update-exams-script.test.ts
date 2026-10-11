@@ -111,6 +111,7 @@ test("exam upgrade CLI runner uses only the private Mongo network, exact databas
   const result = spawnSync("bash", ["-c", `set -euo pipefail
 database_network=website-ielts-ai-synthetic_database;private_dir=/private;duo_env=/private/duo.env;audit_dir=/private/audit;new_image=synthetic-pinned-image
 docker() { printf '%s\\0' "$@" > "$IELTS_TEST_ARGS"; }
+assert_memory_headroom() { assert_stub_budget="$2"; [[ "$assert_stub_budget" == 512 ]]; }
 ${block("UPGRADE_RUNNER")}
 run_upgrade_cli apply`], { encoding: "utf8", env: { ...process.env, IELTS_TEST_ARGS: output } });
   assert.equal(result.status, 0, result.stderr);
@@ -124,6 +125,7 @@ test("read-only CLI inspection cannot mount the backup or fall through to apply"
   const result = spawnSync("bash", ["-c", `set -euo pipefail
 database_network=website-ielts-ai-synthetic_database;private_dir=/private;duo_env=/private/duo.env;audit_dir=/private/audit;new_image=synthetic-pinned-image
 docker() { printf '%s\\0' "$@" > "$IELTS_TEST_ARGS"; }
+assert_memory_headroom() { assert_stub_budget="$2"; [[ "$assert_stub_budget" == 512 ]]; }
 ${block("UPGRADE_RUNNER")}
 run_upgrade_cli inspect`], { encoding: "utf8", env: { ...process.env, IELTS_TEST_ARGS: output } });
   assert.equal(result.status, 0, result.stderr);
@@ -136,6 +138,7 @@ test("verification mounts the proven backup read-only and passes its path withou
   const result = spawnSync("bash", ["-c", `set -euo pipefail
 database_network=website-ielts-ai-synthetic_database;private_dir=/private;audit_dir=/private/audit;new_image=synthetic-pinned-image
 docker() { printf '%s\\0' "$@" > "$IELTS_TEST_ARGS"; }
+assert_memory_headroom() { assert_stub_budget="$2"; [[ "$assert_stub_budget" == 512 ]]; }
 ${block("UPGRADE_RUNNER")}
 run_upgrade_cli verify`], { encoding: "utf8", env: { ...process.env, IELTS_TEST_ARGS: output } });
   assert.equal(result.status, 0, result.stderr);

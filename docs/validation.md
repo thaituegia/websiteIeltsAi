@@ -1,5 +1,15 @@
 # Kết quả kiểm tra
 
+## Build trên VPS ít RAM — 2026-10-11
+
+VPS báo `MemAvailable` 1661 MiB nên guard 2 GiB của bản trước dừng trước tải/build, dừng app hoặc ghi database. Bản sửa giảm giới hạn build từ 1024 xuống **512 MiB**, giữ **1024 MiB dự phòng**: build/manifest/CLI cần tối thiểu 1536 MiB. Đọc lại RAM trước từng bước và trước mutation marker; giới hạn khởi động lấy từ app đang chạy, đối chiếu với Compose, không dùng giá trị mặc định thay thực tế. Giữ nguyên policy khôi phục trước mutation và offline sau mutation.
+
+**Native Docker cgroup v2, Node 24.21.0: toàn bộ quy trình đạt trong 71 giây**, giới hạn 512 MiB, swap bổ sung bằng 0, CPU 0.5. Cài frozen lockfile từ cache đầy đủ đã xác minh integrity, kiểm TypeScript client/server tuần tự, Vite production bundle, prune dev dependencies và đọc toàn bộ seed manifest đều exit 0. Peak cgroup 512 MiB bao gồm file cache; có page reclaim, **không OOM/kernel kill**, Docker `OOMKilled=false`. Heap 384 MiB chỉ nằm trong build stage; runtime manifest bỏ `NODE_OPTIONS`, vẫn xác minh đủ 322 content/270 lessons/52 mocks/216 vocabulary/160 placement và ID không trùng. Đây là kiểm tra quy trình trong container giới hạn tài nguyên, không phải chứng minh build/download hay deployment đã chạy trên VPS. Docker daemon/context nằm ngoài hạn mức của build container; phần RAM dự phòng dành cho hệ thống và tải khác.
+
+**142/142 kiểm thử triển khai đạt, không skip**, gồm 50 trường hợp mới về ngưỡng KiB chính xác, RAM thay đổi giữa các bước, giới hạn app 512/768 MiB, dữ liệu MemAvailable lỗi, thứ tự dừng/backup/mutation/startup và xử lý lỗi. Chạy chính Bash/awk/Python của các wrapper; hai verifiers chạy với JSON từ Compose thật, chấp nhận `mem_limit` dạng số hoặc chuỗi decimal canonical và từ chối sai giới hạn/file build. Compiler options hai cấu hình release khớp cấu hình chính; hợp các source files khớp toàn bộ production source, với tests được loại như `.dockerignore` vốn có. Full `npm run typecheck` cũng đạt. Dockerfile mặc định vẫn kiểm tra đầy đủ source/test. Không đổi dependencies hoặc lockfile.
+
+API/Vite development hiện có vẫn healthy với ngân hàng fresh v2; không seed/reset hoặc sửa database học viên trong lượt sửa RAM. Scan source/bundle không có identity material riêng. HTTPS public vẫn là ngân hàng legacy 544/84/744/640; bản sửa được chuẩn bị cho lệnh SSH ghim source/checksums, chưa xác nhận triển khai thực tế trên VPS. Không chạy lại các suite app/browser đã đạt ở bản trước vì không đổi ứng dụng, giao diện hoặc học liệu.
+
 ## Đề mới và đáp án sau nộp — 2026-10-11
 
 Bộ `fresh-20261011-v2` có **270 bài luyện, 52 đề, 216 mục từ và 160 câu đầu vào**. Thêm 16 đề đầy đủ, bốn mỗi kỹ năng; giữ nguyên nguồn/task/key của toàn bộ 306 học liệu fresh trước đó. Đáp án khách quan sau nộp gồm câu hỏi/ngữ cảnh/lựa chọn, câu trả lời, key/biến thể, giải thích/evidence, kể cả câu bỏ trống. Placement lưu snapshot đúng câu thích ứng và mở lại từ lịch sử; lượt mới vẫn ẩn keys. Writing/Speaking có mẫu theo từng Task/Part chỉ sau nộp, kể cả khi AI offline và band `null`.

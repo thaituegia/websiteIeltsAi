@@ -58,6 +58,8 @@ args=['docker','compose','--project-name',project,'--env-file',env,'-f',base,'-f
 def read(extra,unresolved=False):
  x=subprocess.run(args+extra+['config','--format','json']+(['--no-env-resolution'] if unresolved else []),capture_output=True,text=True,timeout=30);assert x.returncode==0;return json.loads(x.stdout)
 a,b=read([]),read(['-f',release])
+assert a['services']['app']['build'].get('dockerfile','Dockerfile')=='Dockerfile'
+assert b['services']['app']['build'].get('dockerfile','Dockerfile') in ('Dockerfile','deploy/Dockerfile.release')
 before,after=read([],True),read(['-f',release],True)
 def files(data):
  return [entry['path'] if isinstance(entry,dict) else entry for entry in data['services']['app'].get('env_file',[])]
@@ -74,6 +76,7 @@ if extra!=[app_env]:
  assert isinstance(settings,dict) and isinstance(settings.get('accounts'),list) and len(settings['accounts'])==2
 for data in (a,b):
  app=data['services']['app'];app.pop('image',None);app['build'].pop('context',None)
+ app['build'].pop('dockerfile',None)
  for key in ['DUO_ENABLED','DUO_ACCOUNTS_JSON','DUO_CREDENTIALS_FILE']:app.get('environment',{}).pop(key,None)
 assert a==b
 PYRELEASE
@@ -87,8 +90,20 @@ for option in --memory --memory-swap --cpu-period --cpu-quota; do
   [[ "$build_help" == *"$option "* ]] || die "Docker không hỗ trợ giới hạn build $option."
 done
 [[ "$(docker info --format '{{.MemoryLimit}} {{.CPUCfsQuota}} {{.CPUCfsPeriod}} {{.SwapLimit}}')" == 'true true true true' ]] || die 'Kernel/Docker thiếu giới hạn RAM/CPU/swap; không build không giới hạn.'
-available_kib="$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)"
-[[ "$available_kib" =~ ^[0-9]+$ ]] && (( available_kib >= 2 * 1024 * 1024 )) || die 'Cần ít nhất 2 GiB RAM khả dụng để bảo vệ các project khác.'
+# IELTS_MEMORY_GUARD_BEGIN
+# Keep the previous 1 GiB host reserve; lower the bounded build, not the reserve.
+assert_memory_headroom() {
+  local phase="$1" job_mib="$2" available_kib required_kib
+  [[ "$job_mib" =~ ^[1-9][0-9]{0,6}$ ]] || die 'Giới hạn RAM công việc không hợp lệ.'
+  available_kib="$(awk '$1=="MemAvailable:"{n++;value=$2;unit=$3}END{if(n!=1||value!~/^[0-9]+$/||value==0||unit!="kB")exit 1;print value}' /proc/meminfo)" || die 'Không đọc được MemAvailable hợp lệ; chưa thực hiện bước tiếp theo.'
+  [[ "$available_kib" =~ ^[1-9][0-9]{0,11}$ ]] || die 'MemAvailable không hợp lệ; chưa thực hiện bước tiếp theo.'
+  required_kib=$(( (job_mib + 1024) * 1024 ))
+  if (( available_kib < required_kib )); then
+    die "RAM khả dụng $(( available_kib / 1024 )) MiB; bước $phase cần $(( required_kib / 1024 )) MiB ($job_mib MiB cho công việc + 1024 MiB dự phòng)."
+  fi
+}
+# IELTS_MEMORY_GUARD_END
+assert_memory_headroom 'kiểm tra ban đầu' 512
 docker_root="$(docker info --format '{{.DockerRootDir}}')"
 for disk_path in "$live_dir" "$docker_root"; do
   disk_kib="$(df -Pk "$disk_path" | awk 'NR==2{print $4}')"
@@ -106,6 +121,13 @@ for id in "$old_app_id" "$mongo_id" "$proxy_id"; do [[ "$id" =~ ^[a-f0-9]{64}$ ]
 old_image="$(docker inspect --format '{{.Image}}' "$old_app_id")"
 old_image_ref="$(docker inspect --format '{{.Config.Image}}' "$old_app_id")"
 [[ "$old_image" =~ ^sha256:[a-f0-9]{64}$ && "$(docker image inspect --format '{{.Id}}' "$old_image_ref")" == "$old_image" ]] || die 'Tag image hiện tại không khớp app đang chạy.'
+# IELTS_APP_MEMORY_BEGIN
+app_memory_bytes="$(docker inspect --format '{{.HostConfig.Memory}}' "$old_app_id")" || die 'Không đọc được giới hạn RAM app IELTS.'
+[[ "$app_memory_bytes" =~ ^[1-9][0-9]{0,12}$ ]] && (( app_memory_bytes <= 1099511627776 )) || die 'App IELTS thiếu giới hạn RAM hợp lệ; chưa dừng app.'
+app_memory_mib=$(( (app_memory_bytes + 1048575) / 1048576 ))
+offline_job_mib=512
+if (( app_memory_mib > offline_job_mib )); then offline_job_mib="$app_memory_mib"; fi
+# IELTS_APP_MEMORY_END
 current_origin="$(docker inspect --format '{{range .Config.Env}}{{if eq (index (split . "=") 0) "APP_ORIGIN"}}{{println (index (split . "=") 1)}}{{end}}{{end}}' "$old_app_id")"
 [[ "$current_origin" == "$origin" ]] || die 'APP_ORIGIN không khớp tên miền đã được cấu hình.'
 docker inspect "$old_app_id" "$mongo_id" "$proxy_id" | python3 -c 'import json,sys; rows=json.load(sys.stdin); project,live,port=sys.argv[1:]; assert len(rows)==3; names=set()
@@ -294,13 +316,15 @@ with tarfile.open(archive,'r:gz') as bundle:
    with bundle.extractfile(member) as source,open(target,'xb') as output:output.write(source.read())
    os.chmod(target,0o644)
 PYEXTRACT
-for file in "$source_dir/Dockerfile" "$source_dir/.dockerignore" "$source_dir/deploy/compose.sh" "$source_dir/server/bank-upgrade-cli.ts"; do [[ -f "$file" && ! -L "$file" ]] || die 'Archive thiếu file build/wrapper đã kiểm tra.'; done
+for file in "$source_dir/deploy/Dockerfile.release" "$source_dir/.dockerignore" "$source_dir/deploy/compose.sh" "$source_dir/server/bank-upgrade-cli.ts"; do [[ -f "$file" && ! -L "$file" ]] || die 'Archive thiếu file build/wrapper đã kiểm tra.'; done
 bash -n "$source_dir/deploy/compose.sh"
 awk '/release\.compose\.yaml/{ok=1}END{exit !ok}' "$source_dir/deploy/compose.sh" || die 'Wrapper của bản mới chưa hỗ trợ release override bền vững.'
 cp -p -- "$compose_wrapper" "$audit_dir/compose.sh.before"
 if [[ -f "$release_override" ]]; then had_release=true; cp -p -- "$release_override" "$audit_dir/release.compose.before"; fi
-say 'Build riêng tối đa 1024 MiB RAM, không swap và 0,5 CPU; chưa dừng app.'
-DOCKER_BUILDKIT=0 docker build --pull --memory=1024m --memory-swap=1024m --cpu-period=100000 --cpu-quota=50000 --cpu-shares=128 --tag "$new_image" "$source_dir" > "$audit_dir/build.log" 2>&1 || die "Build lỗi; app cũ vẫn chạy. Xem $audit_dir/build.log"
+assert_memory_headroom 'build' 512
+say 'Build riêng tối đa 512 MiB RAM, không dùng thêm swap và 0,5 CPU; giữ 1024 MiB dự phòng, chưa dừng app.'
+DOCKER_BUILDKIT=0 docker build --pull --memory=512m --memory-swap=512m --cpu-period=100000 --cpu-quota=50000 --cpu-shares=128 --file "$source_dir/deploy/Dockerfile.release" --tag "$new_image" "$source_dir" > "$audit_dir/build.log" 2>&1 || die "Build lỗi; app cũ vẫn chạy. Xem $audit_dir/build.log"
+assert_memory_headroom 'đọc manifest' 512
 docker run --rm --network none --memory=512m --memory-swap=512m --cpus=0.25 --entrypoint node "$new_image" --import tsx --input-type=module -e 'const{contentBank,vocabularyBank,placementBank}=await import("/app/server/data/index.ts");console.log(JSON.stringify({content:contentBank.map(x=>({...x,_id:x.id})),vocabulary:vocabularyBank.map(x=>({...x,_id:x.id})),placementItems:placementBank.map(x=>({...x,_id:x.id}))}));' > "$audit_dir/seed-manifest.json" 2> "$audit_dir/manifest.log" || die 'Không đọc được manifest học liệu trong image mới.'
 python3 - "$audit_dir/seed-manifest.json" <<'PYMANIFEST'
 import json,sys
@@ -317,7 +341,7 @@ services:
     image: $new_image
     build:
       context: $source_dir
-      dockerfile: Dockerfile
+      dockerfile: deploy/Dockerfile.release
 EORELEASE
 chmod 600 "$audit_dir/release.compose.new"
 python3 - "$audit_dir/release.compose.new" "$duo_env" <<'PYENVFILE'
@@ -326,18 +350,24 @@ with open(sys.argv[1],'a') as output:
  output.write('    env_file:\n      - '+json.dumps(sys.argv[2],ensure_ascii=False)+'\n')
 PYENVFILE
 docker compose "${base_args[@]}" -f "$audit_dir/release.compose.new" config --quiet || die 'Release override chưa hợp lệ; chưa dừng app.'
-python3 - "$project" "$config_file" "$compose_file" "$domain_override" "$audit_dir/release.compose.new" "$audit_dir/credentials.json" <<'PYNEWRELEASE' || die 'Release mới đổi cấu hình ngoài image/source và đăng nhập Duo; chưa dừng app.'
-import json,subprocess,sys
-project,env,base,domain,release,credentials=sys.argv[1:]
+python3 - "$project" "$config_file" "$compose_file" "$domain_override" "$audit_dir/release.compose.new" "$audit_dir/credentials.json" "$app_memory_bytes" <<'PYNEWRELEASE' || die 'Release mới đổi cấu hình ngoài image/source và đăng nhập Duo; chưa dừng app.'
+import json,re,subprocess,sys
+project,env,base,domain,release,credentials,app_memory=sys.argv[1:]
 args=['docker','compose','--project-name',project,'--env-file',env,'-f',base,'-f',domain]
 def read(extra):
  x=subprocess.run(args+extra+['config','--format','json'],capture_output=True,text=True,timeout=30);assert x.returncode==0;return json.loads(x.stdout)
 a,b=read([]),read(['-f',release])
+assert a['services']['app']['build'].get('dockerfile','Dockerfile')=='Dockerfile'
+assert b['services']['app']['build'].get('dockerfile')=='deploy/Dockerfile.release'
+rendered_memory=b['services']['app'].get('mem_limit')
+assert type(rendered_memory) is int or isinstance(rendered_memory,str) and re.fullmatch(r'[1-9][0-9]{0,12}',rendered_memory)
+assert int(rendered_memory)==int(app_memory)
 credentials=json.load(open(credentials));duo=b['services']['app']['environment']
 # Compose escapes each literal dollar as $$ in its rendered config JSON.
 assert duo.get('DUO_ENABLED')=='true' and json.loads(duo['DUO_ACCOUNTS_JSON'].replace('$$','$'))==credentials and not duo.get('DUO_CREDENTIALS_FILE')
 for data in (a,b):
  app=data['services']['app'];app.pop('image',None);app['build'].pop('context',None)
+ app['build'].pop('dockerfile',None)
  for key in ['DUO_ENABLED','DUO_ACCOUNTS_JSON','DUO_CREDENTIALS_FILE']:app.get('environment',{}).pop(key,None)
 assert a==b
 PYNEWRELEASE
@@ -346,6 +376,7 @@ run_upgrade_cli() {
   # The only privileged process is this short-lived CLI. It has no capabilities,
   # no ports, a read-only image and only its own private backup mount.
   local action="$1"
+  assert_memory_headroom "CLI $action" 512
   local args=(run --rm --network "$database_network" --memory=512m --memory-swap=512m --cpus=0.5 --pids-limit=64
     --user 0:0 --cap-drop ALL --security-opt no-new-privileges:true --read-only
     --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m
@@ -369,10 +400,12 @@ x=json.load(open(sys.argv[1]));assert x['database']=='ielts_ai' and x['bankVersi
 assert x['target']=={'content':322,'lessons':270,'mocks':52,'vocabulary':216,'placement':160}
 assert 0<=len(x['newContentIds'])<=16 and len(set(x['newContentIds']))==len(x['newContentIds'])
 PYUPGRADEINSPECT
+assert_memory_headroom 'trước dừng app IELTS' 512
 say 'Chỉ app IELTS tạm dừng. Sao lưu riêng và thêm đề/đáp án mẫu; giữ nguyên mọi tài khoản, bài làm, lịch sử, tiến độ và ghi âm.'
 app_stopped=true
 docker compose "${old_args[@]}" stop --timeout 30 app > "$audit_dir/stop-old-app.log" 2>&1 || die 'Không dừng được riêng app IELTS.'
 [[ "$(docker inspect --format '{{.State.Running}}' "$old_app_id")" == false && -z "$(service_id app)" ]] || die 'App chưa offline; không chạy updater.'
+assert_memory_headroom 'chuẩn bị database và app mới' "$offline_job_mib"
 # Switch only this project's future app image while it is stopped. Before the
 # marker, a failure still restores the old files; after it, manual Compose up
 # must use the new image and its fresh-bank startup guard, never the old seed.
@@ -384,6 +417,7 @@ bash "$compose_wrapper" validate || die 'Wrapper/live Compose không hợp lệ;
 mkdir -m 700 "$audit_dir/backup"
 # This persistent marker is deliberately written BEFORE any call that could
 # mutate MongoDB. Even a backup-stage failure after this point stays offline.
+assert_memory_headroom 'trước thay đổi database' "$offline_job_mib"
 printf '%s\n' "$source_commit" > "$audit_dir/mutation-started"
 mutation_started=true
 run_upgrade_cli apply > "$audit_dir/upgrade-apply.json" 2> "$audit_dir/upgrade-apply.log" || die 'Thêm học liệu chưa hoàn tất; giữ app offline và backup riêng, không tự khôi phục image cũ.'
@@ -399,6 +433,7 @@ receipt=json.load(open(sys.argv[3]))
 assert receipt['database']=='ielts_ai' and receipt['state']=='complete' and receipt['bankVersion']=='fresh-20261011-v2' and receipt['backups']
 PYUPGRADEVERIFY
 # Verify all old documents and reference additions while offline, before startup.
+assert_memory_headroom 'khởi động app mới' "$app_memory_mib"
 new_app_started=true
 docker compose "${current_args[@]}" up -d --no-deps --no-build --wait --wait-timeout 240 app > "$audit_dir/up-new-app.log" 2>&1 || die 'App mới chưa healthy.'
 new_app_id="$(service_id app)"
