@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
 import { ApiError } from "./errors";
+import { placementDurationSeconds, suggestedPlacementSeconds } from "./placement-timing";
 import { loadDuoCredentials, loginDuo, type DuoCredentialSettings } from "./duo-auth";
 import { createDuoService } from "./duo";
 import {
@@ -1552,6 +1553,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   async function placementView(
     record: PlacementRecord,
   ): Promise<PlacementState> {
+    record = await settlePlacement(record);
     const complete = placementIsComplete(record);
     const item = !complete && record.currentQuestionId
       ? await database.placementItems.findOne({ _id: record.currentQuestionId })
@@ -1574,10 +1576,69 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           }) => question)(item)
         : null,
       result: complete ? await completedPlacementFeedback(record) : null,
+      deadlineAt: record.deadlineAt,
+      serverNow: new Date(clockNow()).toISOString(),
+      suggestedQuestionSeconds: item ? suggestedPlacementSeconds(item) : undefined,
+      draftAnswer: item && record.draftAnswer?.questionId === item.id ? record.draftAnswer.answer : "",
+      completionReason: record.completionReason,
     };
   }
   function placementIsComplete(record: PlacementRecord): boolean {
-    return record.currentQuestionId === null && record.answers.length >= record.total && record.result !== null;
+    return record.currentQuestionId === null && record.result !== null &&
+      (record.answers.length >= record.total || record.completionReason === "deadline");
+  }
+  async function settlePlacement(record: PlacementRecord): Promise<PlacementRecord> {
+    if (!record.currentQuestionId || placementIsComplete(record)) return record;
+    if (!record.deadlineAt) {
+      // Legacy active tests start a single remaining-time allowance on resume;
+      // the updater itself never changes a learner's placement documents.
+      const remaining = Math.max(120, Math.ceil(placementDurationSeconds(record.mode) *
+        (record.total - record.answers.length) / record.total));
+      const timed = await database.placements.findOneAndUpdate({
+        _id: record._id, userId: record.userId, deadlineAt: { $exists: false }, currentQuestionId: { $ne: null },
+      }, { $set: { deadlineAt: new Date(clockNow() + remaining * 1000).toISOString() } }, { returnDocument: "after" });
+      record = timed ?? await database.placements.findOne({ _id: record._id, userId: record.userId }) ?? record;
+    }
+    if (!record.deadlineAt || Date.parse(record.deadlineAt) > clockNow() || !record.currentQuestionId) return record;
+    const item = await database.placementItems.findOne({ _id: record.currentQuestionId });
+    const answers = [...record.answers];
+    if (item) {
+      const draft = record.draftAnswer?.questionId === item.id && item.options.includes(record.draftAnswer.answer)
+        ? record.draftAnswer.answer : "";
+      answers.push({ questionId: item.id, answer: draft, correct: draft === item.answer,
+        review: placementAnswerReview(item, draft, answers.length + 1) });
+    }
+    const items = await database.placementItems.find({ _id: { $in: answers.map(answer => answer.questionId) } }).toArray();
+    const estimate = estimatePlacement(answers.map(answer => ({ correct: answer.correct,
+      difficulty: items.find(item => item.id === answer.questionId)?.difficulty ?? 0 })));
+    const feedback = placementFeedback({ ...estimate, correct: answers.filter(answer => answer.correct).length,
+      total: answers.length, answers: answers.map((answer, index) => {
+        if (answer.review) return { ...answer.review, questionNumber: index + 1 };
+        const source = items.find(item => item.id === answer.questionId);
+        return source ? placementAnswerReview(source, answer.answer, index + 1) : {
+          questionId: answer.questionId, response: answer.answer, answer: "", correct: answer.correct,
+          explanation: "Câu hỏi cũ không còn trong ngân hàng.", evidence: "", subskill: "",
+        };
+      }) });
+    const enough = answers.filter(answer => answer.answer.trim()).length >= 5;
+    feedback.createdAt = new Date(clockNow()).toISOString();
+    if (!enough) feedback.estimatedBand = null;
+    feedback.summary = enough
+      ? `Hết thời gian; bài chỉ gồm ${answers.length}/${record.total} câu đã gặp. ${feedback.summary}`
+      : `Hết thời gian; đã lưu các câu đã gặp và đáp án. Bạn trả lời ít hơn 5 câu nên chưa đủ dữ liệu xác định trình độ. Hãy làm một bài mới.`;
+    const updated = await database.placements.findOneAndUpdate({
+      _id: record._id, userId: record.userId, currentQuestionId: record.currentQuestionId,
+      answers: record.answers, draftAnswer: record.draftAnswer === undefined ? { $exists: false } : record.draftAnswer,
+    }, { $set: { ...estimate, answers, currentQuestionId: null, draftAnswer: null, result: feedback,
+      completedAt: new Date(clockNow()).toISOString(), completionReason: "deadline" } }, { returnDocument: "after" });
+    if (!updated) return settlePlacement(await database.placements.findOne({ _id: record._id, userId: record.userId }) ?? record);
+    if (enough) {
+      await database.users.updateOne({ _id: record.userId }, { $set: { currentBand: estimate.estimatedBand,
+        personalEstimatedBand: estimate.estimatedBand, cefr: cefrForBand(estimate.estimatedBand) } });
+      const user = await database.users.findOne({ _id: record.userId });
+      if (user) await duoService?.placementCompleted(user, updated);
+    }
+    return updated;
   }
   async function completedPlacementFeedback(record: PlacementRecord): Promise<Feedback | null> {
     if (!placementIsComplete(record) || !record.result) return null;
@@ -1652,12 +1713,33 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         answers: [],
         result: null,
         startedAt: new Date(clockNow()).toISOString(),
+        deadlineAt: new Date(clockNow() + placementDurationSeconds(mode) * 1000).toISOString(),
       };
       record.currentQuestionId = (
         await selectQuestion(record, record.theta)
       ).id;
       await database.placements.insertOne(record);
       response.status(201).json({ placement: await placementView(record) });
+    }),
+  );
+  app.post(
+    "/api/placement/:id/draft",
+    asyncRoute(async (request, response) => {
+      const input = z.object({ questionId: z.string().max(120), answer: z.string().max(500) }).parse(request.body);
+      const userId = learnerOf(request).id;
+      let record = await database.placements.findOne({ _id: idOf(request), userId });
+      if (!record) throw new ApiError(404, "Không tìm thấy bài đánh giá của bạn.");
+      record = await settlePlacement(record);
+      if (!record.currentQuestionId) { response.json({ placement: await placementView(record) }); return; }
+      if (record.currentQuestionId !== input.questionId) throw new ApiError(409, "Câu hỏi đã đổi; hãy tải lại.");
+      const item = await database.placementItems.findOne({ _id: input.questionId });
+      if (!item || !item.options.includes(input.answer)) throw new ApiError(400, "Hãy chọn một phương án hợp lệ.");
+      const updated = await database.placements.findOneAndUpdate({ _id: record._id, userId,
+        currentQuestionId: input.questionId, deadlineAt: { $gt: new Date(clockNow()).toISOString() },
+      }, { $set: { draftAnswer: input } }, { returnDocument: "after" });
+      const latest = updated ?? await database.placements.findOne({ _id: record._id, userId });
+      if (!latest) throw new ApiError(404, "Không tìm thấy bài đánh giá của bạn.");
+      response.json({ placement: await placementView(latest) });
     }),
   );
   app.post(
@@ -1670,12 +1752,16 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         })
         .parse(request.body);
       const userId = learnerOf(request).id;
-      const record = await database.placements.findOne({
+      let record = await database.placements.findOne({
         _id: idOf(request),
         userId,
       });
       if (!record)
         throw new ApiError(404, "Không tìm thấy bài đánh giá của bạn.");
+      record = await settlePlacement(record);
+      if (record.completionReason === "deadline") {
+        response.json({ placement: await placementView(record) }); return;
+      }
       if (
         !record.currentQuestionId ||
         record.currentQuestionId !== input.questionId
@@ -1729,13 +1815,16 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
               }),
             })
           : null,
+        draftAnswer: null,
+        ...(complete ? { completedAt: new Date(clockNow()).toISOString(), completionReason: "answered" as const } : {}),
       };
       if (!complete)
         changed.currentQuestionId = (
           await selectQuestion(changed, estimate.theta)
         ).id;
       const updated = await database.placements.findOneAndUpdate(
-        { _id: record._id, userId, currentQuestionId: input.questionId },
+        { _id: record._id, userId, currentQuestionId: input.questionId,
+          deadlineAt: { $gt: new Date(clockNow()).toISOString() } },
         { $set: changed },
         { returnDocument: "after" },
       );
@@ -1765,7 +1854,9 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         .limit(100)
         .toArray();
       response.json({
-        placements: await Promise.all(records.map(async (record) => ({
+        placements: await Promise.all(records.map(async (stored) => {
+          const record = await settlePlacement(stored);
+          return ({
           id: record._id,
           mode: record.mode,
           total: record.total,
@@ -1774,7 +1865,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           standardError: record.standardError,
           startedAt: record.startedAt,
           result: await completedPlacementFeedback(record),
-        }))),
+          });
+        })),
       });
     }),
   );

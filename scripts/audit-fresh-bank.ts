@@ -19,7 +19,10 @@ export function auditFreshBank(bank: ReplacementBank = replacementBank) {
   const check = (value: unknown, why: string) => { if (!value) issues.push(why); };
   const counts = { content: bank.content.length, lessons: bank.content.filter(x => x.format === "lesson").length,
     mocks: bank.content.filter(x => x.format === "full-mock").length, vocabulary: bank.vocabulary.length, placement: bank.placementItems.length };
-  check(JSON.stringify(counts) === JSON.stringify({ content: 322, lessons: 270, mocks: 52, vocabulary: 216, placement: 160 }), "Fresh bank counts differ from the replacement specification.");
+  const specification = bank.version === "fresh-20261011-v3"
+    ? { content: 966, lessons: 810, mocks: 156, vocabulary: 648, placement: 480 }
+    : { content: 322, lessons: 270, mocks: 52, vocabulary: 216, placement: 160 };
+  check(JSON.stringify(counts) === JSON.stringify(specification), "Fresh bank counts differ from the requested bank specification.");
   const oldIds = new Set([...previousContent, ...previousVocabulary, ...previousPlacement].map(x => x.id));
   const ids = new Set<string>();
   for (const row of [...bank.content, ...bank.vocabulary, ...bank.placementItems]) {

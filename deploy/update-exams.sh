@@ -336,10 +336,14 @@ docker run --rm --network none --memory=512m --memory-swap=512m --cpus=0.25 --en
 python3 - "$audit_dir/seed-manifest.json" <<'PYMANIFEST'
 import json,sys
 x=json.load(open(sys.argv[1]));assert set(x)=={'content','vocabulary','placementItems'}
-assert len(x['content'])==322 and len(x['vocabulary'])==216 and len(x['placementItems'])==160
-assert sum(d['format']=='lesson' for d in x['content'])==270 and sum(d['format']=='full-mock' for d in x['content'])==52
+assert len(x['content'])==966 and len(x['vocabulary'])==648 and len(x['placementItems'])==480
+assert sum(d['format']=='lesson' for d in x['content'])==810 and sum(d['format']=='full-mock' for d in x['content'])==156
 for rows in x.values():assert len({d['_id'] for d in rows})==len(rows) and all(isinstance(d['_id'],str) and d['_id']==d['id'] and d['id'].startswith('fresh-') for d in rows)
 PYMANIFEST
+# UPGRADE_PROVIDER_PREFLIGHT_BEGIN
+assert_memory_headroom 'kiểm tra cấu hình AI' 128
+docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777 --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory=128m --memory-swap=128m --cpus=0.25 --user 0:0 --volume "$audit_dir/credentials.json:/run/duo-credentials.json:ro" --entrypoint node "$new_image" --import tsx --input-type=module -e 'import{readFileSync}from"node:fs";const{unlockProviderConfig}=await import("/app/server/provider-config.ts");if(!unlockProviderConfig(JSON.parse(readFileSync("/run/duo-credentials.json","utf8"))))throw Error("Không mở được cấu hình AI bằng thông tin riêng của bản cài này.");console.log(JSON.stringify({openaiConfigurationVerified:true}));' > "$audit_dir/provider-config.json" 2> "$audit_dir/provider-config.log" || die "Không xác minh được cấu hình AI; app cũ vẫn chạy. Xem $audit_dir/provider-config.log"
+# UPGRADE_PROVIDER_PREFLIGHT_END
 verify_existing || die 'Hiện trạng project khác thay đổi trong lúc build; chưa chuyển app.'
 [[ "$(service_id app)" == "$old_app_id" && "$(docker image inspect --format '{{.Id}}' "$old_image_ref")" == "$old_image" ]] || die 'App/image cũ đã thay đổi trong lúc build.'
 cat > "$audit_dir/release.compose.new" <<EORELEASE
@@ -403,12 +407,14 @@ say 'Bản build đạt. Đang kiểm tra chỉ đọc bộ fresh hiện có; ap
 run_upgrade_cli inspect > "$audit_dir/upgrade-inspect.json" 2> "$audit_dir/upgrade-inspect.log" || die 'Bộ fresh ban đầu chưa đầy đủ; không tự reset dữ liệu cũ. App vẫn chạy.'
 python3 - "$audit_dir/upgrade-inspect.json" <<'PYUPGRADEINSPECT' || die 'Inspect không khớp database/bộ dữ liệu mới.'
 import json,sys
-x=json.load(open(sys.argv[1]));assert x['database']=='ielts_ai' and x['bankVersion']=='fresh-20261011-v2'
-assert x['target']=={'content':322,'lessons':270,'mocks':52,'vocabulary':216,'placement':160}
-assert 0<=len(x['newContentIds'])<=16 and len(set(x['newContentIds']))==len(x['newContentIds'])
+x=json.load(open(sys.argv[1]));assert x['database']=='ielts_ai' and x['bankVersion']=='fresh-20261011-v3'
+assert x['target']=={'content':966,'lessons':810,'mocks':156,'vocabulary':648,'placement':480}
+for key,maximum in [('newContentIds',644),('newVocabularyIds',432),('newPlacementIds',320)]:
+ assert isinstance(x[key],list) and 0<=len(x[key])<=maximum and len(set(x[key]))==len(x[key])
+ assert all(isinstance(value,str) and value.startswith('fresh-x3-') for value in x[key])
 PYUPGRADEINSPECT
 assert_memory_headroom 'trước dừng app IELTS' 512
-say 'Chỉ app IELTS tạm dừng. Sao lưu riêng và thêm đề/đáp án mẫu; giữ nguyên mọi tài khoản, bài làm, lịch sử, tiến độ và ghi âm.'
+say 'Chỉ app IELTS tạm dừng. Sao lưu riêng rồi thêm bài luyện, đề, từ vựng và câu đầu vào; giữ nguyên mọi tài khoản, bài làm, lịch sử, tiến độ và ghi âm.'
 app_stopped=true
 docker compose "${old_args[@]}" stop --timeout 30 app > "$audit_dir/stop-old-app.log" 2>&1 || die 'Không dừng được riêng app IELTS.'
 [[ "$(docker inspect --format '{{.State.Running}}' "$old_app_id")" == false && -z "$(service_id app)" ]] || die 'App chưa offline; không chạy updater.'
@@ -433,11 +439,12 @@ python3 - "$audit_dir/upgrade-apply.json" "$audit_dir/upgrade-verify.json" "$aud
 import json,sys
 for path in sys.argv[1:3]:
  report=json.load(open(path))
- assert report['status']=='verified' and report['bankVersion']=='fresh-20261011-v2' and report['allPreviousDocumentsPreserved'] is True
- assert report['bank']=={'content':322,'lessons':270,'mocks':52,'vocabulary':216,'placement':160}
- assert 0<=report['newExamsAdded']<=16 and report['retainedAccounts']>=2
+ assert report['status']=='verified' and report['bankVersion']=='fresh-20261011-v3' and report['allPreviousDocumentsPreserved'] is True
+ assert report['bank']=={'content':966,'lessons':810,'mocks':156,'vocabulary':648,'placement':480}
+ assert 0<=report['newContentAdded']<=644 and 0<=report['newVocabularyAdded']<=432 and 0<=report['newPlacementItemsAdded']<=320 and report['retainedAccounts']>=2
 receipt=json.load(open(sys.argv[3]))
-assert receipt['database']=='ielts_ai' and receipt['state']=='complete' and receipt['bankVersion']=='fresh-20261011-v2' and receipt['backups']
+assert receipt['database']=='ielts_ai' and receipt['state']=='complete' and receipt['bankVersion']=='fresh-20261011-v3' and receipt['backups']
+assert all(isinstance(receipt[key],list) for key in ['newContentIds','newVocabularyIds','newPlacementIds'])
 PYUPGRADEVERIFY
 # Verify all old documents and reference additions while offline, before startup.
 assert_memory_headroom 'khởi động app mới' "$app_memory_mib"
@@ -451,9 +458,10 @@ curl_domain --fail "$origin/api/health" -o "$audit_dir/health.json"
 python3 - "$audit_dir/health.json" <<'PYHEALTH'
 import json,sys
 x=json.load(open(sys.argv[1]));assert x['status']=='ok' and x['database']=='mongodb' and x['demoEnabled'] is False
-targets={'lessons':270,'mocks':52,'vocabulary':216,'placement':160}
+targets={'lessons':810,'mocks':156,'vocabulary':648,'placement':480}
 assert x.get('duoEnabled') is True and x.get('authMode')=='phone'
-assert x['bank'].get('version')=='fresh-20261011-v2'
+assert x.get('services',{}).get('openai') is True
+assert x['bank'].get('version')=='fresh-20261011-v3'
 assert all(type(x['bank'].get(name)) is int and x['bank'][name]>=count for name,count in targets.items())
 PYHEALTH
 curl_domain --fail "$origin/api/auth/me" -o "$audit_dir/auth.json"
@@ -543,6 +551,6 @@ preserve_ip_endpoint || die 'Endpoint IP cũ chưa hoạt động sau cập nh�
 verify_existing || die 'Container/cổng/cấu hình khác đã thay đổi trong lúc cập nhật.'
 printf '%s\n' "$source_commit" > "$audit_dir/source.commit"
 printf '%s\n' success > "$audit_dir/result"
-say 'HOÀN TẤT: giữ nguyên tất cả tài khoản, bài làm, placement, lộ trình, ghi âm, từ đã lưu và phiên đăng nhập. Ngân hàng có 270 bài luyện, 52 đề mô phỏng, 216 từ vựng và 160 câu đầu vào cùng đáp án sau khi nộp.'
+say 'HOÀN TẤT: giữ nguyên tất cả tài khoản, bài làm, placement, lộ trình, ghi âm, từ đã lưu và phiên đăng nhập. Ngân hàng có 810 bài luyện, 156 đề mô phỏng, 648 từ vựng và 480 câu đầu vào cùng đáp án sau khi nộp.'
 printf 'Website: %s\nImage riêng: %s\nNguồn mới: %s\nLog/backup riêng: %s\n' "$origin" "$new_image" "$source_dir" "$audit_dir"
 say 'Không cần làm lại kiểm tra đầu vào. Backup riêng giữ trên VPS; MongoDB/proxy/website khác không bị thay thế. HTTPS đã kiểm tra tại server; chưa xác nhận truy cập Internet từ lệnh này.'

@@ -18,6 +18,7 @@ import type {
 } from "../shared/types";
 import { contentBank as contentBankDefault, placementBank as placementBankDefault, vocabularyBank as vocabularyBankDefault } from "./data/index";
 import { contentBank as initialContentBank } from "./data/initial-fresh-bank";
+import { vocabularyBank as previousVocabularyBank, placementBank as previousPlacementBank } from "./data/fresh-v2-bank";
 import { addMissingReferenceAnswers } from "./content-references";
 import { validateContentStructure } from "../shared/content-visuals";
 
@@ -62,6 +63,10 @@ export interface PlacementRecord {
   }[];
   result: Feedback | null;
   startedAt: string;
+  deadlineAt?: string;
+  completedAt?: string;
+  completionReason?: "answered" | "deadline";
+  draftAnswer?: { questionId: string; answer: string } | null;
 }
 export interface PlanRecord extends StudyPlan {
   _id: string;
@@ -178,7 +183,8 @@ export async function seedDatabase(database: Database, historicalFixture?: {
       // A custom-only old database is also not a clean installation. Future
       // personal AI content is allowed once the full active seed is present.
       const hasOtherPublic = await collection.findOne({ _id: { $nin: rows.map(x => x.id) } });
-      const compatibleIds = name === "content" ? initialContentBank.map(x => x.id) : rows.map(x => x.id);
+      const compatibleIds = name === "content" ? initialContentBank.map(x => x.id)
+        : name === "vocabulary" ? previousVocabularyBank.map(x => x.id) : previousPlacementBank.map(x => x.id);
       // An intact first fresh bank may receive later new mocks even when it
       // contains a learner's own material. A custom-only old database may not.
       const activeComplete = !hasOtherPublic || await collection.countDocuments({ _id: { $in: compatibleIds } }) === compatibleIds.length;

@@ -47,7 +47,7 @@ function run(modify: (state: State) => void = () => {}, incorrectChecksum = fals
     ids: [containerId], inspected: [{ Config: { Labels: {
       "com.docker.compose.project": project, "com.docker.compose.service": "app", "com.docker.compose.project.working_dir": `${root}/deploy`,
     }, Env: ["DUO_ENABLED=true", "DUO_CREDENTIALS_FILE=", "APP_ORIGIN=https://sutonghanyu.vn", `DUO_ACCOUNTS_JSON=${JSON.stringify(settings)}`] }, State: { Running: true } }],
-    ownerTrusted: true, curlFail: false, healthFail: false, thirdTempFail: false, health: { status: "ok", database: "mongodb", duoEnabled: true, authMode: "phone", demoEnabled: false, bank: { lessons: 270, mocks: 36, vocabulary: 216, placement: 160, version: "fresh-20261011" } }, secondTempFail: false, downstreamFail: false,
+    ownerTrusted: true, curlFail: false, healthFail: false, thirdTempFail: false, health: { status: "ok", database: "mongodb", duoEnabled: true, authMode: "phone", demoEnabled: false, bank: { lessons: 270, mocks: 52, vocabulary: 216, placement: 160, version: "fresh-20261011-v2" } }, secondTempFail: false, downstreamFail: false,
   };
   modify(state); writeFileSync(fixtureFile, JSON.stringify(state), { mode: 0o600 });
   const fakeReset = `#!/usr/bin/env bash\nset -euo pipefail\nstat -L -c %a /proc/self/fd/0 > "$IELTS_TEST_INPUT_MODE"\ncat > "$IELTS_TEST_CAPTURE"\nprintf '%s\\0' "$@" > "$IELTS_TEST_ARGS"\n[[ "$IELTS_TEST_DOWNSTREAM_FAIL" != true ]] || exit 77\nprintf '%s\\n' 'synthetic reset invoked'\n`;
@@ -171,14 +171,14 @@ test("an unhealthy gateway cleans temporary credentials and never downloads an u
   assert.match(result.stderr, /synthetic health failure/);
 });
 const legacy = { status: "ok", database: "mongodb", duoEnabled: true, authMode: "phone", demoEnabled: false, bank: { lessons: 544, mocks: 84, vocabulary: 744, placement: 640 } };
-const fresh = { ...legacy, bank: { lessons: 270, mocks: 36, vocabulary: 216, placement: 160, version: "fresh-20261011" } };
-test("only the exact unversioned legacy bank invokes the previously authorised SHA-pinned reset", () => {
+const fresh = { ...legacy, bank: { lessons: 270, mocks: 52, vocabulary: 216, placement: 160, version: "fresh-20261011-v2" } };
+test("the tripling entrypoint refuses legacy data without invoking a reset", () => {
   const result = run(state => { state.health = legacy; });
-  assert.equal(result.status, 0, result.stderr); assert.deepEqual(result.received, settings);
-  assert.ok(result.stdout.endsWith("synthetic reset invoked\n")); assert.ok(!result.stdout.includes("synthetic update invoked"));
-  assert.ok(result.calls.filter(call => call[0] === "curl").at(-1)!.includes(`https://raw.githubusercontent.com/thaituegia/websiteIeltsAi/${commit}/deploy/reset-bank.sh`));
+  assert.notEqual(result.status, 0); assert.equal(result.received, null);
+  assert.ok(!result.stdout.includes("synthetic reset invoked"));
+  assert.equal(result.calls.filter(call => call[0] === "curl").length, 1);
 });
-test("the exact legacy route verifies its own reset SHA before any downstream execution", () => {
+test("legacy remains refused even when a reset checksum was supplied", () => {
   const result = run(state => { state.health = legacy; }, false, true);
   assert.notEqual(result.status, 0); assert.equal(result.received, null); assert.ok(!result.stdout.includes("synthetic reset invoked"));
 });
@@ -186,7 +186,8 @@ test("fresh v2, custom additions, and even legacy-sized fresh banks always prese
   for (const bank of [
     { lessons: 270, mocks: 52, vocabulary: 216, placement: 160, version: "fresh-20261011-v2" },
     { lessons: 277, mocks: 58, vocabulary: 222, placement: 166, version: "fresh-20261011-v2" },
-    { ...legacy.bank, version: "fresh-20261011" },
+    { ...legacy.bank, version: "fresh-20261011-v2" },
+    { lessons: 810, mocks: 156, vocabulary: 648, placement: 480, version: "fresh-20261011-v3" },
   ]) {
     const result = run(state => { state.health = { ...legacy, bank }; }, false, true);
     assert.equal(result.status, 0, result.stderr); assert.deepEqual(result.received, settings);
@@ -198,6 +199,8 @@ const invalidHealth: [string, Record<string, unknown>][] = [
   ["unknown bank version", { ...fresh, bank: { ...fresh.bank, version: "fresh-future-version" } }],
   ["an unversioned fresh-sized bank", { ...legacy, bank: { lessons: 270, mocks: 36, vocabulary: 216, placement: 160 } }],
   ["an incomplete versioned fresh bank", { ...fresh, bank: { ...fresh.bank, mocks: 35 } }],
+  ["an incomplete v3 bank", { ...fresh, bank: { lessons: 809, mocks: 156, vocabulary: 648, placement: 480, version: "fresh-20261011-v3" } }],
+  ["a first fresh bank before v2", { ...fresh, bank: { lessons: 270, mocks: 36, vocabulary: 216, placement: 160, version: "fresh-20261011" } }],
   ["an incomplete v2 bank", { ...fresh, bank: { ...fresh.bank, mocks: 51, version: "fresh-20261011-v2" } }],
   ["a legacy bank with customised counts", { ...legacy, bank: { ...legacy.bank, lessons: 545 } }],
   ["a legacy bank with a null version", { ...legacy, bank: { ...legacy.bank, version: null } }],
@@ -205,7 +208,7 @@ const invalidHealth: [string, Record<string, unknown>][] = [
   ["boolean counts", { ...fresh, bank: { ...fresh.bank, placement: true } }],
   ["string counts", { ...fresh, bank: { ...fresh.bank, vocabulary: "216" } }],
   ["negative counts", { ...fresh, bank: { ...fresh.bank, lessons: -1 } }],
-  ["a conflicting top-level bank version", { ...fresh, bankVersion: "fresh-20261011-v2" }],
+  ["a conflicting top-level bank version", { ...fresh, bankVersion: "fresh-20261011-v3" }],
   ["disabled Duo auth", { ...fresh, duoEnabled: false }],
   ["an email login application", { ...fresh, authMode: "email" }],
   ["an enabled demo", { ...fresh, demoEnabled: true }],
@@ -222,7 +225,7 @@ for (const [label, health] of invalidHealth) test(`operator routing refuses ${la
 const routing = helper.match(/<<'PYROUTE'\n([\s\S]*?)\nPYROUTE/)?.[1]; assert.ok(routing);
 const routingFunction = routing.split("try:\n with open")[0]; assert.ok(routingFunction.includes("def route(state):"));
 test("the actual pure routing function distinguishes baseline, v2 and unknown data without Docker/files or credentials", () => {
-  for (const [health, expected] of [[legacy, "reset-bank.sh"], [fresh, "update-exams.sh"], [{ ...fresh, bank: { ...fresh.bank, mocks: 52, version: "fresh-20261011-v2" } }, "update-exams.sh"]] as const) {
+  for (const [health, expected] of [[fresh, "update-exams.sh"], [{ ...fresh, bank: { ...fresh.bank, mocks: 52, version: "fresh-20261011-v2" } }, "update-exams.sh"]] as const) {
     const result = spawnSync(nativePython, ["-c", `${routingFunction}\nprint(route(json.loads(sys.stdin.read())))`], { input: JSON.stringify(health), encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), expected);
   }

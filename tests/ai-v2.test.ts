@@ -58,6 +58,8 @@ function content(skill: StoredContent["skill"] = "writing"): StoredContent {
         chart: [{ label: "Bus", values: [30, 40] }],
         chartSeries: ["2010", "2020"],
         chartUnit: "percent",
+        chartType: "bar",
+        visuals: [{ id: "synthetic-map", type: "map", title: "A synthetic park plan", width: 400, height: 240, labels: [{ id: "pond", text: "Pond", x: 160, y: 100 }], areas: [{ id: "pond-outline", x: 130, y: 80, width: 100, height: 60 }] }],
       },
       {
         id: "task-2",
@@ -213,6 +215,11 @@ test("AI adapters: honest offline, two-stage evidence, weighting, provider error
           assert.equal(result.corrections.length, 2);
           assert.equal(result.paragraphs.length, 2);
           assert.ok(JSON.stringify(payloads[1]).includes("verifiedEvidence"));
+          for (const payload of payloads) {
+            const request = JSON.stringify(payload);
+            assert.ok(request.includes("A synthetic park plan"), "Both assessment stages need the actual map stimulus");
+            assert.ok(request.includes("chartSeries") && request.includes("2010") && request.includes("percent"), "Assessment must receive chart axes and units");
+          }
         },
       );
     },

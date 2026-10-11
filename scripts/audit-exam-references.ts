@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { contentBank } from "../server/data/index";
-import { contentBank as initialContentBank } from "../server/data/initial-fresh-bank";
+import { contentBank as initialContentBank } from "../server/data/fresh-v2-bank";
 import { contentSourceDigest } from "../server/content-references";
 import type { ReferenceResponse, StoredContent } from "../shared/types";
 
@@ -13,16 +13,21 @@ export function auditExamReferences(bank: readonly StoredContent[] = contentBank
   const issues: string[] = [];
   const check = (condition: unknown, message: string) => { if (!condition) issues.push(message); };
   const originals = new Map(initialContentBank.map(item => [item.id, item]));
-  const newMocks = bank.filter(item => !originals.has(item.id));
-  check(newMocks.length === 16 && newMocks.every(item => item.format === "full-mock"), "The upgrade must add exactly sixteen independent full mocks.");
-  for (const skill of ["reading", "listening", "writing", "speaking"])
-    check(newMocks.filter(item => item.skill === skill).length === 4, `${skill}: four new complete mocks required`);
+  const additions = bank.filter(item => !originals.has(item.id));
+  const newMocks = additions.filter(item => item.format === "full-mock");
+  check(additions.length === 644 && newMocks.length === 104, "The tripled bank must add 540 lessons and 104 independent full mocks.");
+  for (const skill of ["reading", "listening", "writing", "speaking", "grammar"])
+    for (const format of ["lesson", "full-mock"])
+      check(additions.filter(item => item.skill === skill && item.format === format).length ===
+        initialContentBank.filter(item => item.skill === skill && item.format === format).length * 2,
+      `${skill}/${format}: additions must double the retained baseline`);
   for (const previous of initialContentBank) {
     const current = bank.find(item => item.id === previous.id);
     check(current && contentSourceDigest(current) === contentSourceDigest(previous), `${previous.id}: an existing source/task/key changed during the additive upgrade`);
   }
   const fullSamples = new Map<string, string>();
   const speakingResponses = new Map<string, string>();
+  const newModelSentences = new Map<string, string>();
   let reviewedContents = 0, reviewedSections = 0, interviewResponses = 0;
   const validate = (item: StoredContent, reference: ReferenceResponse) => {
     const section = item.sections.find(section => section.id === reference.sectionId);
@@ -32,6 +37,16 @@ export function auditExamReferences(bank: readonly StoredContent[] = contentBank
     const signature = normalize(reference.sampleAnswer);
     check(signature && !fullSamples.has(signature), `${label}: repeated or empty full sample ${fullSamples.get(signature) ?? ""}`);
     fullSamples.set(signature, label);
+    if (!originals.has(item.id)) {
+      for (const sentence of reference.sampleAnswer.match(/[^.!?]+[.!?]+/gu) ?? []) {
+        if (wordCount(sentence) < 16) continue;
+        const key = normalize(sentence);
+        check(!newModelSentences.has(key), `${label}: copied long model sentence from ${newModelSentences.get(key) ?? ""}`);
+        newModelSentences.set(key, label);
+      }
+      check(!/This question deserves attention because|One important argument concerns the experience|The relevant test is whether the proposed arrangement|The strongest response is consequently one|People can reasonably disagree about the best response|The arguments lead to a judgement about the particular issue/iu.test(reference.sampleAnswer),
+        `${label}: generic model filler replaces topic-specific development`);
+    }
     if (!section) return;
     check(!section.text.includes(reference.sampleAnswer), `${label}: sample leaked into the task stimulus`);
     if (item.skill === "writing") {
@@ -71,7 +86,7 @@ export function auditExamReferences(bank: readonly StoredContent[] = contentBank
     for (const reference of item.referenceAnswers ?? []) { reviewedSections++; validate(item, reference); }
   }
   return {
-    status: issues.length ? "failed" : "passed", newMocks: newMocks.length,
+    status: issues.length ? "failed" : "passed", newLessons: additions.length - newMocks.length, newMocks: newMocks.length,
     bySkill: Object.fromEntries(["reading", "listening", "writing", "speaking"].map(skill => [skill, newMocks.filter(item => item.skill === skill).length])),
     reviewedContents, reviewedSections, interviewResponses, issues,
     limitations: ["Automated coverage, unchanged-key, alignment, sample-length and duplication checks do not replace IELTS examiner review; samples are illustrative, not unique correct answers or promised scores."],

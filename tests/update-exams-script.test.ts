@@ -30,6 +30,27 @@ test("exam upgrade wrapper is valid Bash and rejects an unpinned or incomplete i
   }
 });
 
+for (const failed of [false, true]) test(`provider preflight ${failed ? "failure keeps the old app running" : "gives TSX bounded scratch space without write access to credentials"}`, () => temporary(directory => {
+  const output = join(directory, "provider-args.bin"), continued = join(directory, "continued");
+  const result = spawnSync("bash", ["-c", `set -euo pipefail
+audit_dir="$IELTS_TEST_AUDIT";new_image=synthetic-pinned-image
+die() { printf '%s\\n' "$1" >&2; exit 71; }
+assert_memory_headroom() { [[ "$2" == 128 ]]; }
+docker() { printf '%s\\0' "$@" > "$IELTS_TEST_ARGS"; [[ "$IELTS_TEST_FAIL" != true ]] || return 72; printf '%s\\n' '{"openaiConfigurationVerified":true}'; }
+${block("UPGRADE_PROVIDER_PREFLIGHT")}
+touch "$IELTS_TEST_CONTINUED"`], { encoding: "utf8", env: { ...process.env, IELTS_TEST_AUDIT: directory, IELTS_TEST_ARGS: output, IELTS_TEST_FAIL: String(failed), IELTS_TEST_CONTINUED: continued } });
+  const args = readFileSync(output, "utf8").split("\0").filter(Boolean);
+  assert.equal(args[args.indexOf("--network") + 1], "none");
+  assert.equal(args[args.indexOf("--tmpfs") + 1], "/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777");
+  assert.equal(args[args.indexOf("--volume") + 1], `${directory}/credentials.json:/run/duo-credentials.json:ro`);
+  for (const expected of ["--read-only", "--memory=128m", "--memory-swap=128m", "--cpus=0.25", "--cap-drop", "ALL", "no-new-privileges", "--import", "tsx", "synthetic-pinned-image"]) assert.ok(args.includes(expected), expected);
+  assert.equal(args.some(value => value.includes("docker.sock") || value.startsWith("--publish") || value.includes("DUO_ACCOUNTS_JSON=")), false);
+  assert.equal(result.stdout, "");
+  assert.equal(result.status, failed ? 71 : 0, result.stderr);
+  if (failed) { assert.match(result.stderr, /app cũ vẫn chạy/); assert.throws(() => statSync(continued)); }
+  else { assert.equal(JSON.parse(readFileSync(join(directory, "provider-config.json"), "utf8")).openaiConfigurationVerified, true); assert.ok(statSync(continued).isFile()); }
+}));
+
 const credentialCode = script.match(/credential_validator="\$\(cat <<'PYCREDENTIAL'\n([\s\S]*?)\nPYCREDENTIAL/ )?.[1];
 assert.ok(credentialCode);
 test("private credential validation produces distinct Compose and Docker formats with identical identities", () => temporary(directory => {

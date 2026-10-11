@@ -11,10 +11,10 @@ import { auditExamReferences } from "../scripts/audit-exam-references";
 test("new complete mocks and section-specific reference answers are independent and keep the existing task keys", { timeout: 60_000 }, () => {
   const report = auditExamReferences();
   assert.equal(report.status, "passed", report.issues.join("\n"));
-  assert.deepEqual(report.bySkill, { reading: 4, listening: 4, writing: 4, speaking: 4 });
-  assert.equal(report.reviewedContents, 204);
-  assert.equal(report.reviewedSections, 258);
-  assert.equal(report.interviewResponses, 552);
+  assert.deepEqual(report.bySkill, { reading: 12, listening: 20, writing: 36, speaking: 36 });
+  assert.equal(report.reviewedContents, 612);
+  assert.equal(report.reviewedSections, 774);
+  assert.equal(report.interviewResponses, 1656);
 });
 
 test("exam upgrade adds new IDs and missing models while preserving scores, accounts, custom tasks and edited teacher models", { timeout: 90_000 }, async () => {
@@ -39,7 +39,7 @@ test("exam upgrade adds new IDs and missing models while preserving scores, acco
 
     await seedDatabase(database);
     await seedDatabase(database);
-    assert.equal(await database.content.countDocuments(), 323);
+    assert.equal(await database.content.countDocuments(), 967);
     assert.equal(await database.vocabulary.countDocuments(), vocabularyBank.length);
     assert.equal(await database.placementItems.countDocuments(), placementBank.length);
     for (const [index, collection] of privateNames.entries())
@@ -55,7 +55,7 @@ test("exam upgrade adds new IDs and missing models while preserving scores, acco
     assert.deepEqual((await database.content.findOne({ _id: teacher.id }))!.referenceAnswers, teacherReferences);
     const report = await addMissingReferenceAnswers(database.content, contentBank);
     assert.equal(report.added, 0); assert.equal(report.skippedModifiedContent, 1);
-    assert.equal(report.alreadyPresent, 203);
+    assert.equal(report.alreadyPresent, 611);
   } finally {
     assert.equal(database.db.databaseName, name);
     await database.db.dropDatabase(); await database.client.close();

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Operator entrypoint: route an exact legacy bank to the previously authorised
-# reset; route a known fresh bank to the preserving exam/answer update.
+# Operator entrypoint: add study material to a complete fresh v2/v3 bank.
+# This release only preserves data; legacy and incomplete banks fail closed.
 # Reuse only this deployment's private credentials, never exposing them in chat,
 # shell history, script arguments or terminal output. Unknown states fail closed.
 set -Eeuo pipefail
@@ -70,12 +70,9 @@ def route(state):
  keys=('lessons','mocks','vocabulary','placement')
  if any(type(bank.get(key)) is not int or bank[key]<0 for key in keys):raise ValueError('Invalid bank counts')
  version=bank.get('version')
- if 'version' not in bank and 'bankVersion' not in state and set(bank)==set(keys):
-  if bank=={'lessons':544,'mocks':84,'vocabulary':744,'placement':640}:
-   return 'reset-bank.sh'
-  raise ValueError('Unknown unversioned bank')
+ if 'version' not in bank:raise ValueError('A complete fresh v2 baseline is required; reset is unavailable')
  if 'bankVersion' in state and state['bankVersion']!=version:raise ValueError('Conflicting bank versions')
- expected={'fresh-20261011':(270,36,216,160),'fresh-20261011-v2':(270,52,216,160)}
+ expected={'fresh-20261011-v2':(270,52,216,160),'fresh-20261011-v3':(810,156,648,480)}
  if not isinstance(version,str) or version not in expected:raise ValueError('Unknown bank version')
  if any(bank[key]<minimum for key,minimum in zip(keys,expected[version])):raise ValueError('Incomplete fresh bank')
  return 'update-exams.sh'
@@ -88,13 +85,9 @@ PYROUTE
 )"
 # RUN_EXAM_ROUTING_END
 case "$selected_script" in
-  reset-bank.sh)
-    selected_sha="$reset_sha"
-    printf '%s\n' 'Bộ dữ liệu cũ khớp chính xác. Áp dụng yêu cầu reset đã cho phép, giữ hai tài khoản và nạp ngân hàng mới.'
-    ;;
   update-exams.sh)
     selected_sha="$update_sha"
-    printf '%s\n' 'Đã có ngân hàng fresh. Cập nhật đề và đáp án, giữ nguyên tài khoản, lịch sử, tiến độ và ghi âm.'
+    printf '%s\n' 'Đã có ngân hàng fresh. Tăng học liệu gấp ba, giữ nguyên tài khoản, lịch sử, tiến độ và ghi âm.'
     ;;
   *) exit 2 ;;
 esac

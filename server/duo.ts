@@ -473,7 +473,9 @@ export class DuoService {
       !record ||
       !record.result ||
       record.currentQuestionId !== null ||
-      record.answers.length < record.total ||
+      (record.answers.length < record.total && !(record.completionReason === "deadline" &&
+        record.result.estimatedBand !== null && record.answers.filter(answer => answer.answer.trim()).length >= 5 &&
+        record.deadlineAt && Date.parse(record.deadlineAt) <= this.now())) ||
       record.total < 1 ||
       !Number.isFinite(record.estimatedBand)
     )
@@ -509,7 +511,9 @@ export class DuoService {
       for (const record of records)
         if (
           record.total > 0 &&
-          record.answers.length >= record.total &&
+          (record.answers.length >= record.total || (record.completionReason === "deadline" &&
+            record.result?.estimatedBand !== null && record.answers.filter(answer => answer.answer.trim()).length >= 5 &&
+            record.deadlineAt && Date.parse(record.deadlineAt) <= this.now())) &&
           Number.isFinite(record.estimatedBand)
         )
           await this.placements.updateOne(

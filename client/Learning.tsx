@@ -590,13 +590,35 @@ export function PlacementPage() {
     [error, setError] = useState(""),
     [listening, setListening] = useState(false);
   const cancelSpeech = useRef<(() => void) | null>(null);
+  const [timerNow, setTimerNow] = useState(Date.now());
+  const serverOffset = useRef(0);
+  const lastExpiryPoll = useRef(0);
+  const remainingSeconds = placement?.deadlineAt
+    ? Math.max(0, Math.ceil((Date.parse(placement.deadlineAt) - timerNow - serverOffset.current) / 1000)) : null;
+  useEffect(() => {
+    if (placement?.serverNow) serverOffset.current = Date.parse(placement.serverNow) - Date.now();
+  }, [placement]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (reviewId || !placement?.question || remainingSeconds !== 0 || busy ||
+      Date.now() - lastExpiryPoll.current < 1000) return;
+    lastExpiryPoll.current = Date.now();
+    cancelSpeech.current?.(); setListening(false); setBusy(true);
+    void api<{ placement: PlacementState }>(`/placement/${placement.id}`).then(async result => {
+      setPlacement(result.placement); setAnswer("");
+      if (result.placement.result) await refresh();
+    }).catch(cause => setError(errorMessage(cause))).finally(() => setBusy(false));
+  }, [timerNow, remainingSeconds, placement, reviewId, busy, refresh]);
   useEffect(() => {
     setPlacement(null);
     setAnswer("");
   }, [reviewId]);
   useEffect(() => {
     const found = active.data?.placement;
-    if (found && (!reviewId || found.id === reviewId)) setPlacement(found);
+    if (found && (!reviewId || found.id === reviewId)) { setPlacement(found); setAnswer(found.draftAnswer || ""); }
     else if (active.data?.placement === null) setPlacement(null);
   }, [active.data, reviewId]);
   useEffect(() => () => cancelSpeech.current?.(), []);
@@ -641,6 +663,18 @@ export function PlacementPage() {
     } finally {
       setBusy(false);
     }
+  }
+  async function selectAnswer(value: string) {
+    if (!placement?.question || busy) return;
+    setAnswer(value); setBusy(true); setError("");
+    try {
+      const result = await api<{ placement: PlacementState }>(`/placement/${placement.id}/draft`, {
+        method: "POST", body: json({ questionId: placement.question.id, answer: value }),
+      });
+      setPlacement(result.placement);
+      if (result.placement.result) { setAnswer(""); await refresh(); }
+    } catch (cause) { setError(errorMessage(cause)); }
+    finally { setBusy(false); }
   }
   function listen() {
     if (!placement?.question) return;
@@ -730,7 +764,7 @@ export function PlacementPage() {
               <ul>
                 <li>Reading & Listening xen kẽ</li>
                 <li>Câu hỏi từ A2 đến C1</li>
-                <li>Lưu tiến độ để tiếp tục sau</li>
+                <li>20 phút · tự lưu lựa chọn và kết thúc khi hết giờ</li>
               </ul>
               <Button disabled={busy} onClick={() => void start("quick")}>
                 Bắt đầu kiểm tra nhanh
@@ -748,7 +782,7 @@ export function PlacementPage() {
               <ul>
                 <li>Thích ứng theo độ khó từng câu</li>
                 <li>Ước lượng kèm sai số chuẩn</li>
-                <li>Cập nhật ước lượng cá nhân của bạn</li>
+                <li>40 phút · đồng hồ vẫn chạy khi tải lại trang</li>
               </ul>
               <Button
                 className="secondary"
@@ -765,7 +799,7 @@ export function PlacementPage() {
       {reviewId && placement?.question && (
         <Card>
           <h2>Bài kiểm tra chưa hoàn thành</h2>
-          <p>Đáp án được mở sau khi bạn trả lời đủ các câu hỏi.</p>
+          <p>Đáp án được mở khi hoàn thành hoặc hết thời gian.</p>
           <Button onClick={() => setParams({})}>Tiếp tục kiểm tra</Button>
         </Card>
       )}
@@ -794,6 +828,12 @@ export function PlacementPage() {
               {placement.question.cefr} · câu hỏi tự biên soạn
             </span>
           </div>
+          {remainingSeconds !== null && (
+            <div className={`placement-timer notice ${remainingSeconds < 120 ? "warning" : ""}`} role="timer" aria-label="Thời gian bài kiểm tra còn lại">
+              <Clock3 size={18} /><strong>{formatTime(remainingSeconds)}</strong>
+              <span>Đồng hồ tiếp tục khi tải lại. Gợi ý cho câu này: khoảng {placement.suggestedQuestionSeconds || 90} giây.</span>
+            </div>
+          )}
           {placement.question.skill === "listening" ? (
             <div className="placement-listening">
               <Headphones size={30} />
@@ -827,7 +867,8 @@ export function PlacementPage() {
                   name="placement-answer"
                   value={option}
                   checked={answer === option}
-                  onChange={() => setAnswer(option)}
+                  disabled={busy || remainingSeconds === 0}
+                  onChange={() => void selectAnswer(option)}
                 />
                 <span className="option-letter">
                   {String.fromCharCode(65 + index)}
@@ -837,8 +878,8 @@ export function PlacementPage() {
             ))}
           </div>
           <div className="placement-footer">
-            <span className="muted tiny">Tiến độ được lưu sau mỗi câu.</span>
-            <Button disabled={busy || !answer} onClick={() => void submit()}>
+            <span className="muted tiny">Lựa chọn được tự lưu. Hết giờ sẽ mở đáp án các câu đã gặp.</span>
+            <Button disabled={busy || !answer || remainingSeconds === 0} onClick={() => void submit()}>
               {busy ? "Đang lưu…" : "Câu tiếp theo"}
               <ArrowRight size={17} />
             </Button>
@@ -1217,6 +1258,7 @@ export function LearningPage() {
               transcribing: "Đang phiên âm bản ghi…",
               transcribed: "Đã phiên âm, đang xử lý…",
               pronunciation: "Đang phân tích phát âm từ âm thanh…",
+              "audio-scoring": "Đang nghe bản ghi và chấm bốn tiêu chí Speaking…",
               evaluating: "Đang đọc và phản hồi bài nói…",
               saving: "Đang lưu kết quả…",
             };

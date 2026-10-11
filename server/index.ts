@@ -2,6 +2,7 @@ import "dotenv/config";
 import { createApp } from "./app";
 import { connectDatabase, seedDatabase } from "./storage";
 import { loadDuoCredentials, provisionDuoAccounts } from "./duo-auth";
+import { activateProviderConfig } from "./provider-config";
 import { z } from "zod";
 
 const port = Number(process.env.PORT || 3001);
@@ -24,6 +25,7 @@ if (production) {
 const duoEnabled = production || process.env.DUO_ENABLED !== "false";
 // Validate private account configuration before any startup seed or binding.
 const duoCredentials = duoEnabled ? loadDuoCredentials() : undefined;
+if (duoCredentials) activateProviderConfig(duoCredentials);
 const duoConfig = duoEnabled ? {
   gateInterval: z.coerce.number().pipe(z.union([z.literal(5), z.literal(10)])).parse(process.env.DUO_GATE_INTERVAL || 5),
   sessionsPerBand: z.coerce.number().int().min(5).max(100).parse(process.env.DUO_SESSIONS_PER_BAND || 20),

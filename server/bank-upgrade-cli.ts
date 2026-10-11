@@ -2,7 +2,7 @@ import "dotenv/config";
 import { MongoClient } from "mongodb";
 import { resolve } from "node:path";
 import { inspectBankUpgrade, upgradeBank, verifyBankUpgrade } from "./bank-upgrade";
-import { replacementBank as baseline } from "./data/initial-fresh-bank";
+import { replacementBank as baseline } from "./data/fresh-v2-bank";
 import { replacementBank as target } from "./data/index";
 
 // Administrator-only entrypoint; no account provisioning, seeding or HTTP server.

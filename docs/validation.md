@@ -1,5 +1,27 @@
 # Kết quả kiểm tra
 
+## Bộ gấp ba, chấm AI và bài đầu vào có thời gian — 2026-10-11
+
+Ngân hàng `fresh-20261011-v3` có **810 bài luyện, 156 đề, 648 mục từ và 480 câu đầu vào**. Tất cả 322 học liệu, 216 từ và 160 câu đầu vào của v2 được giữ nguyên, gồm nguồn, key, mẫu và liên kết từ vựng. Thêm 644/432/320 ID riêng; số bài và số câu theo từng kỹ năng đều gấp ba. Bộ hiện tại có **3.744 câu khách quan** (1.152 Reading, 1.920 Listening, 672 Grammar), **774 Tasks/Parts tham khảo và 1.656 câu trả lời phỏng vấn**.
+
+Cả ba audit cấu trúc/nguồn/key/references đạt. Grader thực chấm đúng mọi key và biến thể; bài đọc/nghe độc lập với bộ hiện tại và bộ lịch sử. Rà soát đã thay đoạn kéo dài chung bằng ví dụ riêng cho từng nguồn, viết lại mẫu essay theo lập luận riêng, kiểm số liệu/model/bản đồ/quy trình, giới hạn từ và các dạng câu hỏi. Band/CEFR là ước lượng dạy học, không phải hiệu chuẩn hay thẩm định của giám khảo.
+
+**437/437 kiểm thử Node đạt, không skip**, với MongoDB/Docker thật và namespace giả riêng. Bao phủ giữ mọi BSON/index, custom/teacher edits, backup/hash/receipt/idempotence, câu hỏi/model chỉ mở sau nộp, owner isolation, deadline/draft race, regrade, rubric/evidence/timestamp, cấu hình key mã hóa và các guard triển khai. Bài đầu vào nhanh 15 câu/20 phút và sâu 30 câu/40 phút giữ deadline khi reload, tự kết thúc, chỉ mở câu đã được phục vụ và không xác định band khi ít hơn 5 câu trả lời.
+
+**48/48 Playwright scenarios đạt trong một lượt cuối**, cả desktop/mobile, gồm lưu lựa chọn/deadline bài đầu vào qua reload và tự hết giờ; đáp án/mẫu sau nộp; độc lập Duo; thi nâng band cùng nhau; WAV/FSRS; giao diện tiếng Việt và hình thật của bộ gấp ba. Kiểm tra bản đồ trước/sau, quy trình, biểu đồ kết hợp và blank đánh số không lộ key khi đang làm, nhãn nằm trong SVG và không tràn ngang. Phép đo nhãn dùng CTM về hệ tọa độ viewBox để bao phủ nhóm SVG có translate.
+
+API OpenAI thật đã chấm một Writing mẫu và âm thanh tổng hợp 23 giây: nhận phản hồi đủ bốn tiêu chí, timestamp Speaking hợp lệ; không dùng bài làm/ghi âm học viên. Khóa không xuất hiện trong frontend/source công khai; payload AES-GCM chỉ mở với hash riêng của bản cài. Kiểm tra 380 source files và 24 build files không phát hiện key/tên/số điện thoại/password/hash thật. `duoId` trùng một hằng fallback công khai có sẵn, được phân loại là metadata, không phải secret. Import graph frontend không tải module server. Các kiểm thử transport giả được phân biệt với bằng chứng API thật.
+
+**Pipeline native đạt trong 85 giây ở 512 MiB RAM, không swap bổ sung, CPU 0.5**: frozen npm ci từ cache đã kiểm integrity, TypeScript client/server tuần tự, Vite production, prune dev dependencies và full manifest 966/648/480. Cgroup có page reclaim, OOM/kernel-kill bằng 0, Docker OOMKilled=false. Đây là chứng minh pipeline trong cgroup, không phải full download/Dockerfile/deployment trên VPS; overhead Docker daemon/context nằm ngoài cgroup và được guard giữ 1024 MiB dự phòng.
+
+**Runtime image thật đạt inspect → apply → verify → USER node startup → verify** trên MongoDB synthetic riêng. So sánh BSON nghiêm ngặt và index xác nhận giữ mọi 717 document cũ trong 17 collections, kể cả custom/teacher edits, hai tài khoản giả và GridFS. Runtime chỉ copy đúng năm đường dẫn của Dockerfile, không có tsconfig; 8.460 file và ba symlink khớp production inputs. CLI readonly/root/cap-drop ALL/no-new-privileges/pids64/512 MiB/no-extra-swap/0.5 CPU đạt; peak inspect/apply/verify khoảng 137/166/155 MiB, không OOM. SPA/JS/CSS/SVG đúng status/type, health v3 đúng counts; không tạo bài làm của người học thật.
+
+Preflight mở key riêng đã được thử đúng lệnh operator: **128 MiB/no-extra-swap/0.25 CPU, network none, readonly, cap-drop ALL**, credentials chỉ đọc; chỉ in boolean xác minh, không gọi API. Native test phát hiện TSX cần scratch cache khi root filesystem readonly, nên operator bổ sung tmpfs `/tmp` 32 MiB/nosuid/nodev/noexec. Lệnh chính xác sau sửa đạt; hai regression tests thực thi đoạn Bash, kiểm tài nguyên/quyền mount và dừng trước mọi thay đổi khi unseal lỗi. Không cấp thêm capability hoặc quyền ghi credentials.
+
+Cập nhật development đã sao lưu mọi collection/index riêng và xác minh **700 bản ghi cũ giữ nguyên**, gồm hai tài khoản. Thêm đúng 644 học liệu, 432 từ và 320 câu đầu vào. Snapshot canonical riêng vẫn khớp sau setup idempotent/startup; không reset tiến độ hoặc session. Bằng chứng riêng ở ignored `.local/triple-bank`.
+
+VPS đang xác nhận ở bản v2 `b0b8277cdcd86be2670510994948fbf6a4f7e584`. Lệnh v3 được ghim commit/checksums, chỉ nhận v2/v3 đầy đủ và thêm dữ liệu; không còn route reset. Cần receipt thực tế sau chạy SSH để xác nhận v3 trên VPS. Các mục dưới đây là lịch sử kiểm tra của các bản trước, không phải trạng thái triển khai hiện tại.
+
 ## Quyền source trong image triển khai — 2026-10-11
 
 Log VPS sau build báo `ERR_MODULE_NOT_FOUND` tại `/app/server/data/index` ở bước inspect chỉ đọc; wrapper dừng trước khi dừng app hoặc xóa dữ liệu. Đã tái hiện đúng lỗi trong runtime Docker image: `umask 077` tạo thư mục học liệu 0700; `COPY --chown=node:node` chuyển chủ sở hữu sang `node`, nên CLI root không capability không đọc được thư mục. Manifest chạy bằng `node` vẫn đạt trong chính image lỗi. Kiểm tra pipeline trước đó chưa bao phủ quyền thư mục sau giải nén.

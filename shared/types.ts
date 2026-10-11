@@ -274,6 +274,18 @@ export interface Feedback {
   fillerCount?: number;
   fillerDensity?: number;
   transcript?: string;
+  audioAssessment?: {
+    provider: "openai";
+    model: string;
+    durationSeconds: number;
+    observations: {
+      criterion: "Fluency & Coherence" | "Pronunciation";
+      startSeconds: number;
+      endSeconds: number;
+      quote: string;
+      observation: string;
+    }[];
+  };
   pronunciation?: {
     accuracy: number;
     fluency: number;
@@ -386,6 +398,11 @@ export interface PlacementState {
   estimatedBand: number;
   question: Omit<PlacementItem, "answer" | "explanation" | "difficulty"> | null;
   result: Feedback | null;
+  deadlineAt?: string;
+  serverNow?: string;
+  suggestedQuestionSeconds?: number;
+  draftAnswer?: string;
+  completionReason?: "answered" | "deadline";
 }
 export interface PlacementSummary {
   id: string;
