@@ -158,7 +158,7 @@ function section(source: Source, contentId: string, sectionIndex: number, serial
   };
 }
 
-function build(id: string, sources: Source[], band: number, format: StoredContent['format'], serial: number): StoredContent {
+export function buildFreshListeningContent(id: string, sources: Source[], band: number, format: StoredContent['format'], serial: number): StoredContent {
   const parts = sources.map((source, index) => section(source, id, index, serial * 4 + index, format === 'full-mock'));
   const item: StoredContent = {
     id, skill: 'listening', title: format === 'lesson' ? sources[0]!.title : `Fresh Listening ${serial + 1}: four independent recordings`,
@@ -179,9 +179,9 @@ function build(id: string, sources: Source[], band: number, format: StoredConten
 
 const lessons: Source[] = [...socialLessonSources, ...advancedLessonSources];
 const mocks: Source[] = [...socialMockSources, ...advancedMockSources];
-export const freshListeningLessons: StoredContent[] = lessons.map((source, index) => build(`fresh-l-lesson-${String(index + 1).padStart(3, '0')}`, [source], source.band, 'lesson', index));
+export const freshListeningLessons: StoredContent[] = lessons.map((source, index) => buildFreshListeningContent(`fresh-l-lesson-${String(index + 1).padStart(3, '0')}`, [source], source.band, 'lesson', index));
 export const freshListeningMocks: StoredContent[] = Array.from({ length: 6 }, (_, index) => {
   const sources = [1, 2, 3, 4].map(part => mocks.filter(source => source.part === part)[index]!);
   if (sources.some(source => !source)) throw new Error(`Fresh Listening mock ${index + 1}: missing independent part.`);
-  return build(`fresh-l-mock-${String(index + 1).padStart(3, '0')}`, sources, [3.5, 4.5, 5.5, 6.5, 7.5, 8][index]!, 'full-mock', index);
+  return buildFreshListeningContent(`fresh-l-mock-${String(index + 1).padStart(3, '0')}`, sources, [3.5, 4.5, 5.5, 6.5, 7.5, 8][index]!, 'full-mock', index);
 });

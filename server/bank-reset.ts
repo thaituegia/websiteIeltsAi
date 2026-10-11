@@ -66,6 +66,24 @@ async function fileDigest(path: string) {
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
 }
+/** A stale legacy decision must never authorize deletion of a newer fresh bank. */
+export async function assertLegacyResetBank(db: Db, options: { expectedDatabase?: string; testDatabase?: boolean } = {}) {
+  const expected = options.expectedDatabase ?? "ielts_ai";
+  const validName = options.testDatabase === true ? /^ielts_reset_test_\d+_[a-f0-9]{32}$/.test(expected) : expected === "ielts_ai";
+  if (!validName || db.databaseName !== expected) throw Error("Legacy-only reset is restricted to the exact IELTS database.");
+  const historical = await import("./data/previous-bank");
+  const banks = { content: historical.contentBank, vocabulary: historical.vocabularyBank, placementItems: historical.placementBank };
+  const counts = { content: 628, vocabulary: 744, placementItems: 640 };
+  for (const name of PUBLIC) {
+    const ids = banks[name].map(row => row.id);
+    if (ids.length !== counts[name] || new Set(ids).size !== ids.length || ids.some(id => id.startsWith("fresh-"))) throw Error("The known historical bank manifest is invalid.");
+    const collection = db.collection<Document & { _id: string }>(name);
+    if (await collection.countDocuments() !== counts[name] || await collection.findOne({ $or: [{ _id: /^fresh-/ }, { id: /^fresh-/ }] }, { projection: { _id: 1 } }))
+      throw Error("Legacy-only reset refused: the installed bank is fresh, mixed or has changed counts.");
+    if (await collection.countDocuments({ _id: { $in: ids }, $expr: { $eq: ["$_id", "$id"] } }) !== counts[name]) throw Error("Legacy-only reset refused: the complete known historical IDs are absent.");
+  }
+  return { status: "legacy-verified", database: db.databaseName, counts };
+}
 export async function inspectBankReset(db: Db, credentials: DuoCredentialSettings, bank: ReplacementBank) {
   assertBank(bank); const users = await identities(db, credentials);
   const counts: Record<string, number> = {};

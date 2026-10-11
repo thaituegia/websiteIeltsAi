@@ -57,22 +57,24 @@ Mức đạt Gate mặc định 70% câu hỏi khách quan. Thi nâng band cần
 
 Hướng dẫn/đoạn mẫu cho bài advanced được hiển thị dưới mục thu gọn ở **Practice lesson band 7.5–8.0**. Exam và đánh giá Duo không hiển thị hướng dẫn đó. Các lượt làm lại cùng form không được coi là bằng chứng năng lực độc lập mới.
 
-## Ngân hàng học liệu mới — fresh-20261011
+## Ngân hàng học liệu mới — fresh-20261011-v2
 
 | Kỹ năng | Bài luyện | Đề mô phỏng |
 | --- | ---: | ---: |
-| Reading | 22 | 2 |
-| Listening | 24 | 6 |
-| Writing | 84 | 14 |
-| Speaking | 84 (28 mỗi Part) | 14 |
+| Reading | 22 | 6 |
+| Listening | 24 | 10 |
+| Writing | 84 | 18 |
+| Speaking | 84 (28 mỗi Part) | 18 |
 | Grammar | 56 | 0 |
-| Tổng | **270** | **36** |
+| Tổng | **270** | **52** |
 
 Bộ mới có **216 mục từ và 160 câu placement**, mức luyện 3.0–8.0. Nguồn Reading/Listening, tình huống Writing/Speaking, số liệu biểu đồ và mục từ được viết mới. Đề mô phỏng dùng nguồn riêng với bài luyện. Reading có đủ các dạng câu hỏi, Listening có đủ bốn Parts, Writing có bảy dạng biểu đồ/sơ đồ/bản đồ, GT letters và sáu nhóm Task 2.
 
-`npm run audit:content` và `npm run audit:fresh` kiểm tra cấu trúc, evidence, đáp án qua bộ chấm thật, giới hạn từ, độ phủ, khối lượng đề, trùng nguồn và số liệu hình ảnh so với toàn bộ ngân hàng trước. Band/difficulty vẫn là ước lượng AI, `quality: ai-unreviewed`; kiểm tra tự động không thay cho duyệt bởi giám khảo.
+`npm run audit:content`, `npm run audit:fresh` và `npm run audit:references` kiểm tra cấu trúc, evidence, đáp án qua bộ chấm thật, giới hạn từ, độ phủ, khối lượng đề, trùng nguồn và số liệu hình ảnh so với toàn bộ ngân hàng trước. Band/difficulty vẫn là ước lượng AI, `quality: ai-unreviewed`; kiểm tra tự động không thay cho duyệt bởi giám khảo.
 
 Yêu cầu reset chỉ giữ hai tài khoản được thực hiện bằng [công cụ reset riêng](docs/bank-reset.md), sao lưu BSON/EJSON trước khi xóa dữ liệu IELTS. Startup/seed thường không xóa dữ liệu và từ chối ngân hàng cũ để tránh trộn hai bộ. Các tệp bộ cũ chỉ phục vụ kiểm thử hồi quy và so sánh lịch sử, không nằm trong seed đang dùng. `audit:expansion`/`audit:band8` là kiểm tra lịch sử của bộ cũ.
+
+Sau khi hoàn thành placement, bài luyện hoặc đề, có thể xem đầy đủ câu trả lời, đáp án đúng, biến thể, giải thích và dẫn chứng; có lọc câu sai/bỏ trống và mở lại từ lịch sử. Writing/Speaking có bài mẫu minh họa cho mọi Task/Part, chỉ hiện sau nộp. Kho mẫu gồm **258 Tasks/Parts và 552 câu trả lời phỏng vấn**; không cần API key để xem mẫu. [Cập nhật đề và đáp án](docs/exam-upgrade.md) giữ tài khoản, tiến độ và nội dung riêng của bộ fresh.
 
 ## AI và điểm luyện tập
 
@@ -106,8 +108,8 @@ Duo là mặc định; production luôn dùng Duo. `DUO_ENABLED=false` chỉ dà
 ```sh
 npm run typecheck
 npm run audit:content
-npm run audit:expansion
-npm run audit:band8
+npm run audit:fresh
+npm run audit:references
 npm test
 npm run build
 npx playwright install chromium
@@ -120,6 +122,6 @@ Build trước browser tests vì fixture Duo phục vụ React từ `dist`. Test
 
 [docs/cloud-start.md](docs/cloud-start.md) mô tả setup/start lại cloud. Tiến trình đang chạy không tồn tại qua publish environment; cấu hình draft cần Review → Save → Publish. Localhost trong cloud không phải URL công khai.
 
-VPS có nhiều project: bản reset dùng `deploy/reset-bank.sh`, ghim commit/SHA256, build giới hạn tài nguyên, chỉ dừng app IELTS để sao lưu và thay dữ liệu trong `ielts_ai`. MongoDB/proxy/host Nginx và cấu hình website khác được đối chiếu giữ nguyên. [Quy trình reset](docs/bank-reset.md) phân biệt việc kiểm tra cloud với áp dụng và xác minh trên VPS.
+VPS có nhiều project: `deploy/run-exam-update.sh` chọn cập nhật giữ dữ liệu cho bộ fresh; chỉ dùng reset với ngân hàng legacy đã được cho phép xóa. Các công cụ ghim commit/SHA256, build giới hạn tài nguyên và chỉ dừng app IELTS để sao lưu/cập nhật `ielts_ai`. MongoDB/proxy/host Nginx và cấu hình website khác được đối chiếu giữ nguyên. [Quy trình reset](docs/bank-reset.md) phân biệt việc kiểm tra cloud với áp dụng và xác minh trên VPS.
 
 Production dùng Node hosting hoặc Dockerfile, HTTPS `APP_ORIGIN` và MongoDB được bảo vệ. Express phục vụ cả `dist` và API cùng một port; reverse proxy cung cấp TLS. Không tắt TLS/checksums để xử lý lỗi tải dependency. Xem [MongoDB](docs/mongodb.md) và [triển khai](deploy/README.md).

@@ -188,6 +188,21 @@ export interface ContentItem {
 }
 export interface StoredContent extends Omit<ContentItem, "questions"> {
   questions: StoredQuestion[];
+  /** Stored answer material; disclosed only in a completed attempt's feedback. */
+  referenceAnswers?: ReferenceResponse[];
+}
+/** An illustrative response, not a unique answer key or an examiner-scored band. */
+export interface ReferenceResponse {
+  sectionId: string;
+  title: string;
+  sampleAnswer: string;
+  explanation: string;
+  keyPoints: string[];
+  responses?: {
+    prompt: string;
+    sampleAnswer: string;
+    explanation?: string;
+  }[];
 }
 export interface VocabularyEntry {
   id: string;
@@ -246,7 +261,15 @@ export interface Feedback {
     explanation: string;
     evidence: string;
     subskill: string;
+    prompt?: string;
+    questionNumber?: number;
+    options?: string[];
+    context?: string;
+    acceptedAnswers?: string[];
+    sectionTitle?: string;
+    questionType?: IeltsQuestionType | QuestionType;
   }[];
+  referenceAnswers?: ReferenceResponse[];
   wordCount?: number;
   fillerCount?: number;
   fillerDensity?: number;

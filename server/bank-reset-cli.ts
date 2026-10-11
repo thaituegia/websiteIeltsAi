@@ -2,7 +2,7 @@ import "dotenv/config";
 import { MongoClient } from "mongodb";
 import { resolve } from "node:path";
 import { loadDuoCredentials } from "./duo-auth";
-import { inspectBankReset, resetBank, verifyBankReset } from "./bank-reset";
+import { assertLegacyResetBank, inspectBankReset, resetBank, verifyBankReset } from "./bank-reset";
 import { replacementBank } from "./data/index";
 
 // This administrator entrypoint never provisions users or starts an HTTP
@@ -22,8 +22,15 @@ try {
   await client.connect();
   const db = client.db();
   if (db.databaseName !== "ielts_ai") throw Error("This command operates only on the IELTS application's ielts_ai database.");
+  const legacyOnly = process.env.IELTS_RESET_LEGACY_ONLY === "true";
+  // Inspect before the app is stopped; apply repeats this before backup and
+  // again after backup, just before resetBank's final mutation checks/deletion.
+  // Verify intentionally checks the freshly replaced bank after the reset.
+  if (legacyOnly && action !== "verify") await assertLegacyResetBank(db);
   const result = action === "apply"
-    ? await resetBank(db, credentials, replacementBank, { expectedDatabase: "ielts_ai", backupDirectory: resolve(backup!), appOffline: true })
+    ? await resetBank(db, credentials, replacementBank, { expectedDatabase: "ielts_ai", backupDirectory: resolve(backup!), appOffline: true,
+        ...(legacyOnly ? { beforeMutation: async () => { await assertLegacyResetBank(db); } } : {}),
+      })
     : action === "verify" ? await verifyBankReset(db, credentials, replacementBank)
     : await inspectBankReset(db, credentials, replacementBank);
   console.log(JSON.stringify(result, null, 2));

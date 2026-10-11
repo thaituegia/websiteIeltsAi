@@ -12,5 +12,6 @@ if node --import dotenv/config --input-type=module -e 'const uri=process.env.MON
 fi
 npm run audit:content
 npm run audit:fresh
+npm run audit:references
 npm run build
 npm run seed

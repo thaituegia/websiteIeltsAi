@@ -11,6 +11,7 @@ import type {
   Profile,
   Skill,
   StoredContent,
+  StoredQuestion,
   StudyPlan,
   VocabularyCard,
 } from "../shared/types";
@@ -153,6 +154,7 @@ export function gradeObjective(
     const selected = question.selectionGroup ? selections.get(question.selectionGroup.id) : null;
     const validMultiple = question.type === "choice-multiple" && selected !== null && selected !== undefined;
     return {
+      ...objectiveAnswerContext(content, question),
       questionId: question.id,
       response,
       answer: question.answer,
@@ -195,6 +197,50 @@ export function gradeObjective(
     answers,
     source: "rule-based",
     createdAt: new Date().toISOString(),
+  };
+}
+/** Metadata is part of the completed review, never a public question payload. */
+export function objectiveAnswerContext(
+  content: StoredContent,
+  question: StoredQuestion,
+): Pick<Feedback["answers"][number],
+  "prompt" | "questionNumber" | "options" | "context" | "acceptedAnswers" | "sectionTitle" | "questionType"
+> {
+  const section = content.sections[question.sectionIndex];
+  const options = question.options ?? (question.type === "true-false"
+    ? ["TRUE", "FALSE", "NOT GIVEN"]
+    : question.type === "yes-no" ? ["YES", "NO", "NOT GIVEN"] : undefined);
+  return {
+    prompt: question.prompt,
+    questionNumber: question.number,
+    ...(options ? { options: [...options] } : {}),
+    context: section?.text ?? "",
+    acceptedAnswers: [...new Set([question.answer, ...(question.acceptedAnswers ?? [])])],
+    sectionTitle: section?.title ?? "",
+    questionType: question.questionType ?? question.type,
+  };
+}
+
+export function placementAnswerReview(
+  item: PlacementItem,
+  response: string,
+  number: number,
+): Feedback["answers"][number] {
+  return {
+    questionId: item.id,
+    questionNumber: number,
+    prompt: item.question,
+    context: item.text,
+    options: [...item.options],
+    response,
+    answer: item.answer,
+    acceptedAnswers: [item.answer],
+    correct: response === item.answer,
+    explanation: item.explanation,
+    evidence: item.text,
+    subskill: item.subskill,
+    sectionTitle: item.skill === "reading" ? "Reading" : "Listening",
+    questionType: "multiple-choice",
   };
 }
 const sigmoid = (value: number): number => 1 / (1 + Math.exp(-value));
@@ -259,6 +305,7 @@ export function placementFeedback(state: {
   standardError: number;
   correct: number;
   total: number;
+  answers?: Feedback["answers"];
 }): Feedback {
   return {
     id: randomUUID(),
@@ -270,7 +317,7 @@ export function placementFeedback(state: {
     criteria: [],
     corrections: [],
     paragraphs: [],
-    answers: [],
+    answers: state.answers ?? [],
     source: "rule-based",
     createdAt: new Date().toISOString(),
   };
@@ -588,7 +635,7 @@ export function buildErrorNotebook(
 ): ErrorNotebook {
   const groups = new Map<string, ErrorNotebook["items"][number]>();
   for (const attempt of attempts) {
-    if (!attempt.feedback) continue;
+    if (attempt.status !== "submitted" || !attempt.feedback) continue;
     const item = contents.find((content) => content.id === attempt.contentId);
     for (const answer of attempt.feedback.answers.filter(
       (row) => !row.correct,

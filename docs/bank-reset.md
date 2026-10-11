@@ -1,6 +1,8 @@
+> Chỉ áp dụng reset cho yêu cầu xóa ngân hàng legacy trước đây. Nếu đã dùng bộ fresh, chọn công cụ [cập nhật giữ dữ liệu](exam-upgrade.md); không xóa tiến độ học mới.
+
 # Thay toàn bộ dữ liệu IELTS, giữ hai tài khoản
 
-Ngân hàng `fresh-20261011` có 270 bài luyện, 36 đề mô phỏng, 216 mục từ và 160 câu placement mới. Đây là thao tác quản trị đáp ứng yêu cầu xóa toàn bộ dữ liệu cũ của người dùng, không phải seed thường hay endpoint cho học viên.
+Ngân hàng `fresh-20261011-v2` có 270 bài luyện, 52 đề mô phỏng, 216 mục từ và 160 câu placement mới. Đây là thao tác quản trị đáp ứng yêu cầu xóa toàn bộ dữ liệu cũ của người dùng, không phải seed thường hay endpoint cho học viên.
 
 Reset giữ đúng hai account đã cấu hình riêng: `_id`/`id`, tên, phone, vai trò Duo, password hash, email và ngày tạo. Target trở về 8.0; band/CEFR/placement/tiến độ, bài làm, flashcard, lịch học, session/cookie, phòng thi, dữ liệu tự sinh và GridFS recording cũ được xóa. Tài khoản legacy ngoài hai người bị xóa. Hai người đăng nhập lại và làm placement mới để tạo hành trình chung.
 

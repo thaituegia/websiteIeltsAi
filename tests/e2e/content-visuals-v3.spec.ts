@@ -104,3 +104,52 @@ test("reading diagram labels show numbered blanks and remain answerable", async 
   await expect.poll(async () => (await getAttempt(page, attempt.id)).responses[question.id]).toBe("sediment filter");
   await noHorizontalOverflow(page);
 });
+
+test("legacy map captions fit their areas while numbered blanks and standalone labels keep their positions", async ({ page, db }) => {
+  const captionMap: SpatialVisual = {
+    id: "legacy-caption-map", type: "map", title: "Community garden access", width: 620, height: 380,
+    areas: [
+      { id: "caption-area-0", x: 40, y: 45, width: 180, height: 100 },
+      { id: "caption-area-1", x: 300, y: 170, width: 160, height: 100 },
+      { id: "caption-area-2", x: 300, y: 45, width: 160, height: 100 },
+    ],
+    labels: [
+      { id: "caption-label-0", x: 50, y: 75, text: "Accessible outdoor learning garden" },
+      { id: "caption-label-1", x: 310, y: 200, questionNumber: 1 },
+      { id: "caption-label-2", x: 380, y: 95, text: "Covered walking path" },
+      { id: "entrance", x: 130, y: 333, text: "Main entrance" },
+      { id: "north", x: 510, y: 28, text: "North ↑" },
+    ],
+    paths: [{ id: "south-road", style: "road", points: [[20, 300], [600, 300]] }],
+  };
+  const question: StoredQuestion = { id: "caption-question", number: 1, type: "text", sectionIndex: 0, prompt: "Label the facility south of the walking path.", subskill: "diagram-labelling", questionType: "diagram-labelling", visualId: captionMap.id, answer: "visitor room", wordLimit: 2, explanation: "The passage names this facility.", evidence: "The visitor room is south of the covered walking path." };
+  const fixture = content("visual-e2e-legacy-captions", "reading", [{ id: "caption-section", title: "Garden facilities", text: question.evidence!, visuals: [captionMap] }], [question]);
+  await db.collection<StoredContent & { _id: string }>("content").replaceOne({ _id: fixture.id }, fixture, { upsert: true });
+  await loginDemo(page);
+  const attempt = await createAttempt(page, fixture, "exam");
+  await page.goto(`/learn/${attempt.id}`);
+  const visual = page.locator("[data-visual-type=map]");
+  await expect(visual).toBeVisible();
+  const caption = visual.locator("text.visual-label").filter({ hasText: "Accessible outdoor" });
+  await expect(caption).toHaveAttribute("x", "130");
+  await expect(caption.locator("tspan")).toHaveCount(2);
+  const bounds = await caption.evaluate(element => {
+    const box = (element as SVGGraphicsElement).getBBox();
+    return { left: box.x, right: box.x + box.width, top: box.y, bottom: box.y + box.height };
+  });
+  expect(bounds.left).toBeGreaterThanOrEqual(40);
+  expect(bounds.right).toBeLessThanOrEqual(220);
+  expect(bounds.top).toBeGreaterThanOrEqual(45);
+  expect(bounds.bottom).toBeLessThanOrEqual(145);
+  const centred = visual.locator("text.visual-label").filter({ hasText: "Covered walking path" });
+  await expect(centred).toHaveAttribute("x", "380");
+  await expect(centred).toHaveAttribute("y", "99");
+  const blank = visual.locator('rect[stroke-dasharray="4 3"]');
+  await expect(blank).toHaveAttribute("x", "281");
+  await expect(blank).toHaveAttribute("y", "187");
+  const entrance = visual.locator("text.visual-label").filter({ hasText: "Main entrance" });
+  await expect(entrance).toHaveAttribute("x", "130");
+  await expect(entrance).toHaveAttribute("y", "333");
+  await expect(visual.locator("text.visual-label").filter({ hasText: "North ↑" })).toHaveAttribute("y", "28");
+  await noHorizontalOverflow(page);
+});

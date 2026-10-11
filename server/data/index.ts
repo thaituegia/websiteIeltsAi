@@ -4,10 +4,16 @@ import { freshReadingLessons, freshReadingMocks } from "./fresh/reading.js";
 import { freshListeningLessons, freshListeningMocks } from "./fresh/listening.js";
 import { freshWritingLessons, freshWritingMocks, freshSpeakingLessons, freshSpeakingMocks } from "./fresh/productive.js";
 import { freshGrammarLessons, freshVocabularyBank, freshPlacementBank } from "./fresh/support.js";
+import { newReadingMocks } from "./exams-20261011/reading.js";
+import { newListeningMocks } from "./exams-20261011/listening.js";
+import { newWritingMocks } from "./exams-20261011/writing.js";
+import { newSpeakingMocks } from "./exams-20261011/speaking.js";
+import { writingReferenceAnswers } from "./exams-20261011/writing-references.js";
+import { speakingReferenceAnswers } from "./exams-20261011/speaking-references.js";
 
 // Only this wholly new bank is seeded at runtime. previous-bank.ts is a
 // historical audit fixture; it is never loaded or seeded by the application.
-export const bankVersion = "fresh-20261011";
+export const bankVersion = "fresh-20261011-v2";
 export const vocabularyBank = freshVocabularyBank;
 export const placementBank = freshPlacementBank;
 const levels = ["A2", "B1", "B2", "C1"];
@@ -15,6 +21,7 @@ export const contentBank: StoredContent[] = [
   ...freshReadingLessons, ...freshListeningLessons, ...freshWritingLessons,
   ...freshSpeakingLessons, ...freshGrammarLessons, ...freshReadingMocks,
   ...freshListeningMocks, ...freshWritingMocks, ...freshSpeakingMocks,
+  ...newReadingMocks, ...newListeningMocks, ...newWritingMocks, ...newSpeakingMocks,
 ].map(content => {
   const text = content.sections.map(section => section.text).join(" ").toLowerCase();
   const suitable = vocabularyBank.filter(word => levels.indexOf(word.cefr) <= levels.indexOf(content.cefr));
@@ -23,7 +30,13 @@ export const contentBank: StoredContent[] = [
   // an individual topic has no literal word match in the short prompt.
   const offset = Array.from(content.id).reduce((total, ch) => total + ch.charCodeAt(0), 0) % Math.max(1, suitable.length);
   const fallback = [...suitable.slice(offset), ...suitable.slice(0, offset)];
-  return { ...content, vocabularyIds: [...new Set([...related, ...fallback].map(word => word.id))].slice(0, content.format === "full-mock" ? 12 : 6) };
+  const references = content.skill === "writing" ? writingReferenceAnswers[content.id]
+    : content.skill === "speaking" ? speakingReferenceAnswers[content.id] : undefined;
+  return {
+    ...content,
+    vocabularyIds: [...new Set([...related, ...fallback].map(word => word.id))].slice(0, content.format === "full-mock" ? 12 : 6),
+    ...(references ? { referenceAnswers: references } : {}),
+  };
 });
 export const replacementBank: ReplacementBank = {
   version: bankVersion, content: contentBank, vocabulary: vocabularyBank, placementItems: placementBank,

@@ -9,8 +9,8 @@ import { connectDatabase, seedDatabase } from "../server/storage";
 test("the active bank is wholly new and passes source, key, authentic mock and coverage checks", { timeout: 60_000 }, () => {
   const report = auditFreshBank();
   assert.equal(report.status, "passed", report.issues.join("\n"));
-  assert.deepEqual(report.counts, { content: 306, lessons: 270, mocks: 36, vocabulary: 216, placement: 160 });
-  assert.equal(report.workload.length, 8);
+  assert.deepEqual(report.counts, { content: 322, lessons: 270, mocks: 52, vocabulary: 216, placement: 160 });
+  assert.equal(report.workload.length, 16);
   assert.ok(report.objectiveQuestionsChecked > 600);
   for (const item of replacementBank.content.filter(x => x.skill === "writing")) {
     assert.ok(item.sections.every(x => !x.text.includes("Practice planning note")), "Exam stimuli must not embed planning hints");
@@ -48,7 +48,7 @@ test("fresh startup refuses an older bank before any insertion; fresh seeding is
     assert.equal(await db.content.countDocuments(), 1);
     await db.content.deleteMany({});
     await seedDatabase(db); await seedDatabase(db);
-    assert.deepEqual(await Promise.all([db.content.countDocuments(), db.vocabulary.countDocuments(), db.placementItems.countDocuments(), db.attempts.countDocuments()]), [306, 216, 160, 1]);
+    assert.deepEqual(await Promise.all([db.content.countDocuments(), db.vocabulary.countDocuments(), db.placementItems.countDocuments(), db.attempts.countDocuments()]), [322, 216, 160, 1]);
     await assert.rejects(seedDatabase({ ...db, db: db.client.db("ielts_ai") }, { content: previousContent, vocabulary: [], placementItems: [] }), /isolated test databases/);
   } finally {
     assert.equal(db.db.databaseName, name);

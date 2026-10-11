@@ -1,4 +1,4 @@
-> Yêu cầu thay toàn bộ dữ liệu hiện hành dùng **deploy/reset-bank.sh**, không dùng các updater giữ lịch sử dưới đây. Xem [bank-reset.md](../docs/bank-reset.md). Reset có backup riêng, chỉ giữ hai tài khoản và thay seed thành fresh-20261011; chỉ vận hành đúng project IELTS đã xác nhận.
+> Bản hiện hành dùng **deploy/run-exam-update.sh**: cập nhật bộ fresh và giữ dữ liệu; chỉ reset ngân hàng legacy đã được người dùng yêu cầu xóa. Xem [exam-upgrade.md](../docs/exam-upgrade.md) và [bank-reset.md](../docs/bank-reset.md). Các updater v3 bên dưới là lịch sử.
 
 # Triển khai VPS, tách riêng các project đang chạy
 

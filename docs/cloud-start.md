@@ -8,9 +8,13 @@ Checkout là `/workspace/websiteIeltsAi`, repository GitHub `thaituegia/websiteI
 bash /workspace/websiteIeltsAi/scripts/cloud-setup.sh
 ```
 
-Script yêu cầu Node.js 24+, cài dependency đúng lockfile với cache `/workspace/.npm-cache`, start MongoDB Docker chính thức khi dùng URI local, audit nội dung/bộ mới, build frontend và seed. URI MongoDB bên ngoài và `.env` private được giữ; không in secrets. Seed **chỉ thêm ID mới chưa có**, giữ dữ liệu học của bộ hiện hành. Nếu còn ID seed cũ, startup dừng và yêu cầu công cụ reset riêng; setup thường không tự xóa database. Xem [bank-reset.md](bank-reset.md) cho yêu cầu reset đã được người dùng cho phép.
+Script yêu cầu Node.js 24+, cài dependency đúng lockfile với cache `/workspace/.npm-cache`, start MongoDB Docker chính thức khi dùng URI local, audit nội dung/bộ mới/bài mẫu, build frontend và seed. URI MongoDB bên ngoài và `.env` private được giữ; không in secrets. Seed **chỉ thêm ID mới chưa có**, giữ dữ liệu học của bộ hiện hành. Nếu còn ID seed cũ, startup dừng và yêu cầu công cụ reset riêng; setup thường không tự xóa database. Xem [bank-reset.md](bank-reset.md) cho yêu cầu reset đã được người dùng cho phép.
 
-Bộ seed hiện tại **fresh-20261011** gồm **270 lessons, 36 mocks, 216 vocabulary, 160 placement**. Health báo MongoDB actual counts, có thể khác manifest nếu đã có nội dung riêng. Structural audits không chứng minh học liệu đã được chuyên gia IELTS hiệu chuẩn.
+Bộ seed hiện tại **fresh-20261011-v2** gồm **270 lessons, 52 mocks, 216 vocabulary, 160 placement**. Health báo MongoDB actual counts, có thể khác manifest nếu đã có nội dung riêng. Structural audits không chứng minh học liệu đã được chuyên gia IELTS hiệu chuẩn.
+
+Bản cập nhật thêm 16 đề mới và mẫu sau nộp cho mọi Writing/Speaking Task/Part, giữ toàn bộ học liệu/tài khoản/tiến độ của bộ fresh đã dùng. [exam-upgrade.md](exam-upgrade.md) mô tả seed và công cụ cập nhật giữ dữ liệu. Không lặp lại reset của phiên trước khi startup.
+
+Mỗi task cloud đã chạy trong môi trường tách riêng. Làm trực tiếp trong checkout được chọn; chỉ tạo worktree nếu người dùng yêu cầu.
 
 Docker/Compose cần có nếu dùng local helper; nếu không, cấu hình MongoDB thật bên ngoài qua `MONGODB_URI`. Không thay bằng SQLite, JSON hoặc in-memory DB. Image chính thức ghim digest trong `compose.yaml`; không tắt TLS/checksums để tải dependencies.
 
@@ -38,6 +42,7 @@ Cả hai có thể mở bài/đề thường riêng. Lộ trình chung chỉ t�
 npm run typecheck
 npm run audit:content
 npm run audit:fresh
+npm run audit:references
 npm test
 npm run build
 npm run test:e2e

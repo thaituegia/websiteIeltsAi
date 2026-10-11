@@ -292,8 +292,8 @@ docker run --rm --network none --memory=512m --memory-swap=512m --cpus=0.25 --en
 python3 - "$audit_dir/seed-manifest.json" <<'PYMANIFEST'
 import json,sys
 x=json.load(open(sys.argv[1]));assert set(x)=={'content','vocabulary','placementItems'}
-assert len(x['content'])==306 and len(x['vocabulary'])==216 and len(x['placementItems'])==160
-assert sum(d['format']=='lesson' for d in x['content'])==270 and sum(d['format']=='full-mock' for d in x['content'])==36
+assert len(x['content'])==322 and len(x['vocabulary'])==216 and len(x['placementItems'])==160
+assert sum(d['format']=='lesson' for d in x['content'])==270 and sum(d['format']=='full-mock' for d in x['content'])==52
 for rows in x.values():assert len({d['_id'] for d in rows})==len(rows) and all(isinstance(d['_id'],str) and d['_id']==d['id'] and d['id'].startswith('fresh-') for d in rows)
 PYMANIFEST
 verify_existing || die 'Hiện trạng project khác thay đổi trong lúc build; chưa chuyển app.'
@@ -337,7 +337,7 @@ run_reset_cli() {
     --user 0:0 --cap-drop ALL --security-opt no-new-privileges:true --read-only
     --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m
     --env-file "$private_dir/app.env" --env-file "$audit_dir/reset-cli.env"
-    -e MONGODB_URI=mongodb://mongo:27017/ielts_ai -e NODE_ENV=production -e IELTS_APP_OFFLINE=true)
+    -e MONGODB_URI=mongodb://mongo:27017/ielts_ai -e NODE_ENV=production -e IELTS_APP_OFFLINE=true -e IELTS_RESET_LEGACY_ONLY=true)
   if [[ "$action" == apply ]]; then
     args+=(--mount "type=bind,src=$audit_dir/backup,dst=/backup")
   elif [[ "$action" != inspect && "$action" != verify ]]; then return 2; fi
@@ -352,7 +352,7 @@ python3 - "$audit_dir/reset-inspect.json" <<'PYRESETINSPECT' || die 'Inspect kh�
 import json,sys
 x=json.load(open(sys.argv[1]));assert x['database']=='ielts_ai'
 assert len(x['retainedAccountIds'])==len(set(x['retainedAccountIds']))==2
-assert x['replacement']=={'version':'fresh-20261011','content':306,'vocabulary':216,'placementItems':160}
+assert x['replacement']=={'version':'fresh-20261011-v2','content':322,'vocabulary':216,'placementItems':160}
 PYRESETINSPECT
 say 'Chỉ app IELTS tạm dừng. Đang sao lưu riêng tất cả dữ liệu rồi thay bộ mới; chỉ giữ hai tài khoản. MongoDB/proxy/website khác giữ nguyên.'
 app_stopped=true
@@ -375,10 +375,10 @@ run_reset_cli apply > "$audit_dir/reset-apply.json" 2> "$audit_dir/reset-apply.l
 run_reset_cli verify > "$audit_dir/reset-verify.json" 2> "$audit_dir/reset-verify.log" || die 'Đối chiếu sau reset chưa đạt; không khởi động app.'
 python3 - "$audit_dir/reset-apply.json" "$audit_dir/reset-verify.json" "$audit_dir/backup/bank/receipt.json" <<'PYRESETVERIFY' || die 'Receipt hoặc bộ dữ liệu sau reset không đạt; giữ app offline.'
 import json,sys
-expected={'status':'verified','bankVersion':'fresh-20261011','retainedAccounts':2,'content':306,'lessons':270,'mocks':36,'vocabulary':216,'placement':160,'privateLearningDataEmpty':True}
+expected={'status':'verified','bankVersion':'fresh-20261011-v2','retainedAccounts':2,'content':322,'lessons':270,'mocks':52,'vocabulary':216,'placement':160,'privateLearningDataEmpty':True}
 for path in sys.argv[1:3]:
  report=json.load(open(path)); assert {k:report.get(k) for k in expected}==expected
-receipt=json.load(open(sys.argv[3]));assert receipt['database']=='ielts_ai' and receipt['state']=='complete' and receipt['bankVersion']=='fresh-20261011'
+receipt=json.load(open(sys.argv[3]));assert receipt['database']=='ielts_ai' and receipt['state']=='complete' and receipt['bankVersion']=='fresh-20261011-v2'
 assert len(receipt['retainedAccountIds'])==2 and receipt['backups']
 PYRESETVERIFY
 # Starting the app may create an empty Duo path; the strict empty-learning-data
@@ -393,9 +393,9 @@ curl_domain --fail "$origin/api/health" -o "$audit_dir/health.json"
 python3 - "$audit_dir/health.json" <<'PYHEALTH'
 import json,sys
 x=json.load(open(sys.argv[1]));assert x['status']=='ok' and x['database']=='mongodb' and x['demoEnabled'] is False
-targets={'lessons':270,'mocks':36,'vocabulary':216,'placement':160}
+targets={'lessons':270,'mocks':52,'vocabulary':216,'placement':160}
 assert x.get('duoEnabled') is True and x.get('authMode')=='phone'
-assert x['bank'].get('version')=='fresh-20261011'
+assert x['bank'].get('version')=='fresh-20261011-v2'
 assert all(type(x['bank'].get(name)) is int and x['bank'][name]==count for name,count in targets.items())
 PYHEALTH
 curl_domain --fail "$origin/api/auth/me" -o "$audit_dir/auth.json"
@@ -485,6 +485,6 @@ preserve_ip_endpoint || die 'Endpoint IP cũ chưa hoạt động sau cập nh�
 verify_existing || die 'Container/cổng/cấu hình khác đã thay đổi trong lúc cập nhật.'
 printf '%s\n' "$source_commit" > "$audit_dir/source.commit"
 printf '%s\n' success > "$audit_dir/result"
-say 'HOÀN TẤT: chỉ giữ đúng hai tài khoản; bài làm/placement/lộ trình/ghi âm/từ đã lưu/phiên đăng nhập cũ đã xóa. Bộ mới có 270 bài luyện, 36 đề mô phỏng, 216 từ vựng và 160 câu đầu vào.'
+say 'HOÀN TẤT: chỉ giữ đúng hai tài khoản; bài làm/placement/lộ trình/ghi âm/từ đã lưu/phiên đăng nhập cũ đã xóa. Bộ mới có 270 bài luyện, 52 đề mô phỏng, 216 từ vựng và 160 câu đầu vào.'
 printf 'Website: %s\nImage riêng: %s\nNguồn mới: %s\nLog/backup riêng: %s\n' "$origin" "$new_image" "$source_dir" "$audit_dir"
 say 'Cần đăng nhập lại và làm kiểm tra đầu vào mới. Backup riêng giữ trên VPS để phục hồi khi có yêu cầu; MongoDB/proxy/website khác không bị thay thế. HTTPS đã kiểm tra tại server; chưa xác nhận truy cập Internet từ lệnh này.'

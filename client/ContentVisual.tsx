@@ -113,7 +113,19 @@ function SpatialVisual({ visual, id }: { visual: SpatialAsset; id: string }) {
         return <g key={`${connection.from}-${connection.to}-${index}`}><line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#657f66" strokeWidth={2.5} markerEnd={`url(#${id}-arrow)`} />{connection.label && <SvgLabel x={(x1 + x2) / 2 + 8} y={(y1 + y2) / 2 - 8} text={connection.label} />}</g>;
       })}
       {nodes.map(node => <g key={node.id}><rect x={node.x} y={node.y} width={node.width} height={node.height} rx={8} fill="#eef3e7" stroke="#a5b99b" strokeWidth={1.7} />{node.questionNumber != null ? <BlankMarker number={node.questionNumber} x={node.x + node.width / 2} y={node.y + node.height / 2} /> : <SvgLabel x={node.x + node.width / 2} y={node.y + node.height / 2 - 7.5 * (wrappedLabel(node.text || "", Math.floor(node.width / 7)).length - 1) + 4} text={node.text || ""} max={Math.max(8, Math.floor(node.width / 7))} />}</g>)}
-      {labels.map(label => label.questionNumber != null ? <BlankMarker key={label.id} number={label.questionNumber} x={label.x} y={label.y} /> : <g key={label.id}><SvgLabel x={label.x} y={label.y} text={label.text || ""} max={23} /></g>)}
+      {labels.map(label => {
+        if (label.questionNumber != null) return <BlankMarker key={label.id} number={label.questionNumber} x={label.x} y={label.y} />;
+        const area = map && label.id.includes("-label-") ? visual.areas?.find(candidate => candidate.id === label.id.replace("-label-", "-area-")) : undefined;
+        // Older map captions used a top-left inset despite the centred SVG
+        // anchor. Correct their display without changing the stored stimulus.
+        const legacyInset = area && label.x === area.x + 10 && label.y === area.y + 30;
+        const x = legacyInset ? area.x + area.width / 2 : label.x;
+        const centreY = legacyInset ? area.y + area.height / 2 : label.y;
+        const max = area ? Math.max(8, Math.floor(area.width / 7)) : 23;
+        const text = label.text || "";
+        const y = area ? centreY + 4 - 7.5 * (wrappedLabel(text, max).length - 1) : centreY;
+        return <g key={label.id}><SvgLabel x={x} y={y} text={text} max={max} /></g>;
+      })}
       {map && <g transform={`translate(${visual.width - 35}, 39)`} aria-hidden="true"><path d="M0,-15 L-6,5 L0,0 L6,5 Z" fill="#526e54" /><text x={0} y={-21} textAnchor="middle" fontSize={13} fontWeight={700} fill="#526e54">N</text></g>}
     </svg>
     {map && styles.length > 0 && <ul className="visual-legend spatial-legend" aria-label="Map legend">{styles.map(style => <li key={style}><i className={`map-key ${style}`} /><span>{style === "road" ? "Road" : style === "river" ? "River" : "Footpath"}</span></li>)}</ul>}

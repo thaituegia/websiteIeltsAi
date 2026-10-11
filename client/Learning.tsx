@@ -579,8 +579,10 @@ function ContentLibrary({ exam }: { exam: boolean }) {
 
 export function PlacementPage() {
   const { refresh } = useSession();
+  const [params, setParams] = useSearchParams();
+  const reviewId = params.get("review");
   const active = useApi<{ placement: PlacementState | null }>(
-    "/placement/active",
+    reviewId ? `/placement/${encodeURIComponent(reviewId)}` : "/placement/active",
   );
   const [placement, setPlacement] = useState<PlacementState | null>(null),
     [answer, setAnswer] = useState(""),
@@ -589,8 +591,14 @@ export function PlacementPage() {
     [listening, setListening] = useState(false);
   const cancelSpeech = useRef<(() => void) | null>(null);
   useEffect(() => {
-    if (active.data?.placement) setPlacement(active.data.placement);
-  }, [active.data]);
+    setPlacement(null);
+    setAnswer("");
+  }, [reviewId]);
+  useEffect(() => {
+    const found = active.data?.placement;
+    if (found && (!reviewId || found.id === reviewId)) setPlacement(found);
+    else if (active.data?.placement === null) setPlacement(null);
+  }, [active.data, reviewId]);
   useEffect(() => () => cancelSpeech.current?.(), []);
   async function start(mode: "quick" | "deep") {
     setBusy(true);
@@ -663,8 +671,8 @@ export function PlacementPage() {
     <div className="stack page-stack placement-page">
       <PageHeader
         eyebrow="BẮT ĐẦU TỪ CHÍNH BẠN"
-        title="Khám phá trình độ hiện tại"
-        description="Một bài đánh giá thích ứng giúp bạn tìm điểm bắt đầu phù hợp, với khoảng bất định được trình bày rõ ràng."
+        title={reviewId ? "Xem lại bài kiểm tra đầu vào" : "Khám phá trình độ hiện tại"}
+        description={reviewId ? "Đối chiếu từng câu đã làm với đáp án, giải thích và nội dung gốc." : "Một bài đánh giá thích ứng giúp bạn tìm điểm bắt đầu phù hợp, với khoảng bất định được trình bày rõ ràng."}
       />
       <DuoPlacementStatus />
       {error && <ErrorNotice message={error} />}
@@ -674,7 +682,12 @@ export function PlacementPage() {
           retry={() => void active.reload()}
         />
       )}
-      {!placement && (
+      {reviewId && (
+        <Link className="text-link" to="/history">
+          <ArrowLeft size={16} /> Quay lại lịch sử học
+        </Link>
+      )}
+      {!placement && !reviewId && (
         <>
           <section className="placement-hero">
             <div className="placement-orbit">
@@ -749,7 +762,14 @@ export function PlacementPage() {
           </div>
         </>
       )}
-      {placement?.question && (
+      {reviewId && placement?.question && (
+        <Card>
+          <h2>Bài kiểm tra chưa hoàn thành</h2>
+          <p>Đáp án được mở sau khi bạn trả lời đủ các câu hỏi.</p>
+          <Button onClick={() => setParams({})}>Tiếp tục kiểm tra</Button>
+        </Card>
+      )}
+      {placement?.question && !reviewId && (
         <Card className="placement-question">
           <div className="placement-progress">
             <span>
@@ -841,7 +861,10 @@ export function PlacementPage() {
                 Xem lộ trình của hai người
                 <ArrowRight size={17} />
               </Link>
-              <Button className="secondary" onClick={() => setPlacement(null)}>
+              <Button className="secondary" onClick={() => {
+                setPlacement(null);
+                if (reviewId) setParams({});
+              }}>
                 Làm một bài đánh giá khác
               </Button>
             </div>
@@ -1598,7 +1621,7 @@ export function LearningPage() {
               responses={responses}
               disabled={locked}
               onChange={updateResponse}
-              feedback={attempt.feedback?.answers || []}
+              feedback={submitted ? attempt.feedback?.answers || [] : []}
             />
           </Card>
         </div>
@@ -1820,7 +1843,7 @@ export function LearningPage() {
           </Button>
         </div>
       )}
-      {attempt.feedback && <FeedbackView feedback={attempt.feedback} />}
+      {submitted && attempt.feedback && <FeedbackView feedback={attempt.feedback} />}
       {!!vocabulary.length && (attempt.mode !== "exam" || submitted) && (
         <Card className="lesson-vocabulary">
           <div className="section-heading compact">
@@ -2062,6 +2085,137 @@ function QuestionInput({
   );
 }
 
+function readableAnswer(value: string): string {
+  // Paired selections are saved as JSON arrays for grading, but learners see
+  // the selected option texts rather than an internal serialization format.
+  if (!value.trim()) return "Chưa trả lời";
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+      return parsed.length ? parsed.join(" · ") : "Chưa trả lời";
+    }
+  } catch { /* Ordinary free-text responses are displayed as written. */ }
+  return value;
+}
+
+function AnswerContext({ context, id }: { context: string; id: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const regionId = `answer-context-${id}`;
+  return (
+    <div className="answer-context">
+      <Button className="secondary small" aria-expanded={expanded} aria-controls={regionId} onClick={() => setExpanded((previous) => !previous)}>
+        {expanded ? "Ẩn nội dung gốc / transcript" : "Xem nội dung gốc / transcript"}
+      </Button>
+      {expanded && <div id={regionId}>{context}</div>}
+    </div>
+  );
+}
+
+function ObjectiveAnswerReview({ answers }: { answers: Feedback["answers"] }) {
+  const [filter, setFilter] = useState<"all" | "wrong" | "unanswered">("all");
+  const unanswered = (answer: Feedback["answers"][number]) =>
+    readableAnswer(answer.response) === "Chưa trả lời";
+  const wrong = answers.filter((answer) => !answer.correct && !unanswered(answer));
+  const skipped = answers.filter(unanswered);
+  const visible = answers.filter((answer) =>
+    filter === "all" || (filter === "wrong" ? !answer.correct && !unanswered(answer) : unanswered(answer)),
+  );
+  return (
+    <Card className="answer-review-card">
+      <h3>Đáp án và bằng chứng</h3>
+      <p className="muted answer-review-intro">
+        Đáp án của toàn bộ {answers.length} câu, gồm câu đúng, câu sai và câu chưa trả lời. Mở từng câu để xem câu hỏi và lý do.
+      </p>
+      <div className="answer-review-filters row wrap" role="group" aria-label="Lọc đáp án">
+        {([
+          ["all", "Tất cả", answers.length],
+          ["wrong", "Sai", wrong.length],
+          ["unanswered", "Chưa trả lời", skipped.length],
+        ] as const).map(([value, label, count]) => (
+          <Button key={value} className={`small ${filter === value ? "" : "secondary"}`} aria-pressed={filter === value} onClick={() => setFilter(value)}>
+            {label} ({count})
+          </Button>
+        ))}
+      </div>
+      <div className="answer-review">
+        {visible.map((answer, index) => {
+          const number = answer.questionNumber ?? answers.indexOf(answer) + 1;
+          const status = unanswered(answer) ? "Chưa trả lời" : answer.correct ? "Đúng" : "Sai";
+          const correctOptions = new Set([answer.answer, ...(answer.acceptedAnswers || [])]);
+          const alternatives = (answer.acceptedAnswers || []).filter((value) => value !== answer.answer);
+          return (
+            <details key={answer.questionId} open={index === 0} data-question-number={number}>
+              <summary>
+                <span className={`answer-result-icon ${answer.correct ? "correct" : "incorrect"}`} aria-hidden="true">
+                  {answer.correct ? <Check size={14} /> : <AlertTriangle size={14} />}
+                </span>
+                <span>Câu {number}</span>
+                <span className="answer-key-summary"><b>Đáp án:</b> {readableAnswer(answer.answer)}</span>
+                <Badge className={answer.correct ? "success" : "warning"}>{status}</Badge>
+              </summary>
+              <div className="answer-review-body">
+                {answer.sectionTitle && <p className="eyebrow">{answer.sectionTitle}</p>}
+                {answer.prompt && <h4>{answer.prompt}</h4>}
+                {answer.options?.length ? (
+                  <ul className="answer-review-options" aria-label="Các phương án trả lời">
+                    {answer.options.map((option, optionIndex) => (
+                      <li key={`${optionIndex}-${option}`} className={correctOptions.has(option) ? "answer-option-correct" : ""}>
+                        <span aria-hidden="true">{String.fromCharCode(65 + optionIndex)}.</span> {option}
+                        {correctOptions.has(option) && <span className="sr-only"> — Đáp án đúng</span>}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                <div className="answer-comparison">
+                  <p><strong>Bạn trả lời:</strong> <span>{readableAnswer(answer.response)}</span></p>
+                  <p className="answer-correct-value"><strong>Đáp án đúng:</strong> <span>{readableAnswer(answer.answer)}</span></p>
+                </div>
+                {!!alternatives.length && <p><strong>Cũng chấp nhận:</strong> {alternatives.map(readableAnswer).join(" · ")}</p>}
+                <p><strong>Giải thích:</strong> {answer.explanation}</p>
+                {answer.evidence && <blockquote><span className="eyebrow">BẰNG CHỨNG TRONG BÀI</span><br />{answer.evidence}</blockquote>}
+                {answer.context && <AnswerContext context={answer.context} id={answer.questionId} />}
+                <p className="muted tiny">{answer.questionType?.replaceAll("-", " ") || answer.subskill.replaceAll("-", " ")}</p>
+              </div>
+            </details>
+          );
+        })}
+        {!visible.length && <p className="muted" role="status">Không có câu nào trong nhóm này.</p>}
+      </div>
+    </Card>
+  );
+}
+
+function ReferenceAnswerReview({ feedback }: { feedback: Feedback }) {
+  if (!feedback.referenceAnswers?.length) return null;
+  return (
+    <Card className="reference-answer-card">
+      <h3>Bài mẫu tham khảo</h3>
+      <p className="reference-answer-notice">
+        Writing và Speaking có nhiều cách trả lời phù hợp. Đây là ví dụ để đối chiếu cách triển khai ý, không phải đáp án duy nhất hay cam kết đạt một band cụ thể.
+      </p>
+      <div className="reference-answers">
+        {feedback.referenceAnswers.map((reference) => (
+          <article key={reference.sectionId} className="reference-answer" aria-label={reference.title}>
+            <h4>{reference.title}</h4>
+            {reference.sampleAnswer && <div className="reference-sample" lang="en">{reference.sampleAnswer}</div>}
+            {reference.responses?.map((response, index) => (
+              <div key={`${index}-${response.prompt}`} className="reference-response">
+                <h5>{response.prompt}</h5>
+                <p className="reference-sample" lang="en">{response.sampleAnswer}</p>
+                {response.explanation && <p><strong>Gợi ý triển khai:</strong> {response.explanation}</p>}
+              </div>
+            ))}
+            {reference.explanation && <p><strong>Cách tiếp cận:</strong> {reference.explanation}</p>}
+            {!!reference.keyPoints.length && (
+              <><h5>Điểm cần chú ý</h5><ul>{reference.keyPoints.map((point, index) => <li key={index}>{point}</li>)}</ul></>
+            )}
+          </article>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 function FeedbackView({ feedback }: { feedback: Feedback }) {
   return (
     <section className="feedback-section stack">
@@ -2243,40 +2397,8 @@ function FeedbackView({ feedback }: { feedback: Feedback }) {
           </p>
         </Card>
       )}
-      {!!feedback.answers.length && (
-        <Card>
-          <h3>Đáp án và bằng chứng</h3>
-          <div className="answer-review">
-            {feedback.answers.map((answer, index) => (
-              <details key={answer.questionId}>
-                <summary>
-                  <span
-                    className={`answer-result-icon ${answer.correct ? "correct" : "incorrect"}`}
-                  >
-                    {answer.correct ? (
-                      <Check size={14} />
-                    ) : (
-                      <AlertTriangle size={14} />
-                    )}
-                  </span>
-                  <span>Câu {index + 1}</span>
-                  <span>{answer.response || "(Chưa trả lời)"}</span>
-                  <Badge>{answer.subskill.replaceAll("-", " ")}</Badge>
-                </summary>
-                <div>
-                  <p>
-                    <strong>Đáp án:</strong> {answer.answer}
-                  </p>
-                  <p>{answer.explanation}</p>
-                  {answer.evidence && (
-                    <blockquote>{answer.evidence}</blockquote>
-                  )}
-                </div>
-              </details>
-            ))}
-          </div>
-        </Card>
-      )}
+      {!!feedback.answers.length && <ObjectiveAnswerReview answers={feedback.answers} />}
+      <ReferenceAnswerReview feedback={feedback} />
     </section>
   );
 }

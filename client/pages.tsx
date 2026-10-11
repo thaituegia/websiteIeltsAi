@@ -1366,6 +1366,10 @@ function PlacementHistory() {
                     </Badge>
                   </div>
                   <p className="muted small-text">{item.result.summary}</p>
+                  <Link className="text-link" to={`/placement?review=${encodeURIComponent(item.id)}`}>
+                    Xem lại đáp án từng câu
+                    <ArrowRight size={15} />
+                  </Link>
                 </>
               ) : (
                 <div className="row">

@@ -1229,6 +1229,126 @@
 .answer-review details > div p {
   margin: 8px 0;
 }
+.answer-review-card,
+.reference-answer-card {
+  min-width: 0;
+}
+.answer-review-intro {
+  font-size: 14px;
+  line-height: 1.8;
+}
+.answer-review-filters {
+  margin: 16px 0;
+}
+.answer-review-body h4,
+.reference-answer h4,
+.reference-answer h5 {
+  font-family: inherit;
+  color: #214b36;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.answer-review-body h4 {
+  margin: 12px 0;
+  font-size: 16px;
+}
+.answer-review-options {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.answer-review-options li {
+  padding: 8px 12px;
+  border: 1px solid #e2d7c1;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.answer-review-options .answer-option-correct {
+  background: #edf0df;
+  border-color: #8eaa77;
+  color: #214b36;
+}
+.answer-comparison {
+  padding: 6px 14px;
+  border-left: 3px solid #b95c36;
+  background: #fff6e7;
+  border-radius: 0 6px 6px 0;
+  overflow-wrap: anywhere;
+}
+.answer-correct-value {
+  color: #214b36;
+}
+.answer-context {
+  margin: 14px 0;
+}
+.answer-context > div {
+  margin-top: 12px;
+  padding: 15px;
+  background: #faf7ed;
+  border: 1px solid #e2d7c1;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.reference-answer-notice {
+  padding: 14px 16px;
+  background: #fff0dc;
+  border-left: 3px solid #b95c36;
+  border-radius: 6px;
+  color: #684e33;
+  font-size: 14px;
+  line-height: 1.85;
+}
+.reference-answers {
+  display: grid;
+  gap: 20px;
+  margin-top: 20px;
+}
+.reference-answer {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #d8c8ac;
+  border-radius: 8px;
+  background: #faf7ed;
+  color: #566950;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+.reference-answer h4 {
+  font-size: 18px;
+  margin: 0 0 14px;
+}
+.reference-answer h5 {
+  font-size: 15px;
+  margin: 16px 0 8px;
+}
+.reference-sample {
+  padding: 15px;
+  background: #fffdf5;
+  border: 1px solid #e2d7c1;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  color: #214b36;
+}
+.reference-response + .reference-response {
+  border-top: 1px solid #e2d7c1;
+  margin-top: 18px;
+}
+@media (max-width: 600px) {
+  .reference-answer {
+    padding: 13px;
+  }
+  .reference-sample,
+  .answer-context > div {
+    padding: 12px;
+    font-size: 14px;
+  }
+  .answer-review summary > span:nth-child(3) {
+    flex-basis: calc(100% - 42px);
+    margin-left: 34px;
+  }
+}
 .lesson-word-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

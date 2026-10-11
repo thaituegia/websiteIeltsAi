@@ -1,8 +1,22 @@
 # Kết quả kiểm tra
 
+## Đề mới và đáp án sau nộp — 2026-10-11
+
+Bộ `fresh-20261011-v2` có **270 bài luyện, 52 đề, 216 mục từ và 160 câu đầu vào**. Thêm 16 đề đầy đủ, bốn mỗi kỹ năng; giữ nguyên nguồn/task/key của toàn bộ 306 học liệu fresh trước đó. Đáp án khách quan sau nộp gồm câu hỏi/ngữ cảnh/lựa chọn, câu trả lời, key/biến thể, giải thích/evidence, kể cả câu bỏ trống. Placement lưu snapshot đúng câu thích ứng và mở lại từ lịch sử; lượt mới vẫn ẩn keys. Writing/Speaking có mẫu theo từng Task/Part chỉ sau nộp, kể cả khi AI offline và band `null`.
+
+Cả ba audit đạt: cấu trúc, metadata, không trùng nguồn/task/hình/số liệu với ngân hàng hiện hành và lịch sử; **1.248 keys khách quan** chấm bằng grader thực. Audit references đạt **204 nội dung, 258 Tasks/Parts và 552 mẫu trả lời Part 1/3**, kiểm tra nguồn cũ không đổi, coverage, alignment, word minimum và trùng mẫu. Đọc QA độc lập đối chiếu toàn bộ **120 bài Writing và 598 câu/bài Speaking** với câu hỏi, gạch đầu dòng, số liệu, bản đồ và quy trình. Writing Task 1 dài 158–230 từ; Task 2 300–346; Speaking Part 2 207–234. Đây là ví dụ chưa có điểm giám khảo; một số báo cáo số liệu dùng cách diễn đạt theo công thức. Không khẳng định hiệu chuẩn band hay chất lượng provider live.
+
+**345/345 Node tests đạt, không skip**, bật MongoDB/Docker thật trong namespace test riêng. Bao gồm post-submit disclosure/owner boundaries, đáp án placement theo đúng thứ tự thích ứng, active history/export không lộ key/model, SSE/offline/expiry, seed hai lần giữ private data/nội dung tự tạo/bài đã sửa/mẫu giáo viên, preserving backup fences, SHA/metadata/concurrent writes và routing helper. Legacy reset bị chặn nếu bộ fresh xuất hiện trước hoặc trong backup, kể cả khi tổng counts bị bổ sung cho giống bộ cũ.
+
+**44/44 Playwright tests đạt trong một lượt cuối duy nhất**, desktop và mobile. Bao gồm placement hoàn thành/xem lại/bắt đầu mới, tất cả/sai/bỏ trống, grouped selections dễ đọc, Writing/Speaking mẫu chỉ sau nộp với AI offline, lộ trình Duo, deadline, lưu nháp, WAV, FSRS, bảy dạng Task 1 và campaign fonts/rewards. Map caption renderer sửa vị trí/line wrapping cho nhãn legacy; native SVG bounds chứng minh captions nằm trong khu vực và blank/road/north giữ vị trí. Stored map sources không thay đổi.
+
+Database development thật được cập nhật qua CLI preserving với app offline: backup **10 collections**, receipt `complete`; thêm đúng **16 đề và references cho 196 học liệu cũ**, giữ nguyên **684 bản ghi trước đó**, bao gồm hai account cùng ID/hash. Verify backup và snapshot canonical độc lập đạt. Sau đó `scripts/cloud-setup.sh` chạy đầy đủ: frozen npm ci, official MongoDB, ba audit, strict TypeScript/Vite build và seed; snapshot sau setup/start vẫn khớp toàn bộ dữ liệu riêng và sources/keys cũ. Preview 5173/API3006 health đúng 270/52/216/160/version, Duo phone-only, demo tắt; không tạo bài làm/tiến độ giả để kiểm khởi động.
+
+**VPS chưa cập nhật trong lượt này.** HTTPS công khai vẫn báo ngân hàng legacy 544/84/744/640; TCP SSH22 từ cloud bị `ConnectionRefusedError`. `run-exam-update.sh` ghim source/SHA và chọn reset chỉ với exact known legacy theo yêu cầu xóa cũ đã được cho phép; nếu đã có fresh v1/v2 thì chọn preserving update giữ mọi lượt học. Cả hai wrapper kiểm chứng đúng project và baseline, giới hạn tài nguyên, chỉ dừng/recreate app IELTS; MongoDB/proxy/host Nginx/TLS/project khác được giữ. Cần output/receipt từ lệnh SSH thật mới xác nhận public release. Logs/backups phát triển nằm riêng trong ignored `.local/exam-upgrade`.
+
 ## Thay toàn bộ ngân hàng, giữ hai tài khoản — 2026-10-10
 
-Yêu cầu hiện hành thay thế việc giữ học liệu/lịch sử của các bản trước. Bộ `fresh-20261011` gồm **270 bài luyện, 36 đề mô phỏng, 216 mục từ và 160 câu placement** mới. Các mục bên dưới là lịch sử kiểm tra; số lượng và trạng thái triển khai cũ không mô tả bản reset này.
+Yêu cầu reset ở phiên trước thay thế việc giữ học liệu/lịch sử của các bản trước; các lượt học phát sinh sau reset phải được giữ. Bộ `fresh-20261011` gồm **270 bài luyện, 36 đề mô phỏng, 216 mục từ và 160 câu placement** mới. Các mục bên dưới là lịch sử kiểm tra; số lượng và trạng thái triển khai cũ không mô tả bản reset này.
 
 `audit:content` và `audit:fresh` đạt: kiểm tra cấu trúc, dẫn chứng, giới hạn từ, dữ liệu hình vẽ, trùng nguồn/nội dung/số liệu và chấm **928 đáp án khách quan** bằng grader thực. Reading/Listening đủ dạng câu hỏi và cấu trúc đề; Writing đủ hai tasks và bảy dạng hình; Speaking đủ ba Parts. Nội dung có nhãn AI chưa được chuyên gia thẩm định; độ khó là ước lượng.
 

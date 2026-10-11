@@ -53,6 +53,8 @@ import {
   generatePlan,
   gradeObjective,
   newScheduler,
+  objectiveAnswerContext,
+  placementAnswerReview,
   placementFeedback,
   scheduleReview,
   selectPlacementQuestion,
@@ -153,9 +155,14 @@ export function sanitizeContent(
   content: StoredContent,
   hideListening = false,
 ): ContentItem {
-  const { questions, ...base } = content;
+  const { questions, referenceAnswers: _referenceAnswers, ...base } = content;
   const clean = { ...base } as StoredContent & { _id?: string };
   delete clean._id;
+  if (_referenceAnswers?.length)
+    clean.description = clean.description.replace(
+      "No model answer is supplied.",
+      "Reference responses become available after submission.",
+    );
   return {
     ...clean,
     questions: questions.map(
@@ -175,6 +182,7 @@ export function sanitizeContent(
   };
 }
 export function summaryOf(attempt: AttemptRecord): AttemptSummary {
+  const feedback = attempt.status === "submitted" ? attempt.feedback : null;
   return {
     id: attempt.id,
     contentId: attempt.contentId,
@@ -185,10 +193,10 @@ export function summaryOf(attempt: AttemptRecord): AttemptSummary {
     startedAt: attempt.startedAt,
     submittedAt: attempt.submittedAt,
     durationSeconds: attempt.durationSeconds,
-    estimatedBand: attempt.feedback?.estimatedBand ?? null,
-    rawScore: attempt.feedback?.rawScore ?? null,
-    total: attempt.feedback?.total ?? null,
-    feedbackSource: attempt.feedback?.source ?? null,
+    estimatedBand: feedback?.estimatedBand ?? null,
+    rawScore: feedback?.rawScore ?? null,
+    total: feedback?.total ?? null,
+    feedbackSource: feedback?.source ?? null,
   };
 }
 function cardOf(card: CardRecord): VocabularyCard {
@@ -508,7 +516,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         source: "rule-based",
         createdAt: new Date(clockNow()).toISOString(),
       };
-      const feedback: Feedback =
+      const evaluated: Feedback =
         savedSpeechPending
           ? { ...emptyFeedback, summary: "Bản ghi âm đã lưu trước hạn; đang chờ dịch vụ nhận dạng và chấm AI. Chưa có đủ kết quả để xét nâng band." }
           : expired && (blankWriting || blankSpeaking)
@@ -526,6 +534,12 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
                   },
                 )
               : gradeObjective(content, latest.responses);
+      const feedback: Feedback = {
+        ...evaluated,
+        ...(content.referenceAnswers?.length
+          ? { referenceAnswers: content.referenceAnswers }
+          : {}),
+      };
       const updated = await database.attempts.findOneAndUpdate(
         { ...sourceFilter(latest), "submissionLease.token": leaseToken },
         {
@@ -595,13 +609,40 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         { projection: { _id: 1 } },
       ),
     );
+    const content = await contentOf(record.contentId);
     return {
       ...view,
+      feedback: completedAttemptFeedback(record, content),
       content: sanitizeContent(
-        await contentOf(record.contentId),
+        content,
         record.mode === "exam" && record.status !== "submitted",
       ),
       audioAvailable,
+    };
+  }
+  function completedAttemptFeedback(
+    record: AttemptRecord,
+    content: StoredContent,
+  ): Feedback | null {
+    // Status is the disclosure boundary, even if an old/corrupt draft has feedback.
+    if (record.status !== "submitted" || !record.feedback) return null;
+    const feedback = record.feedback;
+    const objective = ["reading", "listening", "grammar"].includes(content.skill);
+    const current = objective ? gradeObjective(content, record.responses) : null;
+    return {
+      ...feedback,
+      answers: objective ? content.questions.map((question, index) => {
+        const saved = feedback.answers.find((answer) => answer.questionId === question.id);
+        // Prefer the persisted key/result when available. Add context to legacy rows.
+        return saved
+          ? { ...objectiveAnswerContext(content, question), ...saved }
+          : current!.answers[index];
+      }) : feedback.answers,
+      ...(feedback.referenceAnswers?.length
+        ? { referenceAnswers: feedback.referenceAnswers }
+        : content.referenceAnswers?.length
+          ? { referenceAnswers: content.referenceAnswers }
+          : {}),
     };
   }
   async function learnerSnapshot(userId: string) {
@@ -1067,7 +1108,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
             audio = { buffer: Buffer.concat(chunks), mimetype: saved.mime };
           }
         }
-        const feedback = record.skill === "writing" ? await evaluateWriting(content, record.essays) : await evaluateSpeaking(content, record.transcript, audio);
+        const evaluated = record.skill === "writing" ? await evaluateWriting(content, record.essays) : await evaluateSpeaking(content, record.transcript, audio);
+        const feedback: Feedback = { ...evaluated, ...(content.referenceAnswers?.length ? { referenceAnswers: content.referenceAnswers } : {}) };
         const updated = await database.attempts.findOneAndUpdate(
           { _id: record.id, userId: record.userId, status: "submitted", "feedback.id": record.feedback?.id ?? null },
           { $set: { feedback, transcript: feedback.transcript ?? record.transcript } },
@@ -1510,7 +1552,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   async function placementView(
     record: PlacementRecord,
   ): Promise<PlacementState> {
-    const item = record.currentQuestionId
+    const complete = placementIsComplete(record);
+    const item = !complete && record.currentQuestionId
       ? await database.placementItems.findOne({ _id: record.currentQuestionId })
       : null;
     return {
@@ -1530,7 +1573,34 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
             ...question
           }) => question)(item)
         : null,
-      result: record.result,
+      result: complete ? await completedPlacementFeedback(record) : null,
+    };
+  }
+  function placementIsComplete(record: PlacementRecord): boolean {
+    return record.currentQuestionId === null && record.answers.length >= record.total && record.result !== null;
+  }
+  async function completedPlacementFeedback(record: PlacementRecord): Promise<Feedback | null> {
+    if (!placementIsComplete(record) || !record.result) return null;
+    const items = await database.placementItems.find({
+      _id: { $in: record.answers.map((answer) => answer.questionId) },
+    }).toArray();
+    const saved = new Map(record.result.answers.map((answer) => [answer.questionId, answer]));
+    return {
+      ...record.result,
+      // Only actually attempted questions, in their adaptive order. An existing
+      // snapshot stays usable when a later bank update changes/removes its source.
+      answers: record.answers.map((answer, index) => {
+        const snapshot = saved.get(answer.questionId) ?? answer.review;
+        if (snapshot) return { ...snapshot, response: answer.answer, questionNumber: index + 1 };
+        const item = items.find((question) => question.id === answer.questionId);
+        if (item) return placementAnswerReview(item, answer.answer, index + 1);
+        return {
+          questionId: answer.questionId, questionNumber: index + 1,
+          response: answer.answer, answer: "", correct: answer.correct,
+          explanation: "Câu hỏi cũ không còn trong ngân hàng; không thể khôi phục đáp án chính xác.",
+          evidence: "", subskill: "",
+        };
+      }),
     };
   }
   async function selectQuestion(record: PlacementRecord, theta: number) {
@@ -1626,6 +1696,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           questionId: item.id,
           answer: input.answer,
           correct: input.answer === item.answer,
+          review: placementAnswerReview(item, input.answer, record.answers.length + 1),
         },
       ];
       const usedItems = await database.placementItems
@@ -1650,6 +1721,12 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
               ...estimate,
               correct: answers.filter((answer) => answer.correct).length,
               total: answers.length,
+              answers: answers.map((answer, index) => {
+                if (answer.review) return { ...answer.review, questionNumber: index + 1 };
+                const used = usedItems.find((question) => question.id === answer.questionId);
+                if (!used) throw new ApiError(409, "Một câu hỏi đã thay đổi trong khi làm bài. Hãy tải lại trước khi kết thúc.");
+                return placementAnswerReview(used, answer.answer, index + 1);
+              }),
             })
           : null,
       };
@@ -1688,7 +1765,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         .limit(100)
         .toArray();
       response.json({
-        placements: records.map((record) => ({
+        placements: await Promise.all(records.map(async (record) => ({
           id: record._id,
           mode: record.mode,
           total: record.total,
@@ -1696,8 +1773,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           estimatedBand: record.estimatedBand,
           standardError: record.standardError,
           startedAt: record.startedAt,
-          result: record.result,
-        })),
+          result: await completedPlacementFeedback(record),
+        }))),
       });
     }),
   );
@@ -1737,7 +1814,12 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       response.json({
         exportedAt: new Date(clockNow()).toISOString(),
         profile: profileOf(learnerOf(request)),
-        attempts: attempts.map(withoutStorage),
+        attempts: await Promise.all(attempts.map(async (record) => ({
+          ...withoutStorage(record),
+          feedback: record.status === "submitted"
+            ? completedAttemptFeedback(record, await contentOf(record.contentId))
+            : null,
+        }))),
         cards: cards.map(cardOf),
         placements: await Promise.all(placements.map(placementView)),
         plans: plans.map(planOf),

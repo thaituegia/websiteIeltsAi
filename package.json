@@ -24,6 +24,8 @@
     "test": "tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
     "audit:fresh": "tsx scripts/audit-fresh-bank.ts",
+    "audit:references": "tsx scripts/audit-exam-references.ts",
+    "bank:upgrade:inspect": "tsx server/bank-upgrade-cli.ts inspect",
     "bank:inspect": "tsx server/bank-reset-cli.ts inspect",
     "bank:verify": "tsx server/bank-reset-cli.ts verify"
   },
