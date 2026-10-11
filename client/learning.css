@@ -2483,3 +2483,9 @@
 .visual-expanded { overflow-x: auto; max-width: 100%; }
 .visual-expanded > .content-visual { min-width: 640px; }
 .visual-pan-hint { margin: 0 0 13px; }
+.exam-integrity-rules { display: flex; gap: 12px; padding: 18px; border: 1px solid var(--warning, #b77525); border-radius: 14px; background: #fff5df; color: #594216; }
+.exam-integrity-rules > svg { flex-shrink: 0; margin-top: 2px; }
+.exam-integrity-rules p { margin: 7px 0 0; }
+.exam-integrity-rules.compact { padding: 14px 18px; }
+.exam-integrity-invalidated { border-color: #b6503b; background: #fff2eb; }
+.exam-integrity-invalidated > svg { color: #b6503b; }

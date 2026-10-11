@@ -42,6 +42,7 @@ import {
 } from "./pages";
 import { LibraryPage, ExamPage, PlacementPage, LearningPage } from "./Learning";
 import { DuoPlanPage, DuoAssessmentPage, DuoRoomPage } from "./Duo";
+import { initializeExamIntegrity, observeExamRoute } from "./ExamIntegrity";
 
 const links = [
   ["/dashboard", "Tổng quan", LayoutDashboard],
@@ -61,6 +62,12 @@ export default function App() {
   const [error, setError] = useState("");
   const [menu, setMenu] = useState(false);
   const location = useLocation();
+  useEffect(() => {
+    observeExamRoute(`${location.pathname}${location.search}`);
+  }, [location.pathname, location.search]);
+  useEffect(() => {
+    initializeExamIntegrity(user?.id || "");
+  }, [user?.id]);
   useEffect(() => {
     setMenu(false);
     window.scrollTo({ top: 0 });

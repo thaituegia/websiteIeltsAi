@@ -43,6 +43,7 @@ import {
   bandLabel,
 } from "./components";
 import "./duo.css";
+import { ExamRules, ExamStartDialog, InvalidatedExam, isExamInvalidated, useExamIntegrity, connectSharedRoom, updateSharedRoom, useSharedRoomIntegrity } from "./ExamIntegrity";
 
 const message = (cause: unknown) =>
   cause instanceof Error
@@ -372,11 +373,13 @@ export function DuoPlacementStatus() {
   );
 }
 export function DuoPlanPage() {
+  const { health } = useSession();
   const state = useDuo();
   const navigate = useNavigate();
   const [selected, setSelected] = useState<number | null>(null),
     [busy, setBusy] = useState(""),
     [actionError, setError] = useState("");
+  const [startGateRules, setStartGateRules] = useState<DuoGateView | null>(null);
   const duo = state.data?.duo;
   const previousBand = useRef<number | null>(null);
   useEffect(() => {
@@ -403,7 +406,8 @@ export function DuoPlanPage() {
       setBusy("");
     }
   }
-  async function startGate(gate: DuoGateView) {
+  async function startGate(gate: DuoGateView, accepted = false) {
+    if (health?.examIntegrityEnabled !== false && !accepted) { setStartGateRules(gate); return; }
     setBusy(gate.id);
     setError("");
     try {
@@ -412,6 +416,7 @@ export function DuoPlanPage() {
         { method: "POST" },
       );
       navigate(`/duo/assessments/${result.assessment.id}`);
+      setStartGateRules(null);
     } catch (cause) {
       setError(message(cause));
     } finally {
@@ -670,6 +675,7 @@ export function DuoPlanPage() {
           </Card>
         </>
       )}
+      {startGateRules && <ExamStartDialog busy={!!busy} onClose={() => !busy && setStartGateRules(null)} onStart={() => void startGate(startGateRules, true)} />}
     </div>
   );
 }
@@ -812,13 +818,19 @@ function useRoomHeartbeat(
   roomId: string | null,
   enabled = true,
   onError?: (message: string) => void,
+  assessmentId?: string,
+  attemptId?: string,
 ) {
+  const { health } = useSession();
   const errorRef = useRef(onError);
   errorRef.current = onError;
   useEffect(() => {
-    if (!roomId || !enabled) return;
+    if (!roomId) return;
+    if (health?.examIntegrityEnabled !== false) { connectSharedRoom(roomId, assessmentId, attemptId); return; }
+    if (!enabled) return;
     let cancelled = false;
     async function beat() {
+      if (document.visibilityState === "hidden") return;
       try {
         await api(`/duo/rooms/${encodeURIComponent(roomId!)}/heartbeat`, {
           method: "POST",
@@ -833,11 +845,12 @@ function useRoomHeartbeat(
       cancelled = true;
       clearInterval(timer);
     };
-  }, [roomId, enabled]);
+  }, [roomId, enabled, health?.examIntegrityEnabled, assessmentId, attemptId]);
 }
 export function DuoRoomPage() {
   const { roomId = "" } = useParams();
   const navigate = useNavigate();
+  const { health } = useSession();
   const state = usePolling<{ room: DuoRoomView }>(
     `/duo/rooms/${encodeURIComponent(roomId)}`,
     3000,
@@ -847,10 +860,16 @@ export function DuoRoomPage() {
     [error, setError] = useState(""),
     [companion, setCompanion] = useState(false),
     [tick, setTick] = useState(Date.now());
+  const [readyRules, setReadyRules] = useState(false);
   const started = useRef(false),
     joined = useRef("");
   const room = state.data?.room,
     duo = duoState.data?.duo;
+  const roomIntegrity = useSharedRoomIntegrity(roomId);
+  useEffect(() => {
+    if (room && health?.examIntegrityEnabled !== false)
+      updateSharedRoom(room, duo ? room.members[duo.role].assessmentId || undefined : undefined);
+  }, [room, duo?.role, health?.examIntegrityEnabled]);
   useEffect(() => {
     if (!roomId || joined.current === roomId) return;
     joined.current = roomId;
@@ -867,7 +886,7 @@ export function DuoRoomPage() {
   }, [roomId]);
   useRoomHeartbeat(
     roomId,
-    !!room && !["completed", "cancelled"].includes(room.status),
+    !!room && !["completed", "cancelled", "invalidated"].includes(room.status),
     setError,
   );
   const nowOffset = room ? new Date(room.serverNow).getTime() - Date.now() : 0;
@@ -899,6 +918,8 @@ export function DuoRoomPage() {
         companion: boolean;
       }>(`/duo/rooms/${encodeURIComponent(roomId)}/start`, { method: "POST" });
       state.setData({ room: result.room });
+      if (health?.examIntegrityEnabled !== false)
+        updateSharedRoom(result.room, result.assessment?.id, undefined, false, true);
       if (result.assessment && !result.companion)
         navigate(`/duo/assessments/${result.assessment.id}`);
     } catch (cause) {
@@ -916,16 +937,18 @@ export function DuoRoomPage() {
     )
       void begin();
   }, [room?.status, remaining, error]);
-  async function ready(value: boolean) {
+  async function ready(value: boolean, accepted = false) {
+    if (value && health?.examIntegrityEnabled !== false && !accepted) { setReadyRules(true); return; }
     setBusy(true);
     setError("");
     try {
-      state.setData(
-        await api<{ room: DuoRoomView }>(
+      const result = await api<{ room: DuoRoomView }>(
           `/duo/rooms/${encodeURIComponent(roomId)}/ready`,
           { method: "POST", body: json({ ready: value, companion }) },
-        ),
-      );
+        );
+      if (health?.examIntegrityEnabled !== false) updateSharedRoom(result.room, undefined, undefined, false, true);
+      state.setData(result);
+      setReadyRules(false);
     } catch (cause) {
       setError(message(cause));
     } finally {
@@ -935,9 +958,10 @@ export function DuoRoomPage() {
   async function leave() {
     setBusy(true);
     try {
-      await api(`/duo/rooms/${encodeURIComponent(roomId)}/leave`, {
+      const result = await api<{ room: DuoRoomView }>(`/duo/rooms/${encodeURIComponent(roomId)}/leave`, {
         method: "POST",
       });
+      if (health?.examIntegrityEnabled !== false) updateSharedRoom(result.room, undefined, undefined, true);
       navigate("/plan");
     } catch (cause) {
       setError(message(cause));
@@ -957,6 +981,8 @@ export function DuoRoomPage() {
       />
     );
   const mine = room.members[duo.role];
+  if (room.status === "invalidated" || isExamInvalidated(room) || roomIntegrity.invalidated)
+    return <div className="stack page-stack duo-room"><InvalidatedExam href="/plan" /></div>;
   const retained =
     duo.bands.find((band) => band.band === room.band)?.promotionResults[
       duo.role
@@ -968,6 +994,7 @@ export function DuoRoomPage() {
         title={`Phòng thi nâng band ${room.band.toFixed(1)}`}
         description="Hai người vào phòng, xác nhận sẵn sàng rồi cùng bắt đầu lượt thử thách nâng band."
       />
+      {roomIntegrity.requiresPresence && <ExamRules compact />}
       {(error || state.error) && (
         <ErrorNotice
           message={error || state.error}
@@ -1084,8 +1111,7 @@ export function DuoRoomPage() {
               timeStyle: "medium",
               timeZone: "Asia/Bangkok",
             }).format(new Date(room.deadlineAt))}
-            . Mất kết nối? Đăng nhập lại và tiếp tục trước hạn; thời gian không
-            được đặt lại.
+            . {health?.examIntegrityEnabled !== false ? "Giữ nguyên trang thi; rời hoặc tải lại trang sẽ hủy lượt thi." : "Mất kết nối? Đăng nhập lại và tiếp tục trước hạn; thời gian không được đặt lại."}
           </p>
         )}
         {["completed", "cancelled"].includes(room.status) && (
@@ -1105,9 +1131,10 @@ export function DuoRoomPage() {
           {room.status === "in-progress" ? "Rời phòng" : "Quay lại lộ trình"}
         </Button>
         <span className="muted tiny">
-          Bản nháp và kết quả đã nộp vẫn được giữ.
+          {health?.examIntegrityEnabled !== false && room.status === "in-progress" ? "Rời phiên thi sẽ hủy lượt đang làm của cả hai." : "Kết quả đã hoàn thành được giữ trong lịch sử."}
         </span>
       </div>
+      {readyRules && <ExamStartDialog busy={busy} onClose={() => !busy && setReadyRules(false)} onStart={() => void ready(true, true)} />}
     </div>
   );
 }
@@ -1122,12 +1149,20 @@ export function DuoAssessmentPage() {
   const [busy, setBusy] = useState(""),
     [error, setError] = useState("");
   const assessment = state.data?.assessment;
+  const integrity = useExamIntegrity("assessment", assessment?.id,
+    health?.examIntegrityEnabled !== false && assessment?.status === "in-progress" && !isExamInvalidated(assessment), undefined,
+    !!assessment && assessment.status !== "in-progress" && !isExamInvalidated(assessment));
+  const invalidated = isExamInvalidated(assessment) || integrity.invalidated;
+  const roomIntegrity = useSharedRoomIntegrity(assessment?.roomId, assessmentId);
+  const grading = integrity.session?.phase === "grading";
   useRoomHeartbeat(
     assessment?.roomId ?? null,
     assessment?.status === "in-progress" || assessment?.status === "pending-ai",
     setError,
+    assessmentId,
   );
   async function start(contentId: string, attemptId: string | null) {
+    if (invalidated || roomIntegrity.invalidated || (assessment?.status === "in-progress" && !integrity.ready)) return;
     if (attemptId)
       return navigate(
         `/learn/${attemptId}?duoAssessment=${encodeURIComponent(assessmentId)}`,
@@ -1171,6 +1206,7 @@ export function DuoAssessmentPage() {
         retry={() => void state.reload()}
       />
     );
+  if (invalidated || roomIntegrity.invalidated) return <div className="stack page-stack duo-assessment"><InvalidatedExam href="/plan" /></div>;
   const active = assessment.status === "in-progress";
   const canStart = (index: number) =>
     new Date(assessment.parts[index].startsAt).getTime() <=
@@ -1191,6 +1227,9 @@ export function DuoAssessmentPage() {
         }
       />
       {(error || state.error) && <ErrorNotice message={error || state.error} />}
+      {(roomIntegrity.requiresPresence || (active && !grading)) && health?.examIntegrityEnabled !== false && <ExamRules compact />}
+      {active && grading && <div className="notice" role="status"><Clock3 size={20} /><span>Đã gửi các phần thi, đang chờ máy chủ chấm. Kết quả sẽ tự cập nhật.</span></div>}
+      {active && integrity.error && <ErrorNotice message={integrity.error} retry={() => void integrity.retry()} />}
       <Card className="duo-assessment-summary">
         <ResultBadge status={assessment.status} />
         <p>
@@ -1250,6 +1289,7 @@ export function DuoAssessmentPage() {
               className="secondary small"
               disabled={
                 !!busy ||
+                (active && !integrity.ready) ||
                 (!active && !part.attemptId) ||
                 (!part.attemptId && !canStart(index))
               }
@@ -1328,6 +1368,8 @@ export function DuoAttemptContext({ attempt }: { attempt: Attempt }) {
     assessment.data?.assessment.roomId ?? null,
     attempt.status === "in-progress",
     setError,
+    assessmentId || undefined,
+    attempt.id,
   );
   async function complete() {
     if (!lessonId) return;

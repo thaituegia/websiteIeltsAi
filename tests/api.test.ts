@@ -87,6 +87,8 @@ test(
     async function start(production = false): Promise<void> {
       server = createApp(database, {
         production,
+        // Legacy API/resume fixtures omit monitoring; dedicated native/browser integrity suites cover strict policy.
+        examIntegrityEnabled: false,
         duoEnabled: false,
         demoEnabled: true,
         maxLearners: 2,

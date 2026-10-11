@@ -1,4 +1,5 @@
 import type { Attempt, ContentSection } from "../shared/types";
+import { examHeaders } from "./examTransport";
 
 export interface RecordingSession {
   stop: () => Promise<Blob>;
@@ -186,7 +187,7 @@ export async function submitSpeaking(
     {
       method: "POST",
       credentials: "include",
-      headers: { Accept: "text/event-stream" },
+      headers: { Accept: "text/event-stream", ...examHeaders() },
       body,
     },
   );

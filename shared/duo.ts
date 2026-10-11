@@ -68,6 +68,9 @@ export interface DuoAssessmentView {
   deadlineAt: string;
   createdAt: string;
   completedAt: string | null;
+  invalidatedAt?: string;
+  integrityReason?: string;
+  integrity?: { sessionId?: string; status: "active" | "invalidated" | "completed"; reason?: string; replacementResourceId?: string };
   serverNow: string;
 }
 export interface DuoRoomMember {
@@ -81,13 +84,18 @@ export interface DuoRoomMember {
 export interface DuoRoomView {
   id: string;
   band: number;
-  status: "waiting" | "countdown" | "in-progress" | "completed" | "cancelled";
+  status: "waiting" | "countdown" | "in-progress" | "completed" | "cancelled" | "invalidated";
   members: Record<DuoRole, DuoRoomMember>;
   serverNow: string;
   startsAt: string | null;
   deadlineAt: string | null;
   countdownSeconds: number;
   presenceTimeoutSeconds: number;
+  /** True while a protected shared sitting still requires both documents. */
+  requiresPresence?: boolean;
+  invalidatedAt?: string;
+  integrityReason?: string;
+  integrity?: { sessionId?: string; status: "active" | "invalidated" | "completed"; reason?: string; replacementResourceId?: string };
 }
 export interface DuoBandView {
   band: number;

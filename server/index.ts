@@ -36,7 +36,8 @@ const duoConfig = duoEnabled ? {
 const database = await connectDatabase();
 await seedDatabase(database);
 if (duoCredentials) await provisionDuoAccounts(database, duoCredentials);
-const app = createApp(database, { duoEnabled, duoCredentials, duo: duoConfig });
+const app = createApp(database, { duoEnabled, duoCredentials, duo: duoConfig,
+  examIntegrityEnabled: process.env.NODE_ENV !== "test" || process.env.EXAM_INTEGRITY_ENABLED === "true" });
 const server = app.listen(port, "0.0.0.0", () =>
   console.log(`IELTS AI API ready on port ${port}; MongoDB connected`),
 );

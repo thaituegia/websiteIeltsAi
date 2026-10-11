@@ -25,6 +25,9 @@ export interface DuoBrowserServer {
   database: Database;
   advance: (milliseconds: number) => void;
 }
+interface DuoBrowserOptions {
+  integrityEnabled?: boolean;
+}
 // Synthetic credentials only. This test never loads the deployment credentials.
 export const duoAccounts = [
   {
@@ -40,7 +43,9 @@ export const duoAccounts = [
     password: "synthetic-second-password",
   },
 ] as const;
-export const test = base.extend<{ duoServer: DuoBrowserServer }>({
+export const test = base.extend<DuoBrowserOptions & { duoServer: DuoBrowserServer }>({
+  // Historical resume fixtures omit monitoring; dedicated native/browser integrity suites enable strict policy.
+  integrityEnabled: [false, { option: true }],
   page: async ({ browser, duoServer, viewport, isMobile, hasTouch }, use) => {
     const context = await browser.newContext({
       baseURL: duoServer.url,
@@ -58,7 +63,7 @@ export const test = base.extend<{ duoServer: DuoBrowserServer }>({
       await context.close();
     }
   },
-  duoServer: async ({}, use) => {
+  duoServer: async ({ integrityEnabled }, use) => {
     const name = `ielts_duo_e2e_${Date.now()}_${randomUUID().replaceAll("-", "")}`;
     if (!/^ielts_duo_e2e_\d+_[a-f0-9]{32}$/.test(name))
       throw new Error("Unsafe Duo E2E database name");
@@ -84,6 +89,7 @@ export const test = base.extend<{ duoServer: DuoBrowserServer }>({
         duoEnabled: true,
         duoCredentials: settings,
         production: false,
+        examIntegrityEnabled: integrityEnabled ?? false,
         demoEnabled: false,
         serveClient: true,
         duo: {
@@ -108,7 +114,7 @@ export const test = base.extend<{ duoServer: DuoBrowserServer }>({
       });
     } finally {
       if (server) {
-        server.closeAllConnections();
+        // Finish page-exit beacons before closing their isolated database client.
         await new Promise<void>((resolve) => server!.close(() => resolve()));
       }
       if (!/^ielts_duo_e2e_\d+_[a-f0-9]{32}$/.test(database.db.databaseName))

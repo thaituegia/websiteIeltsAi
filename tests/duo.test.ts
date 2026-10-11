@@ -618,7 +618,7 @@ test(
 );
 
 test(
-  "Duo promotion: neither single join nor single ready starts, expired presence cancels, rejoin creates synchronized sections",
+  "Duo promotion: both learners must be ready, expired presence resets, and leaving an active room invalidates synchronized sections",
   { timeout: 30_000 },
   async () => {
     const f = await fixture({ sessionsPerBand: 5 });
@@ -691,17 +691,21 @@ test(
         }),
         /chưa đến giờ/,
       );
-      await f.request("wife", `/api/duo/rooms/${room.id}/leave`, {});
-      await f.request("wife", `/api/duo/rooms/${room.id}/join`, {});
-      const rejoin = (
-        await f.request<{ assessment: DuoAssessmentView }>(
-          "wife",
-          `/api/duo/rooms/${room.id}/start`,
-          {},
-        )
-      ).assessment;
-      assert.equal(rejoin.id, wife.id);
-      assert.equal(rejoin.deadlineAt, wife.deadlineAt);
+      const left = (
+        await f.request<{ room: DuoRoomView }>("wife", `/api/duo/rooms/${room.id}/leave`, {})
+      ).room;
+      assert.equal(left.status, "invalidated");
+      assert.ok(left.invalidatedAt);
+      for (const role of ROLES) {
+        await f.request(role, `/api/duo/rooms/${room.id}/join`, {}, 409);
+        await f.request(role, `/api/duo/rooms/${room.id}/start`, {}, 409);
+        const invalidated = (
+          await f.request<{ assessment: DuoAssessmentView }>(role, `/api/duo/assessments/${role === "husband" ? husband.id : wife.id}`)
+        ).assessment;
+        assert.equal(invalidated.status, "failed");
+        assert.ok(invalidated.invalidatedAt);
+        assert.equal(invalidated.integrity?.status, "invalidated");
+      }
     } finally {
       await f.close();
     }

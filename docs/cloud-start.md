@@ -10,9 +10,9 @@ bash /workspace/websiteIeltsAi/scripts/cloud-setup.sh
 
 Script yêu cầu Node.js 24+, cài dependency đúng lockfile với cache `/workspace/.npm-cache`, start MongoDB Docker chính thức khi dùng URI local, audit nội dung/bộ mới/bài mẫu, build frontend và seed. URI MongoDB bên ngoài và `.env` private được giữ; không in secrets. Seed **chỉ thêm ID mới chưa có**, giữ dữ liệu học của bộ hiện hành. Nếu còn ID seed cũ, startup dừng và yêu cầu công cụ reset riêng; setup thường không tự xóa database. Xem [bank-reset.md](bank-reset.md) cho yêu cầu reset đã được người dùng cho phép.
 
-Bộ seed hiện tại **fresh-20261011-v2** gồm **270 lessons, 52 mocks, 216 vocabulary, 160 placement**. Health báo MongoDB actual counts, có thể khác manifest nếu đã có nội dung riêng. Structural audits không chứng minh học liệu đã được chuyên gia IELTS hiệu chuẩn.
+Bộ seed hiện tại **fresh-20261011-v3** gồm **810 lessons, 156 mocks, 648 vocabulary, 480 placement**. Health báo MongoDB actual counts, có thể khác manifest nếu đã có nội dung riêng hoặc đề thay thế sau lượt bị hủy. Structural audits không chứng minh học liệu đã được chuyên gia IELTS hiệu chuẩn.
 
-Bản cập nhật thêm 16 đề mới và mẫu sau nộp cho mọi Writing/Speaking Task/Part, giữ toàn bộ học liệu/tài khoản/tiến độ của bộ fresh đã dùng. [exam-upgrade.md](exam-upgrade.md) mô tả seed và công cụ cập nhật giữ dữ liệu. Không lặp lại reset của phiên trước khi startup.
+Bản cập nhật tăng ngân hàng lên ba lần bộ v2 và giữ mẫu sau nộp cho mọi Writing/Speaking Task/Part, giữ toàn bộ học liệu/tài khoản/tiến độ của bộ fresh đã dùng. [exam-upgrade.md](exam-upgrade.md) mô tả seed và công cụ cập nhật giữ dữ liệu. Không lặp lại reset của phiên trước khi startup.
 
 Mỗi task cloud đã chạy trong môi trường tách riêng. Làm trực tiếp trong checkout được chọn; chỉ tạo worktree nếu người dùng yêu cầu.
 
@@ -29,12 +29,18 @@ Startup xác minh cấu hình trước khi kết nối/seed; thiếu cấu hình
 ```sh
 cd /workspace/websiteIeltsAi
 npm run mongo:start
-PORT=3006 API_PORT=3006 WEB_PORT=5173 npm run dev
+NODE_USE_ENV_PROXY=1 PORT=3006 API_PORT=3006 WEB_PORT=5173 npm run dev
 ```
 
 Cấu hình cloud dùng API 3006, Vite 5173 (mặc định project API 3001); bỏ helper nếu dùng MongoDB bên ngoài. Proxy giữ cookie và Origin cùng phía trình duyệt. `/api/health` qua Vite phải trả `status:ok`, `database:mongodb`, `duoEnabled:true`, `authMode:phone`, `demoEnabled:false` và counts thực. Provider flags chỉ là trạng thái cấu hình.
 
 Cả hai có thể mở bài/đề thường riêng. Lộ trình chung chỉ tạo sau hai placements, bắt đầu từ band thấp hơn; điểm cá nhân không ghi đè band chung. Gate mặc định 5 buổi, có thể 10; hai người pass riêng mới mở chặng sau. Thi nâng band cần cả hai join/present/Ready. Kết quả đạt được bảo lưu và có Companion cho retake; backend đổi band chung đồng thời, trần 8.0. Cookie sessions/drafts/cards/placements/recordings và Duo receipts nằm trong MongoDB, không seed dữ liệu học giả.
+
+## Quy tắc bài thi
+
+Test đầu vào, chế độ thi, Duo Gate và thi nâng band dùng giám sát mặc định. Rời trang, chuyển tab, tải lại hoặc mở thêm trang cùng tài khoản hủy lượt đang làm và yêu cầu học liệu khác. Hủy một lượt trong phòng nâng band hủy lượt hiện tại của cả hai; lịch sử đã hoàn thành trước phòng đó được giữ. Bài luyện tập thường không giám sát và vẫn lưu/tiếp tục được.
+
+Heartbeat duy trì lease 25 giây trên server. Bài đơn lẻ đã được server nhận để chấm cuối cùng có lease xử lý 20 phút. Trong phòng chung, cả hai vẫn cần ở lại khi còn người đang trả lời; khi server đã nhận phần nộp cuối của tất cả người thi thì được rời trang trong lúc chờ AI. Người đồng hành cũng phải giữ hiện diện trước thời điểm đó. Rời phòng trước khi bắt đầu chỉ bỏ Ready và trở lại chờ, không hủy một đề chưa mở. Trình duyệt chỉ báo được trang bị ẩn/rời trang và trang cùng ứng dụng; không thể chặn hoặc biết mọi tab/chương trình khác. Hộp quyền microphone không hủy bài nếu trang vẫn hiển thị.
 
 ## Validation
 
@@ -54,7 +60,7 @@ Kết quả cụ thể/giới hạn phải đọc [validation.md](validation.md)
 
 ## Providers và hosting
 
-Luyện thường, Gate khách quan và lưu bài hoạt động không cần provider. OpenAI chấm Writing và phản hồi ngôn ngữ/STT, Azure đo âm học, ElevenLabs tạo nguồn nghe; tất cả là credentials phía server. Speaking promotion cần âm thanh và đánh giá âm học hợp lệ, không chỉ OpenAI text. Writing/Speaking chưa có band hợp lệ tiếp tục `pending-ai` và chưa nâng band; regrade dùng lại bài/bản ghi của owner sau khi provider sẵn sàng.
+Luyện thường, Gate khách quan và lưu bài hoạt động không cần provider. OpenAI chấm Writing bằng `gpt-4o`, nhận dạng bằng `whisper-1` và chấm Speaking trực tiếp từ WAV bằng `gpt-audio`; Azure/ElevenLabs là lựa chọn bổ sung. Tất cả credentials nằm phía server. Speaking promotion cần âm thanh và đánh giá âm học hợp lệ; chỉ có transcript thì không xác định được phát âm/full band. Writing/Speaking chưa có band hợp lệ tiếp tục `pending-ai` và chưa nâng band; regrade dùng lại bài/bản ghi của owner sau khi provider sẵn sàng.
 
 Trong cloud secrets dùng `IELTS_OPENAI_API_KEY`; `OPENAI_API_KEY` là alias local. Azure cần region đã chọn và hostname speech đúng trong network policy; MongoDB ngoài cần hostname/mạng thực. Không tự đặt region, voice ID, URI hay key giả.
 

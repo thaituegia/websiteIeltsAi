@@ -34,7 +34,8 @@ test("real Duo HTTP: fixed identities, independent practice, owned graded proof 
     ] });
     await provisionDuoAccounts(database, settings);
     let offset = 0;
-    server = createApp(database, { duoEnabled: true, duoCredentials: settings, production: false, serveClient: false, duo: { sessionsPerBand: 10, gateInterval: 5, lessonKinds: ["grammar"], countdownSeconds: 1, now: () => Date.now() + offset } }).listen(0, "127.0.0.1");
+    // Legacy API/resume fixtures omit monitoring; dedicated native/browser integrity suites cover strict policy.
+    server = createApp(database, { duoEnabled: true, duoCredentials: settings, production: false, serveClient: false, examIntegrityEnabled: false, duo: { sessionsPerBand: 10, gateInterval: 5, lessonKinds: ["grammar"], countdownSeconds: 1, now: () => Date.now() + offset } }).listen(0, "127.0.0.1");
     await once(server, "listening");
     const address = server.address(); assert.ok(address && typeof address !== "string");
     const origin = `http://127.0.0.1:${address.port}`;

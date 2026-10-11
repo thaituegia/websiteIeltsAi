@@ -98,7 +98,8 @@ test("native Mongo HTTP: completed reviews are complete, private, persisted and 
       { role: "wife", name: "Synthetic Review B", phone: "0390000032", passwordHash: await hashPassword("synthetic-review-password-b") },
     ] });
     await provisionDuoAccounts(database, credentials);
-    server = createApp(database, { production: false, serveClient: false, duoEnabled: true, duoCredentials: credentials, duo: { now: () => now } }).listen(0, "127.0.0.1");
+    // Legacy API/resume fixtures omit monitoring; dedicated native/browser integrity suites cover strict policy.
+    server = createApp(database, { production: false, serveClient: false, examIntegrityEnabled: false, duoEnabled: true, duoCredentials: credentials, duo: { now: () => now } }).listen(0, "127.0.0.1");
     await once(server, "listening"); const address = server.address(); assert.ok(address && typeof address !== "string"); origin = `http://127.0.0.1:${address.port}`;
     await request("a", "POST", "/auth/login", { phone: credentials.accounts[0].phone, password: "synthetic-review-password-a" });
     await request("b", "POST", "/auth/login", { phone: credentials.accounts[1].phone, password: "synthetic-review-password-b" });

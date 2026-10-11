@@ -40,6 +40,10 @@ export interface AttemptRecord
   userId: string;
   listeningPlayed?: boolean;
   duoAssessmentId?: string;
+  invalidatedAt?: string;
+  integrityReason?: string;
+  replacementContentId?: string;
+  rootContentId?: string;
 }
 export interface CardRecord extends VocabularyCard {
   _id: string;
@@ -65,7 +69,12 @@ export interface PlacementRecord {
   startedAt: string;
   deadlineAt?: string;
   completedAt?: string;
-  completionReason?: "answered" | "deadline";
+  completionReason?: "answered" | "deadline" | "invalidated";
+  integrity?: import("../shared/exam-integrity").ExamIntegrityState;
+  invalidatedAt?: string;
+  integrityReason?: string;
+  invalidatedQuestionIds?: string[];
+  excludedQuestionIds?: string[];
   draftAnswer?: { questionId: string; answer: string } | null;
 }
 export interface PlanRecord extends StudyPlan {

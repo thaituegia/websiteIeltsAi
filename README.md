@@ -30,11 +30,11 @@ Mở `http://localhost:5173`; API dùng cổng 3001. `PORT` đổi cổng API, `
 
 | Phần | Hành vi |
 | --- | --- |
-| Placement | Quick 15 câu/20 phút hoặc Deep 30 câu/40 phút Reading/Listening thích ứng; mỗi người làm riêng. Lựa chọn được tự lưu, reload không đặt lại đồng hồ; hết giờ mở đáp án các câu đã gặp, dưới 5 câu trả lời chưa tạo band hay lộ trình. Chỉ tạo lộ trình khi cả hai hoàn thành; band bắt đầu dùng **MIN**, không lấy trung bình. Lộ trình có các bậc 3.0–8.0, mỗi bậc 0.5. |
+| Placement | Quick 15 câu/20 phút hoặc Deep 30 câu/40 phút Reading/Listening thích ứng; mỗi người làm riêng. Lựa chọn được tự lưu, deadline do server giữ; rời hoặc tải lại trang hủy lượt đang làm. Hết giờ mở đáp án các câu đã gặp, dưới 5 câu trả lời chưa tạo band hay lộ trình. Chỉ tạo lộ trình khi cả hai hoàn thành hợp lệ; band bắt đầu dùng **MIN**, không lấy trung bình. Lộ trình có các bậc 3.0–8.0, mỗi bậc 0.5. |
 | Band cá nhân | Giữ kết quả đầu vào và ước lượng cá nhân riêng. Làm lại placement hoặc luyện thêm không đặt lại hay tự nâng band chung. |
 | Buổi học | Mặc định 20 buổi mỗi band; có cấu hình số buổi theo band. Cả hai cùng danh sách nhưng hoàn thành theo thời gian riêng; backend yêu cầu bằng chứng bài đã nộp của đúng người. |
 | Duo Gate | Mặc định sau mỗi 5 buổi, có thể cấu hình 10. Cả hai hoàn thành chặng học trước Gate, rồi làm kiểm tra riêng. Hai kết quả đạt mới mở chặng sau; kết quả đạt của người trước được giữ khi người kia thi lại. |
-| Thi nâng band | Mở sau khi cả hai hoàn thành buổi học và tất cả Gate. Cả hai join, đang có mặt và Ready mới đếm ngược. Các kỹ năng dùng lịch/hạn nộp chung trên server; mất kết nối và tải lại không đặt lại thời gian. |
+| Thi nâng band | Mở sau khi cả hai hoàn thành buổi học và tất cả Gate. Cả hai join, đang có mặt và Ready mới đếm ngược; rời trong lúc chuẩn bị sẽ bỏ Ready/hủy đếm ngược và quay về chờ. Các kỹ năng dùng lịch/hạn nộp chung trên server; khi đang thi, một người rời/tải lại trang hoặc mở một trang khác của website này đã xác thực bằng cùng tài khoản sẽ hủy lượt hiện tại của cả hai. Companion cũng phải giữ sự hiện diện trong phòng. |
 | Kết quả nâng band | Mỗi người được chấm riêng. Chỉ khi cả hai đạt, backend đổi band chung đồng thời bằng cập nhật có kiểm tra revision; không lấy trung bình hai kết quả. Mục tiêu cuối là 8.0. |
 | Thi lại | Bảo lưu kết quả đạt. Người đã đạt có thể vào phòng với vai trò Companion để đồng hành khi người kia thi lại; chế độ strict có thể yêu cầu cả hai thi lại. |
 | Ôn tập | Ôn lại band đã mở và mở bất kỳ bài/đề thường trong kho mà không cần người kia online. Điểm luyện riêng không bỏ qua Duo Gate hoặc nâng band chung. |
@@ -50,12 +50,22 @@ Mức đạt Gate mặc định 70% câu hỏi khách quan. Thi nâng band cần
 | Listening | Bốn phần xã hội/học thuật, đối thoại và bẫy đính chính/phủ định; map/plan/diagram và completion; ElevenLabs khi cấu hình hoặc TTS trình duyệt ghi rõ nguồn. |
 | Writing | Academic line/bar/pie/table/map/process/mixed charts, GT letter, Task 2; lưu nháp; mỗi task có tiêu chí và Task 2 trọng số gấp đôi. |
 | Speaking | Ba parts, ghi âm WAV PCM mono 16 kHz, nghe lại, lưu riêng bằng GridFS; Whisper STT và OpenAI Audio chấm từ bản ghi; Azure âm học là lựa chọn bổ sung. |
-| Thi thử thường | Reading 3 sections/40 câu/60 phút; Listening 4 parts/40 câu/30 phút; Writing 2 tasks/60 phút; Speaking 3 parts/khoảng 12 phút. Luôn mở riêng, deadline không reset qua reload. |
+| Thi thử thường | Reading 3 sections/40 câu/60 phút; Listening 4 parts/40 câu/30 phút; Writing 2 tasks/60 phút; Speaking 3 parts/11–14 phút. Luôn mở riêng; chế độ Exam hủy lượt đang làm khi rời hoặc tải lại trang. |
 | Từ vựng | Nghĩa Việt, định nghĩa Anh, IPA, collocations, ví dụ, word family, lỗi thường gặp; flashcards FSRS với bốn mức Quên/Khó/Tốt/Dễ. |
 | Theo dõi | Dashboard, điểm cá nhân, thời gian, lịch sử, sổ lỗi, đề xuất; kết quả Duo lưu mọi lượt thi và có API lịch sử phân trang theo owner. |
 | Dữ liệu | Xuất JSON riêng; audio chỉ đọc được bởi owner. Duo không cho xóa lịch sử bằng endpoint chung vì cần giữ bằng chứng và kết quả bảo lưu. |
 
 Hướng dẫn/đoạn mẫu cho bài advanced được hiển thị dưới mục thu gọn ở **Practice lesson band 7.5–8.0**. Exam và đánh giá Duo không hiển thị hướng dẫn đó. Các lượt làm lại cùng form không được coi là bằng chứng năng lực độc lập mới.
+
+## Giữ trang trong lượt kiểm tra
+
+Placement, lượt `mode: exam`, Duo Gate và thi nâng band yêu cầu giữ trang làm bài. Chuyển sang tab khiến trang thi bị ẩn, chuyển sang trang khác trong website, tải lại/đóng trang hoặc mở một trang website đã đăng nhập cùng tài khoản ở tab khác sẽ hủy lượt hiện tại. Server kiểm tra heartbeat với lease **25 giây**; mất heartbeat quá hạn cũng hủy lượt. Bài luyện thông thường `mode: practice` vẫn tự lưu và tiếp tục được sau khi rời trang hoặc tải lại.
+
+Làm lại sau khi bị hủy dùng nguồn/câu hỏi thật khác trong ngân hàng, giữ cấu trúc đề và độ khó gần nhất phù hợp. Bài đã hoàn thành, điểm cũ, tiến độ và kết quả Duo đã đạt vẫn được bảo lưu; trong phòng thi chung, sự cố của một người hủy lượt đang thi của cả hai. Ngân hàng hữu hạn: khi hết nguồn mới phù hợp, server từ chối lượt mới bằng HTTP **409** và thông báo thiếu học liệu. Trường hợp phải dùng mức CEFR liền kề vẫn hiển thị band/CEFR thật của đề thay thế; không đổi nhãn để giả cùng độ khó.
+
+Khi server đã chấp nhận bài nộp cuối để chấm AI, câu trả lời được khóa và chuyển sang pha chờ chấm với lease **1.200 giây**. Lượt cá nhân có thể rời hoặc tải lại trong pha chờ chấm hợp lệ mà không hủy công việc đang chấm. Phòng Duo chỉ có ngoại lệ này khi tất cả người đang thi đã được chấp nhận nộp cuối; nếu người kia còn trả lời, cả hai vẫn phải giữ trang, kể cả Companion. Kết quả cập nhật khi provider trả kết quả; lỗi provider giữ bài/bản ghi để xử lý hoặc chấm lại. Nếu server mở lại phần trả lời sau lỗi chấm, quy tắc giữ trang áp dụng trở lại.
+
+Trình duyệt chỉ báo được các sự kiện mà trang nhận được. Mở một tab ở website khác nhưng chưa chuyển tới tab đó có thể không tạo sự kiện trang thi bị ẩn, nên không thể phát hiện tin cậy. Mất focus cửa sổ (`window.blur`) không bị phạt, để hộp thoại microphone/quyền truy cập vẫn hoạt động. Xem [chi tiết lượt kiểm tra](docs/exam-upgrade.md).
 
 ## Ngân hàng học liệu — fresh-20261011-v3
 
@@ -124,6 +134,6 @@ Build trước browser tests vì fixture Duo phục vụ React từ `dist`. Test
 
 [docs/cloud-start.md](docs/cloud-start.md) mô tả setup/start lại cloud. Tiến trình đang chạy không tồn tại qua publish environment; cấu hình draft cần Review → Save → Publish. Localhost trong cloud không phải URL công khai.
 
-VPS có nhiều project: `deploy/run-exam-update.sh` chọn cập nhật giữ dữ liệu cho bộ fresh; chỉ dùng reset với ngân hàng legacy đã được cho phép xóa. Các công cụ ghim commit/SHA256, build giới hạn tài nguyên và chỉ dừng app IELTS để sao lưu/cập nhật `ielts_ai`. MongoDB/proxy/host Nginx và cấu hình website khác được đối chiếu giữ nguyên. [Quy trình reset](docs/bank-reset.md) phân biệt việc kiểm tra cloud với áp dụng và xác minh trên VPS.
+VPS có nhiều project: `deploy/run-exam-update.sh` cập nhật giữ dữ liệu cho bộ fresh v2/v3 và từ chối legacy/v1; không có đường chạy reset trong entrypoint hiện hành. Các công cụ ghim commit/SHA256, build giới hạn tài nguyên và chỉ dừng app IELTS để sao lưu/cập nhật `ielts_ai`. MongoDB/proxy/host Nginx và cấu hình website khác được đối chiếu giữ nguyên. Quy tắc giữ trang và thay bộ câu hỏi mới được kiểm tra trong cloud; **chưa xác nhận bản thay đổi này đã được triển khai trên VPS**. Cần receipt và hậu kiểm thực tế theo [hướng dẫn triển khai](deploy/README.md).
 
 Production dùng Node hosting hoặc Dockerfile, HTTPS `APP_ORIGIN` và MongoDB được bảo vệ. Express phục vụ cả `dist` và API cùng một port; reverse proxy cung cấp TLS. Không tắt TLS/checksums để xử lý lỗi tải dependency. Xem [MongoDB](docs/mongodb.md) và [triển khai](deploy/README.md).

@@ -90,7 +90,8 @@ test("real Duo HTTP fences grading drafts and audio across app instances without
     await provisionDuoAccounts(database, settings);
     const origins: string[] = [];
     for (let index = 0; index < 2; index++) {
-      const server = createApp(database, { duoEnabled: true, duoCredentials: settings, production: false, serveClient: false,
+      // Legacy API/resume fixtures omit monitoring; dedicated native/browser integrity suites cover strict policy.
+      const server = createApp(database, { duoEnabled: true, duoCredentials: settings, production: false, serveClient: false, examIntegrityEnabled: false,
         duo: { now: () => Date.now() + offset } }).listen(0, "127.0.0.1");
       servers.push(server); await once(server, "listening"); const address = server.address();
       assert.ok(address && typeof address !== "string"); origins.push(`http://127.0.0.1:${address.port}`);

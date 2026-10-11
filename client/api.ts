@@ -1,3 +1,5 @@
+import { examHeaders } from "./examTransport";
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -17,6 +19,7 @@ export async function api<T>(
       ...options,
       credentials: "include",
       headers: {
+        ...examHeaders(),
         ...(options.body && !(options.body instanceof FormData)
           ? { "Content-Type": "application/json" }
           : {}),

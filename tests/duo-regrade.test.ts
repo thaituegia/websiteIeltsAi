@@ -203,6 +203,8 @@ async function setup(): Promise<Setup> {
   }
   const server = createApp(database, {
     production: false,
+    // Legacy API/resume fixtures omit monitoring; dedicated native/browser integrity suites cover strict policy.
+    examIntegrityEnabled: false,
     duoEnabled: true,
     duoCredentials: settings,
     serveClient: false,

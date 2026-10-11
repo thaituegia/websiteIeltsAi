@@ -4,6 +4,14 @@
 
 Bộ triển khai này chưa chứng minh server đích đã kết nối được hoặc website đã public. Chỉ triển khai khi SSH, tài nguyên máy và cổng public đã kiểm tra thực tế. Không đổi cấu hình nginx/PM2 của server, không nâng cấp hệ thống, không cài lại Docker, không khởi động lại dịch vụ của project khác.
 
+## Bản cập nhật quy tắc kiểm tra
+
+Bản source hiện hành yêu cầu giữ trang cho placement, `mode: exam`, Duo Gate và thi nâng band; **practice thông thường vẫn resume**. Khi đang trả lời, trang bị ẩn, điều hướng/reload/đóng trang, một trang khác của website này đã xác thực bằng cùng tài khoản hoặc heartbeat mất quá lease **25 giây** sẽ hủy lượt hiện tại. Trong phòng nâng band chung đang thi, hủy lượt hiện tại của cả hai, kể cả khi một người là Companion, và giữ mọi kết quả/pass đã hoàn thành. Rời khi chuẩn bị/đếm ngược sẽ bỏ Ready và đưa phòng về chờ. Lượt mới dùng nguồn/câu hỏi thật khác trong ngân hàng, giữ cấu trúc đề; hết nguồn phù hợp trả **409**, không xáo lại bộ cũ để giả đề mới. Nếu cần CEFR liền kề, `difficultyFallback: true` đi cùng band/CEFR thật.
+
+Lượt nộp cuối đã được server chấp nhận để chấm AI khóa câu trả lời, dùng pha chờ chấm với lease **1.200 giây**; lượt cá nhân có thể rời/reload trong pha hợp lệ mà không hủy công việc đang chấm trước kết quả provider. Phòng Duo chỉ được miễn giữ trang khi tất cả người đang thi đã được chấp nhận nộp cuối; một người đang được chấm trong khi người kia còn trả lời vẫn được giám sát, cùng Companion. Nếu server mở lại phần trả lời sau lỗi chấm, quy tắc giữ trang áp dụng trở lại. `window.blur` không bị phạt, để hộp thoại microphone hoạt động; tab origin khác chưa được chọn có thể không phát sinh sự kiện trang bị ẩn và không thể phát hiện tin cậy.
+
+Các kiểm tra native/Chromium desktop/mobile trong cloud đã bao phủ hành vi này; [chi tiết và số lượng](../docs/validation.md) phân biệt kiểm tra mới với các đợt lịch sử. **Chưa xác nhận bản thay đổi này đã lên VPS.** Cập nhật bằng entrypoint hiện hành đã ghim commit/SHA256, giữ backup/dữ liệu; chỉ receipt và hậu kiểm đúng commit/HTTPS mới xác nhận live. Không upload bài làm, bản ghi, credentials, backup hoặc log riêng từ cloud vào archive source.
+
 Yêu cầu: Docker đang hoạt động, Docker Compose v2, Bash, OpenSSL nếu tự tạo chứng chỉ. MongoDB 8 trên x86-64 cần CPU có AVX; ARM64 phải đáp ứng yêu cầu nền tảng ARM của MongoDB (không dùng AVX). Cần dung lượng trống và RAM đủ cho build cùng các project hiện tại. Giới hạn mặc định của ứng dụng là 768 MB, MongoDB 768 MB, proxy 128 MB; build cũng dùng tài nguyên máy. Đọc baseline trước khi build, điều chỉnh giới hạn trong `.local/deploy/deploy.env` khi cần.
 
 ## 1. Đưa đúng mã nguồn lên thư mục mới

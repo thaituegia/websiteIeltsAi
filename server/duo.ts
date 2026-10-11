@@ -17,6 +17,8 @@ import type {
 } from "../shared/duo";
 import { learnerOf } from "./auth";
 import { ApiError } from "./errors";
+import { EXAM_LEASE_SECONDS, requireExamTab } from "./exam-guard";
+import { createExamReplacement, examReplacementSourceIds, ExamReplacementUnavailableError } from "./exam-variants";
 import type {
   AttemptRecord,
   Database,
@@ -91,6 +93,10 @@ interface PathRecord {
   startedAt: string;
   updatedAt: string;
   bands: Record<string, BandRecord>;
+  /** Path CAS fences receipts before their separate documents are cancelled. */
+  invalidatedAssessmentIds?: string[];
+  invalidatedRoomIds?: string[];
+  integrityInvalidations?: { assessmentIds: string[]; roomId: string | null; reason: string; at: string }[];
 }
 interface PlacementResultRecord {
   _id: string;
@@ -120,6 +126,8 @@ interface AssessmentRecord {
   createdAt: string;
   completedAt: string | null;
   revision: number;
+  invalidatedAt?: string;
+  integrityReason?: string;
 }
 interface RoomPresence {
   userId: string;
@@ -128,6 +136,7 @@ interface RoomPresence {
   readyAt: string | null;
   companion: boolean;
   assessmentId: string | null;
+  documentId?: string;
 }
 interface RoomRecord {
   _id: string;
@@ -140,6 +149,21 @@ interface RoomRecord {
   deadlineAt: string | null;
   createdAt: string;
   revision: number;
+  /** The exam set belongs to one shared sitting, never to the curriculum. */
+  contentIds?: string[];
+  invalidatedAt?: string;
+  integrityReason?: string;
+  requiresPresence?: boolean;
+}
+export interface DuoIntegrityInvalidation {
+  assessmentIds: string[];
+  attemptIds: string[];
+  roomId: string | null;
+}
+export interface DuoRouteHooks {
+  beforeStart(request: Request): void;
+  opened(user: UserRecord, assessmentId: string, request: Request): Promise<void>;
+  check(user: UserRecord, assessmentId: string): Promise<void>;
 }
 export interface DuoConfig {
   gateInterval?: 5 | 10;
@@ -186,6 +210,7 @@ export class DuoService {
   private rooms: Collection<RoomRecord>;
   private config: Required<DuoConfig>;
   private initialization?: Promise<void>;
+  private strictRoomMonitoring = false;
   constructor(
     private database: Database,
     config: DuoConfig = {},
@@ -766,6 +791,10 @@ export class DuoService {
       deadlineAt: record.deadlineAt,
       createdAt: record.createdAt,
       completedAt: record.completedAt,
+      ...(record.invalidatedAt ? {
+        invalidatedAt: record.invalidatedAt, integrityReason: record.integrityReason,
+        integrity: { status: "invalidated" as const, reason: record.integrityReason },
+      } : {}),
       serverNow: this.iso(),
     };
   }
@@ -783,6 +812,175 @@ export class DuoService {
       throw new ApiError(404, "Không tìm thấy bài đánh giá của bạn.");
     return record;
   }
+  private deniedAssessment(path: PathRecord, assessment: AssessmentRecord): boolean {
+    return Boolean(
+      assessment.invalidatedAt ||
+      path.invalidatedAssessmentIds?.includes(assessment._id) ||
+      (assessment.roomId && path.invalidatedRoomIds?.includes(assessment.roomId)),
+    );
+  }
+  private invalidationReason(path: PathRecord, assessmentId: string | null, roomId: string | null): string {
+    return path.integrityInvalidations?.findLast(entry =>
+      Boolean((assessmentId && entry.assessmentIds.includes(assessmentId)) || (roomId && entry.roomId === roomId)),
+    )?.reason ?? "exam-invalidated";
+  }
+  private async cancelAssessments(
+    assessmentIds: string[],
+    reason: string,
+    roomId: string | null,
+  ): Promise<DuoIntegrityInvalidation> {
+    const records = await this.assessments.find({ _id: { $in: assessmentIds } }).toArray();
+    const at = this.iso();
+    for (const record of records)
+      await this.assessments.updateOne(
+        { _id: record._id, invalidatedAt: { $exists: false } },
+        { $set: {
+          active: false, status: "failed", completedAt: at, invalidatedAt: at, integrityReason: reason,
+          parts: record.parts.map(part => ({ ...part, status: "failed" as const, scorePercent: null, estimatedBand: null })),
+        }, $inc: { revision: 1 } },
+      );
+    // Include unbound attempts: an attempt insert can overlap assessment cancellation.
+    const attempts = await this.database.attempts.find({ duoAssessmentId: { $in: assessmentIds } }).toArray();
+    const attemptIds = [...new Set([
+      ...attempts.map(attempt => attempt._id),
+      ...records.flatMap(record => record.parts.flatMap(part => part.attemptId ? [part.attemptId] : [])),
+    ])];
+    if (attemptIds.length)
+      await this.database.attempts.updateMany(
+        { _id: { $in: attemptIds }, duoAssessmentId: { $in: assessmentIds } },
+        [{ $set: {
+          status: "invalidated", responses: {}, essays: {}, transcript: "", feedback: null,
+          submittedAt: null, durationSeconds: 0,
+          invalidatedAt: { $ifNull: ["$invalidatedAt", at] }, integrityReason: { $ifNull: ["$integrityReason", reason] },
+          "integrity.status": "invalidated", "integrity.reason": { $ifNull: ["$integrityReason", reason] },
+        } }, { $unset: ["submissionLease", "listeningPlayed"] }],
+      );
+    const audio = await this.database.audio.find({ attemptId: { $in: attemptIds }, userId: { $in: records.map(record => record.userId) } }).toArray();
+    for (const recording of audio) {
+      const owned = await this.database.db.collection("recordings.files").findOne({
+        _id: recording.fileId, "metadata.userId": recording.userId, "metadata.attemptId": recording.attemptId,
+      });
+      if (owned) {
+        await this.database.recordings.delete(recording.fileId).catch(async error => {
+          // Another concurrent cancellation may have removed the same file.
+          if (await this.database.db.collection("recordings.files").findOne({ _id: recording.fileId })) throw error;
+        });
+      }
+      await this.database.audio.deleteOne({ _id: recording._id, userId: recording.userId, attemptId: recording.attemptId });
+    }
+    if (records.length && await this.database.db.listCollections({ name: "exam_integrity_sessions" }, { nameOnly: true }).hasNext()) {
+      const guardReason = ["hidden", "page-exit", "duplicate-tab", "navigation", "heartbeat-lost"].includes(reason) ? reason : "navigation";
+      await this.database.db.collection("exam_integrity_sessions").updateMany({
+        kind: "assessment", $or: records.map(record => ({ userId: record.userId, resourceId: record._id })),
+      }, { $set: { status: "invalidated", resetPending: false, reason: guardReason, updatedAt: at } });
+    }
+    return { assessmentIds, attemptIds, roomId };
+  }
+  /** Fence the path first: a concurrent grader can never reapply a cancelled receipt. */
+  async invalidateIntegrity(
+    user: UserRecord,
+    assessmentId: string,
+    reason: string,
+  ): Promise<DuoIntegrityInvalidation> {
+    const { user: member } = await this.member(user);
+    const assessment = await this.assessment(user, assessmentId);
+    if (assessment.kind === "promotion") {
+      const room = await this.room(user, assessment.roomId!);
+      return this.invalidateRoomIntegrity(member, room, reason);
+    }
+    let accepted = false;
+    const currentPath = await this.changePath(member.duoId, path => {
+      accepted = false;
+      if (path.invalidatedAssessmentIds?.includes(assessment._id)) {
+        accepted = true;
+        return false;
+      }
+      const band = path.bands[bandKey(assessment.band)];
+      const gate = band?.gates.find(entry => entry.id === assessment.gateId);
+      if (
+        path.members[member.duoRole] !== member.id || path.currentBand !== assessment.band ||
+        !assessment.active || band?.completedAt || !gate ||
+        (gate.results[member.duoRole] && gate.results[member.duoRole]!.assessmentId !== assessment._id)
+      ) return false;
+      accepted = true;
+      path.invalidatedAssessmentIds = [...new Set([...(path.invalidatedAssessmentIds ?? []), assessment._id])];
+      path.integrityInvalidations = [...(path.integrityInvalidations ?? []), {
+        assessmentIds: [assessment._id], roomId: null, reason, at: this.iso(),
+      }];
+      if (gate.results[member.duoRole]?.assessmentId === assessment._id)
+        gate.results[member.duoRole] = null;
+    });
+    if (!accepted) throw new ApiError(409, "Bài đánh giá đã đóng; kết quả đã hoàn tất được bảo lưu.");
+    return this.cancelAssessments([assessment._id], this.invalidationReason(currentPath, assessment._id, null), null);
+  }
+  private async invalidateRoomIntegrity(
+    member: DuoUser & { duoRole: DuoRole; duoId: string },
+    room: RoomRecord,
+    reason: string,
+  ): Promise<DuoIntegrityInvalidation> {
+    if (room.members[member.duoRole].userId !== member.id)
+      throw new ApiError(403, "Bạn không thuộc phòng thi này.");
+    const records = await this.assessments.find({ roomId: room._id, duoId: member.duoId }).toArray();
+    const assessmentIds = [...new Set([
+      ...records.map(record => record._id),
+      ...ROLES.filter(role => !room.members[role].companion).map(role => `${room._id}:${role}`),
+    ])];
+    // Accepted final submissions belong to the server while provider grading runs.
+    if (!room.invalidatedAt && await this.roomFinalSubmissionsAccepted(room))
+      return { assessmentIds: [], attemptIds: [], roomId: room._id };
+    let accepted = false;
+    const currentPath = await this.changePath(member.duoId, path => {
+      accepted = false;
+      if (path.invalidatedRoomIds?.includes(room._id)) {
+        accepted = true;
+        return false;
+      }
+      const band = path.bands[bandKey(room.band)];
+      if (
+        path.members[member.duoRole] !== member.id || path.currentBand !== room.band ||
+        !room.active || room.status !== "in-progress" || !band || band.completedAt ||
+        band.lastPromotionRoomId !== room._id
+      ) return false;
+      accepted = true;
+      path.invalidatedRoomIds = [...new Set([...(path.invalidatedRoomIds ?? []), room._id])];
+      path.invalidatedAssessmentIds = [...new Set([...(path.invalidatedAssessmentIds ?? []), ...assessmentIds])];
+      path.integrityInvalidations = [...(path.integrityInvalidations ?? []), {
+        assessmentIds, roomId: room._id, reason, at: this.iso(),
+      }];
+      for (const role of ROLES)
+        if (band.promotionResults[role] && assessmentIds.includes(band.promotionResults[role]!.assessmentId))
+          band.promotionResults[role] = null;
+    });
+    if (!accepted) throw new ApiError(409, "Phòng thi đã đóng; band đã hoàn tất được bảo lưu.");
+    return this.cancelRoom(room, assessmentIds, this.invalidationReason(currentPath, null, room._id));
+  }
+  private async cancelRoom(room: RoomRecord, assessmentIds: string[], reason: string): Promise<DuoIntegrityInvalidation> {
+    await this.changeRoom(room._id, latest => {
+      if (latest.invalidatedAt) return false;
+      latest.active = false;
+      latest.status = "invalidated";
+      latest.invalidatedAt = this.iso();
+      latest.integrityReason = reason;
+      for (const role of ROLES) latest.members[role].readyAt = null;
+    });
+    return this.cancelAssessments(assessmentIds, reason, room._id);
+  }
+  private async replacementSet(contentIds: string[], excludedContentIds: string[]): Promise<string[]> {
+    const contents = await this.database.content.find({ _id: { $in: [...contentIds, ...excludedContentIds] } }).toArray();
+    const excluded = [...new Set([...excludedContentIds, ...contents.flatMap(examReplacementSourceIds)])];
+    const replacements: string[] = [];
+    for (const id of contentIds) {
+      const source = contents.find(content => content.id === id);
+      if (!source) throw new ApiError(409, "Học liệu của bài đánh giá chưa đầy đủ.");
+      const replacement = await createExamReplacement(this.database, source, [...excluded, ...replacements]).catch(error => {
+        if (error instanceof ExamReplacementUnavailableError) throw new ApiError(409, error.message);
+        throw error;
+      });
+      await this.database.content.insertOne(replacement);
+      replacements.push(replacement.id);
+    }
+    return replacements;
+  }
   private async makeAssessment(
     path: PathRecord,
     user: DuoUser,
@@ -791,6 +989,13 @@ export class DuoService {
     gateId: string | null,
     room: RoomRecord | null,
   ): Promise<AssessmentRecord> {
+    if (room) {
+      const currentPath = await this.paths.findOne({ _id: path.duoId });
+      const currentRoom = await this.rooms.findOne({ _id: room._id });
+      if (!currentPath || !currentRoom || currentRoom.status !== "in-progress" ||
+        currentPath.invalidatedRoomIds?.includes(room._id))
+        throw new ApiError(409, "Phòng thi đã đóng.");
+    }
     const contents = await this.database.content
       .find({ _id: { $in: contentIds } })
       .toArray();
@@ -841,9 +1046,10 @@ export class DuoService {
       completedAt: null,
       revision: 0,
     };
+    let created: AssessmentRecord;
     try {
       await this.assessments.insertOne(record);
-      return record;
+      created = record;
     } catch (error) {
       if (!isDuplicate(error)) throw error;
       const concurrent = await this.assessments.findOne(
@@ -859,8 +1065,14 @@ export class DuoService {
             },
       );
       if (!concurrent) throw error;
-      return concurrent;
+      created = concurrent;
     }
+    const currentPath = await this.paths.findOne({ _id: path.duoId });
+    if (currentPath && this.deniedAssessment(currentPath, created)) {
+      await this.cancelAssessments([created._id], this.invalidationReason(currentPath, created._id, created.roomId), created.roomId);
+      return (await this.assessments.findOne({ _id: created._id }))!;
+    }
+    return created;
   }
   private async startGate(
     user: UserRecord,
@@ -885,17 +1097,28 @@ export class DuoService {
       gateId,
       active: true,
     });
-    if (active) return this.reconcileAssessment(active);
+    if (active) {
+      const reconciled = await this.reconcileAssessment(active);
+      if (!reconciled.invalidatedAt) return reconciled;
+    }
+    const invalidated = await this.assessments.find({
+      duoId: path.duoId, userId: member.id, band: path.currentBand, kind: "gate", gateId,
+      invalidatedAt: { $exists: true },
+    }).toArray();
+    const contentIds = invalidated.length
+      ? await this.replacementSet(gate.contentIds, invalidated.flatMap(record => record.parts.map(part => part.contentId)))
+      : gate.contentIds;
     const created = await this.makeAssessment(
       path,
       member,
       "gate",
-      gate.contentIds,
+      contentIds,
       gate.id,
       null,
     );
     await this.changePath(path.duoId, (latest) => {
       if (latest.currentBand !== path.currentBand) return false;
+      if (this.deniedAssessment(latest, created)) return false;
       const target = latest.bands[bandKey(path.currentBand)].gates.find(
         (entry) => entry.id === gateId,
       )!;
@@ -1015,11 +1238,20 @@ export class DuoService {
       attempt.mode !== "exam"
     )
       throw new ApiError(403, "Lượt thi không có liên kết Duo hợp lệ.");
-    const permission = await this.beforeAttempt(user, {
-      contentId: attempt.contentId,
-      mode: attempt.mode,
-      duoAssessmentId: assessmentId,
-    });
+    let permission: DuoAttemptPermission;
+    try {
+      permission = await this.beforeAttempt(user, {
+        contentId: attempt.contentId,
+        mode: attempt.mode,
+        duoAssessmentId: assessmentId,
+      });
+    } catch (error) {
+      const record = await this.assessment(user, assessmentId);
+      const path = await this.path(user);
+      if (this.deniedAssessment(path, record))
+        await this.cancelAssessments([assessmentId], record.integrityReason ?? "exam-invalidated", record.roomId);
+      throw error;
+    }
     if (
       permission.existingAttemptId &&
       permission.existingAttemptId !== attemptId
@@ -1043,8 +1275,13 @@ export class DuoService {
     );
     if (!result.modifiedCount) {
       const current = await this.assessment(user, assessmentId);
-      if (current.parts[partIndex].attemptId !== attemptId)
+      if (!current.active || current.invalidatedAt || current.parts[partIndex].attemptId !== attemptId)
         throw new ApiError(409, "Phần thi vừa được mở ở phiên khác.");
+    }
+    const latest = await this.assessment(user, assessmentId);
+    if (this.deniedAssessment(await this.path(user), latest)) {
+      await this.cancelAssessments([assessmentId], latest.integrityReason ?? "exam-invalidated", latest.roomId);
+      throw new ApiError(409, "Bài đánh giá đã bị đặt lại.");
     }
   }
   async attemptSubmitted(attempt: AttemptRecord): Promise<void> {
@@ -1066,6 +1303,12 @@ export class DuoService {
           ? initial
           : await this.assessments.findOne({ _id: initial._id });
       if (!record) throw new ApiError(404, "Không tìm thấy bài đánh giá.");
+      if (record.invalidatedAt) return record;
+      const path = await this.paths.findOne({ _id: record.duoId });
+      if (path && this.deniedAssessment(path, record)) {
+        await this.cancelAssessments([record._id], this.invalidationReason(path, record._id, record.roomId), record.roomId);
+        return (await this.assessments.findOne({ _id: record._id }))!;
+      }
       if (record.status === "passed") {
         await this.applyResult(record);
         return record;
@@ -1272,7 +1515,7 @@ export class DuoService {
         return record;
       }
       const updated = await this.assessments.findOneAndUpdate(
-        { _id: record._id, revision: record.revision },
+        { _id: record._id, revision: record.revision, invalidatedAt: { $exists: false } },
         {
           $set: {
             parts,
@@ -1292,12 +1535,13 @@ export class DuoService {
     throw new ApiError(409, "Kết quả đang được chấm. Vui lòng tải lại.");
   }
   private async applyResult(assessment: AssessmentRecord): Promise<void> {
+    if (assessment.invalidatedAt) return;
     let advanced = false;
     await this.changePath(assessment.duoId, (path) => {
       advanced = false;
       if (
         path.members[assessment.role] !== assessment.userId ||
-        path.currentBand !== assessment.band
+        path.currentBand !== assessment.band || this.deniedAssessment(path, assessment)
       )
         return false;
       const band = path.bands[bandKey(assessment.band)];
@@ -1380,6 +1624,53 @@ export class DuoService {
           this.config.presenceTimeoutSeconds * 1000,
     );
   }
+  private async roomFinalSubmissionsAccepted(room: RoomRecord): Promise<boolean> {
+    const records = await this.assessments.find({ roomId: room._id, duoId: room.duoId }).toArray();
+    const participants = ROLES.filter(role => !room.members[role].companion);
+    const attempts = await this.database.attempts.find({ duoAssessmentId: { $in: records.map(record => record._id) } }).toArray();
+    for (const role of participants) {
+      const record = records.find(assessment => assessment.role === role && assessment.userId === room.members[role].userId);
+      if (!record || record.invalidatedAt || !record.parts.length) return false;
+      for (const [index, part] of record.parts.entries()) {
+        const attempt = attempts.find(row => row._id === part.attemptId && row.userId === record.userId &&
+          row.duoAssessmentId === record._id && row.contentId === part.contentId);
+        if (!attempt) return false;
+        if (attempt.status === "submitted") continue;
+        const lease = (attempt as AttemptRecord & { submissionLease?: { token?: string; expiresAt?: string } }).submissionLease;
+        if (index !== record.parts.length - 1 || attempt.status !== "in-progress" || !lease?.token || millis(lease.expiresAt) <= this.now())
+          return false;
+        if (room.requiresPresence) {
+          const guard = await this.database.db.collection<{
+            _id: string; userId: string; kind: string; resourceId: string; status: string; phase: string; leaseUntil: number; createdAt: string;
+          }>("exam_integrity_sessions").findOne({ userId: record.userId, kind: "assessment", resourceId: record._id }, { sort: { createdAt: -1 } });
+          if (guard && (guard.status !== "active" || guard.phase !== "grading" || guard.leaseUntil <= this.now())) return false;
+        }
+      }
+    }
+    return true;
+  }
+  /** Also covers companions and a member who finished before their partner. */
+  async observeRoomDocument(user: UserRecord, tabId: string): Promise<DuoIntegrityInvalidation | null> {
+    const candidate = user as DuoUser;
+    if (!candidate.duoId || !candidate.duoRole || !this.strictRoomMonitoring) return null;
+    requireExamTab(tabId);
+    const { user: member } = await this.member(user);
+    const initial = await this.rooms.findOne({ duoId: member.duoId, active: true, requiresPresence: true });
+    if (!initial || initial.members[member.duoRole].userId !== member.id) return null;
+    const room = await this.reconcileRoom(initial);
+    if (room.status === "invalidated") return this.invalidateRoomIntegrity(member, room, room.integrityReason ?? "heartbeat-lost");
+    const documentId = room.members[member.duoRole].documentId;
+    if (documentId && documentId !== tabId) {
+      if (room.status === "in-progress" && !(await this.roomFinalSubmissionsAccepted(room)))
+        return this.invalidateRoomIntegrity(member, room, "duplicate-tab");
+      if (room.status === "waiting" || room.status === "countdown")
+        await this.changeRoom(room._id, latest => {
+          latest.members[member.duoRole].readyAt = null;
+          if (latest.status === "countdown") { latest.status = "waiting"; latest.startsAt = null; latest.deadlineAt = null; }
+        });
+    }
+    return null;
+  }
   private ready(presence: RoomPresence) {
     return (
       this.present(presence) &&
@@ -1390,7 +1681,8 @@ export class DuoService {
       )
     );
   }
-  private roomView(room: RoomRecord): DuoRoomView {
+  private async roomView(room: RoomRecord, user?: UserRecord): Promise<DuoRoomView> {
+    const role = (user as DuoUser | undefined)?.duoRole;
     return {
       id: room._id,
       band: room.band,
@@ -1417,7 +1709,15 @@ export class DuoService {
       startsAt: room.startsAt,
       deadlineAt: room.deadlineAt,
       countdownSeconds: this.config.countdownSeconds,
-      presenceTimeoutSeconds: this.config.presenceTimeoutSeconds,
+      presenceTimeoutSeconds: room.requiresPresence ? EXAM_LEASE_SECONDS : this.config.presenceTimeoutSeconds,
+      requiresPresence: Boolean(room.requiresPresence && (
+        (room.status === "in-progress" && !(await this.roomFinalSubmissionsAccepted(room))) ||
+        (["waiting", "countdown"].includes(room.status) && (role ? room.members[role].readyAt : ROLES.some(memberRole => room.members[memberRole].readyAt)))
+      )),
+      ...(room.invalidatedAt ? {
+        invalidatedAt: room.invalidatedAt, integrityReason: room.integrityReason,
+        integrity: { status: "invalidated" as const, reason: room.integrityReason },
+      } : {}),
     };
   }
   private async room(user: UserRecord, roomId: string): Promise<RoomRecord> {
@@ -1446,9 +1746,19 @@ export class DuoService {
     throw new ApiError(409, "Phòng thi đang thay đổi. Vui lòng tải lại.");
   }
   private async reconcileRoom(initial: RoomRecord): Promise<RoomRecord> {
-    if (initial.status === "completed" || initial.status === "cancelled")
-      return initial;
+    initial = (await this.rooms.findOne({ _id: initial._id })) ?? initial;
     const path = await this.paths.findOne({ _id: initial.duoId });
+    if (path?.invalidatedRoomIds?.includes(initial._id)) {
+      const records = await this.assessments.find({ roomId: initial._id, duoId: initial.duoId }).toArray();
+      const assessmentIds = [...new Set([
+        ...records.map(record => record._id),
+        ...ROLES.filter(role => !initial.members[role].companion).map(role => `${initial._id}:${role}`),
+      ])];
+      await this.cancelRoom(initial, assessmentIds, this.invalidationReason(path, null, initial._id));
+      return (await this.rooms.findOne({ _id: initial._id }))!;
+    }
+    if (initial.status === "completed" || initial.status === "cancelled" || initial.status === "invalidated")
+      return initial;
     if (
       !path ||
       path.currentBand !== initial.band ||
@@ -1459,6 +1769,16 @@ export class DuoService {
         room.active = false;
       });
     if (initial.status === "in-progress") {
+      if (initial.requiresPresence && !(await this.roomFinalSubmissionsAccepted(initial)) && ROLES.some(role =>
+        !initial.members[role].lastSeenAt || this.now() - millis(initial.members[role].lastSeenAt) >= EXAM_LEASE_SECONDS * 1000,
+      )) {
+        const owner = await this.database.users.findOne({ _id: initial.members.husband.userId });
+        if (owner) {
+          const { user: member } = await this.member(owner);
+          await this.invalidateRoomIntegrity(member, initial, "heartbeat-lost");
+          return (await this.rooms.findOne({ _id: initial._id }))!;
+        }
+      }
       if (this.now() >= millis(initial.deadlineAt)) {
         const assessments = await this.assessments
           .find({ roomId: initial._id })
@@ -1502,14 +1822,18 @@ export class DuoService {
       }
       return changed;
     });
-    if (reconciled.status === "in-progress")
-      return this.ensureRoomAssessments(reconciled, path);
+    if (reconciled.status === "in-progress") return this.reconcileRoom(reconciled);
     return reconciled;
   }
   private async ensureRoomAssessments(
     room: RoomRecord,
     path: PathRecord,
   ): Promise<RoomRecord> {
+    const currentPath = await this.paths.findOne({ _id: path.duoId });
+    const currentRoom = await this.rooms.findOne({ _id: room._id });
+    if (!currentPath || !currentRoom || currentRoom.status !== "in-progress" ||
+      currentPath.invalidatedRoomIds?.includes(room._id))
+      return currentRoom ?? room;
     const members = (await this.database.users
       .find({ _id: { $in: Object.values(path.members) } })
       .toArray()) as DuoUser[];
@@ -1523,7 +1847,7 @@ export class DuoService {
           path,
           member,
           "promotion",
-          path.bands[bandKey(room.band)].promotionContentIds,
+          room.contentIds ?? path.bands[bandKey(room.band)].promotionContentIds,
           null,
           room,
         );
@@ -1565,6 +1889,17 @@ export class DuoService {
         band.promotionResults[role]?.status === "passed",
       assessmentId: null,
     });
+    const invalidated = await this.rooms.find({
+      duoId: path.duoId, band: path.currentBand, invalidatedAt: { $exists: true },
+    }).toArray();
+    const previousAssessments = invalidated.length
+      ? await this.assessments.find({ roomId: { $in: invalidated.map(entry => entry._id) } }).toArray()
+      : [];
+    const contentIds = invalidated.length
+      ? await this.replacementSet(band.promotionContentIds, [
+        ...invalidated.flatMap(entry => entry.contentIds ?? []),
+        ...previousAssessments.flatMap(entry => entry.parts.map(part => part.contentId)),
+      ]) : band.promotionContentIds;
     const room: RoomRecord = {
       _id: randomUUID(),
       duoId: member.duoId,
@@ -1576,6 +1911,8 @@ export class DuoService {
       deadlineAt: null,
       createdAt: this.iso(),
       revision: 0,
+      contentIds,
+      requiresPresence: this.strictRoomMonitoring,
     };
     try {
       await this.rooms.insertOne(room);
@@ -1601,18 +1938,22 @@ export class DuoService {
     user: UserRecord,
     roomId: string,
     action: "join" | "heartbeat" | "ready" | "leave",
-    input: { ready?: boolean; companion?: boolean } = {},
+    input: { ready?: boolean; companion?: boolean; documentId?: string; reason?: string } = {},
   ): Promise<RoomRecord> {
     const { user: member } = await this.member(user);
     const room = await this.reconcileRoom(await this.room(user, roomId));
-    if (room.status === "completed" || room.status === "cancelled")
+    if (room.status === "completed" || room.status === "cancelled" || room.status === "invalidated")
       throw new ApiError(409, "Phòng thi đã đóng.");
+    if (action === "leave" && room.status === "in-progress") {
+      await this.invalidateRoomIntegrity(member, room, input.reason ?? "left-exam");
+      return (await this.rooms.findOne({ _id: room._id }))!;
+    }
     const path = await this.path(user);
     const band = path.bands[bandKey(room.band)];
     if (path.currentBand !== room.band || !this.promotionEligible(band))
       throw new ApiError(403, "Kỳ thi nâng band chưa mở.");
     const contents = await this.database.content
-      .find({ _id: { $in: band.promotionContentIds } })
+      .find({ _id: { $in: room.contentIds ?? band.promotionContentIds } })
       .toArray();
     const duration = contents.reduce(
       (sum, content) => sum + content.durationMinutes,
@@ -1620,7 +1961,7 @@ export class DuoService {
     );
     const updated = await this.changeRoom(room._id, (latest) => {
       const presence = latest.members[member.duoRole];
-      if (latest.status === "completed" || latest.status === "cancelled")
+      if (latest.status === "completed" || latest.status === "cancelled" || latest.status === "invalidated")
         throw new ApiError(409, "Phòng thi đã đóng.");
       if (action === "leave") {
         presence.lastSeenAt = null;
@@ -1655,6 +1996,10 @@ export class DuoService {
           presence.companion = input.companion;
         }
         presence.readyAt = input.ready ? this.iso() : null;
+        if (input.ready && input.documentId) {
+          latest.requiresPresence = true;
+          presence.documentId = input.documentId;
+        }
       }
       if (
         latest.status === "countdown" &&
@@ -1682,13 +2027,29 @@ export class DuoService {
   private async startRoom(
     user: UserRecord,
     roomId: string,
+    documentId?: string,
   ): Promise<{
     room: RoomRecord;
     assessment: AssessmentRecord | null;
     companion: boolean;
   }> {
     const { user: member } = await this.member(user);
-    const room = await this.reconcileRoom(await this.room(user, roomId));
+    let room = await this.reconcileRoom(await this.room(user, roomId));
+    if (room.status === "completed" || room.status === "cancelled" || room.status === "invalidated")
+      throw new ApiError(409, "Phòng thi đã đóng.");
+    if (documentId) {
+      const existingDocument = room.members[member.duoRole].documentId;
+      if (existingDocument && existingDocument !== documentId && !(await this.roomFinalSubmissionsAccepted(room))) {
+        await this.invalidateRoomIntegrity(member, room, "duplicate-tab");
+        throw new ApiError(409, "Đã phát hiện cửa sổ khác; phòng thi đã bị hủy.");
+      }
+      room = await this.changeRoom(room._id, latest => {
+        if (latest.status !== "in-progress") throw new ApiError(409, "Phòng thi đã đóng.");
+        latest.requiresPresence = true;
+        latest.members[member.duoRole].documentId ??= documentId;
+        latest.members[member.duoRole].lastSeenAt = this.iso();
+      });
+    }
     const path = await this.path(user);
     if (
       room.status !== "in-progress" ||
@@ -1708,7 +2069,7 @@ export class DuoService {
       path,
       member,
       "promotion",
-      path.bands[bandKey(room.band)].promotionContentIds,
+      room.contentIds ?? path.bands[bandKey(room.band)].promotionContentIds,
       null,
       room,
     );
@@ -1870,11 +2231,12 @@ export class DuoService {
             .sort((a, b) => a.band - b.band)
             .map((band) => this.bandView(band))
         : [],
-      room: room ? this.roomView(room) : null,
+      room: room ? await this.roomView(room, user) : null,
       assessments: reconciled.map((record) => this.assessmentView(record)),
     };
   }
-  registerRoutes(app: Express): void {
+  registerRoutes(app: Express, hooks?: DuoRouteHooks): void {
+    this.strictRoomMonitoring = Boolean(hooks);
     app.get(
       "/api/duo",
       asyncRoute(async (request, response) => {
@@ -1927,20 +2289,25 @@ export class DuoService {
     app.post(
       "/api/duo/gates/:id/start",
       asyncRoute(async (request, response) => {
+        const user = learnerOf(request);
+        hooks?.beforeStart(request);
+        const assessment = await this.startGate(user, routeId(request));
+        if (hooks) await hooks.opened(user, assessment._id, request);
         response.json({
-          assessment: this.assessmentView(
-            await this.startGate(learnerOf(request), routeId(request)),
-          ),
+          assessment: this.assessmentView(assessment),
         });
       }),
     );
     app.get(
       "/api/duo/assessments/:id",
       asyncRoute(async (request, response) => {
+        const user = learnerOf(request);
+        const assessmentId = routeId(request);
+        if (hooks) await hooks.check(user, assessmentId);
         response.json({
           assessment: this.assessmentView(
             await this.reconcileAssessment(
-              await this.assessment(learnerOf(request), routeId(request)),
+              await this.assessment(user, assessmentId),
             ),
           ),
         });
@@ -1950,7 +2317,7 @@ export class DuoService {
       "/api/duo/rooms",
       asyncRoute(async (request, response) => {
         response.status(201).json({
-          room: this.roomView(await this.createRoom(learnerOf(request))),
+          room: await this.roomView(await this.createRoom(learnerOf(request)), learnerOf(request)),
         });
       }),
     );
@@ -1958,10 +2325,11 @@ export class DuoService {
       "/api/duo/rooms/:id",
       asyncRoute(async (request, response) => {
         response.json({
-          room: this.roomView(
+          room: await this.roomView(
             await this.reconcileRoom(
               await this.room(learnerOf(request), routeId(request)),
             ),
+            learnerOf(request),
           ),
         });
       }),
@@ -1979,15 +2347,23 @@ export class DuoService {
                   })
                   .strict()
                   .parse(request.body)
-              : {};
+              : action === "leave" ? z.object({
+                reason: z.enum(["hidden", "page-exit", "navigation", "duplicate-tab", "heartbeat-lost"]).optional(),
+                tabId: z.string().optional(),
+              }).strict().parse(request.body ?? {}) : {};
+          if (action === "leave" && "tabId" in input && input.tabId) requireExamTab(input.tabId);
+          if (hooks && action === "ready" && "ready" in input && input.ready) hooks.beforeStart(request);
+          const documentId = hooks && action !== "leave" ? requireExamTab(request.get("X-Exam-Tab")) : undefined;
+          if (documentId && action !== "ready") await this.observeRoomDocument(learnerOf(request), documentId);
           response.json({
-            room: this.roomView(
+            room: await this.roomView(
               await this.touchRoom(
                 learnerOf(request),
                 routeId(request),
                 action,
-                input,
+                { ...input, ...(documentId ? { documentId } : {}) },
               ),
+              learnerOf(request),
             ),
           });
         }),
@@ -1995,12 +2371,16 @@ export class DuoService {
     app.post(
       "/api/duo/rooms/:id/start",
       asyncRoute(async (request, response) => {
+        const user = learnerOf(request);
+        hooks?.beforeStart(request);
         const result = await this.startRoom(
-          learnerOf(request),
+          user,
           routeId(request),
+          hooks ? requireExamTab(request.get("X-Exam-Tab")) : undefined,
         );
+        if (hooks && result.assessment) await hooks.opened(user, result.assessment._id, request);
         response.json({
-          room: this.roomView(result.room),
+          room: await this.roomView(result.room, user),
           assessment: result.assessment
             ? this.assessmentView(result.assessment)
             : null,

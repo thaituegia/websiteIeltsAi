@@ -16,6 +16,8 @@ import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
 import { ApiError } from "./errors";
 import { placementDurationSeconds, suggestedPlacementSeconds } from "./placement-timing";
+import { ExamGuard, requireExamTab, type ExamTarget, type ExamResetResult } from "./exam-guard";
+import { createExamReplacement, examReplacementSourceIds, ExamReplacementUnavailableError } from "./exam-variants";
 import { loadDuoCredentials, loginDuo, type DuoCredentialSettings } from "./duo-auth";
 import { createDuoService } from "./duo";
 import {
@@ -81,6 +83,8 @@ export interface AppConfig {
   serveClient?: boolean;
   trustProxy?: boolean | number | string;
   duoEnabled?: boolean;
+  /** Explicitly disabled only by isolated fixtures for historical workflows. */
+  examIntegrityEnabled?: boolean;
   duoCredentials?: DuoCredentialSettings;
   duo?: Parameters<typeof createDuoService>[1];
 }
@@ -159,6 +163,7 @@ export function sanitizeContent(
   const { questions, referenceAnswers: _referenceAnswers, ...base } = content;
   const clean = { ...base } as StoredContent & { _id?: string };
   delete clean._id;
+  delete (clean as StoredContent & { replacement?: unknown }).replacement;
   if (_referenceAnswers?.length)
     clean.description = clean.description.replace(
       "No model answer is supplied.",
@@ -218,6 +223,7 @@ function planOf(plan: PlanRecord): StudyPlan {
 export function createApp(database: Database, config: AppConfig = {}): Express {
   const production = config.production ?? process.env.NODE_ENV === "production";
   const clockNow = config.duo?.now ?? Date.now;
+  const examIntegrityEnabled = config.examIntegrityEnabled ?? true;
   const duoEnabled = config.duoEnabled ?? (production || process.env.DUO_ENABLED !== "false");
   const duoCredentials = duoEnabled ? config.duoCredentials ?? loadDuoCredentials() : undefined;
   const authOptions = duoCredentials ? { duo: duoCredentials } : {};
@@ -291,6 +297,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         demoEnabled,
         duoEnabled,
         authMode: duoEnabled ? "phone" : "email",
+        examIntegrityEnabled,
         services: services(),
         bank: { lessons, mocks, vocabulary, placement, version: bankVersion },
       });
@@ -396,7 +403,150 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     }),
   );
   app.use("/api", attachLearner(database, authOptions), requireLearner);
-  duoService?.registerRoutes(app);
+  const guard = new ExamGuard(database, clockNow, resolveExamTarget, resetExamTarget);
+  app.use("/api", (request: Request, _response: Response, next: NextFunction) => {
+    // Handlers below perform resource checks as well. Page announcements with a
+    // document token catch another authenticated browser/device, beyond BroadcastChannel.
+    void (async () => {
+      if (examIntegrityEnabled && !request.path.startsWith("/exam-integrity") && request.get("X-Exam-Tab")) {
+        const user = learnerOf(request);
+        const tabId = requireExamTab(request.get("X-Exam-Tab"));
+        await duoService?.observeRoomDocument(user, tabId);
+        await guard.observe(user, tabId);
+      }
+    })().then(() => next(), next);
+  });
+  duoService?.registerRoutes(app, examIntegrityEnabled ? {
+    beforeStart: request => { requireExamTab(request.get("X-Exam-Tab")); },
+    opened: (user, assessmentId, request) => armExam(user, "assessment", assessmentId, request.get("X-Exam-Tab")),
+    check: async (user, assessmentId) => { await guard.inspectResource(user, "assessment", assessmentId); },
+  } : undefined);
+
+  async function resolveExamTarget(user: import("./storage").UserRecord, kind: import("../shared/exam-integrity").ExamIntegrityKind, id: string): Promise<ExamTarget> {
+    if (kind === "attempt") {
+      const row = await database.attempts.findOne({ _id: id, userId: user.id });
+      if (!row) throw new ApiError(404, "Không tìm thấy lượt của bạn.");
+      if (row.duoAssessmentId) return resolveExamTarget(user, "assessment", row.duoAssessmentId);
+      return { kind, resourceId: id, finished: row.status === "submitted" || row.mode === "practice" };
+    }
+    if (kind === "placement") {
+      const row = await database.placements.findOne({ _id: id, userId: user.id });
+      if (!row) throw new ApiError(404, "Không tìm thấy bài đầu vào của bạn.");
+      return { kind, resourceId: id, finished: Boolean(row.result && !row.currentQuestionId && row.completionReason !== "invalidated") };
+    }
+    const row = await database.db.collection<{ _id: string; userId: string; active: boolean; invalidatedAt?: string; parts: { attemptId: string | null }[] }>("duo_assessments").findOne({ _id: id, userId: user.id });
+    if (!row) throw new ApiError(404, "Không tìm thấy bài đánh giá của bạn.");
+    const attempts = row.parts.map(part => part.attemptId).filter((value): value is string => Boolean(value));
+    const allSubmitted = attempts.length === row.parts.length && await database.attempts.countDocuments({ _id: { $in: attempts }, userId: user.id, status: "submitted" }) === attempts.length;
+    return { kind, resourceId: id, finished: !row.invalidatedAt && (!row.active || allSubmitted) };
+  }
+  async function eraseInvalidatedAudio(userId: string, attemptId: string): Promise<void> {
+    const audio = await database.audio.findOneAndDelete({ userId, attemptId });
+    if (audio) await deleteOwnedRecording(userId, attemptId, audio.fileId);
+  }
+  async function resetExamTarget(user: import("./storage").UserRecord, target: ExamTarget, reason: import("../shared/exam-integrity").ExamIntegrityReason): Promise<ExamResetResult> {
+    const at = new Date(clockNow()).toISOString();
+    if (target.kind === "assessment") {
+      if (!duoService) throw new ApiError(404, "Lộ trình Duo chưa bật.");
+      const result = await duoService.invalidateIntegrity(user, target.resourceId, reason);
+      const attempts = await database.attempts.find({ _id: { $in: result.attemptIds }, status: "invalidated" }).toArray();
+      for (const attempt of attempts) await eraseInvalidatedAudio(attempt.userId, attempt.id);
+      const rows = await database.db.collection<{ _id: string; userId: string }>("duo_assessments").find({ _id: { $in: result.assessmentIds } }).toArray();
+      return { affected: rows.map(row => ({ kind: "assessment", resourceId: row._id, userId: row.userId })) };
+    }
+    if (target.kind === "placement") {
+      const row = await database.placements.findOne({ _id: target.resourceId, userId: user.id });
+      if (!row) throw new ApiError(404, "Không tìm thấy bài đầu vào của bạn.");
+      if (row.completionReason !== "invalidated") await database.placements.updateOne({ _id: row._id, userId: user.id }, { $set: {
+        invalidatedAt: at, integrityReason: reason, completionReason: "invalidated", currentQuestionId: null,
+        invalidatedQuestionIds: [...new Set([...row.answers.map(answer => answer.questionId), ...(row.currentQuestionId ? [row.currentQuestionId] : [])])],
+        answers: [], draftAnswer: null, result: null, theta: 0, standardError: 1.5, estimatedBand: 5,
+        integrity: { ...row.integrity, status: "invalidated", reason },
+      } });
+      return {};
+    }
+    const previous = await database.attempts.findOne({ _id: target.resourceId, userId: user.id });
+    if (!previous) throw new ApiError(404, "Không tìm thấy lượt của bạn.");
+    await database.attempts.updateOne({ _id: previous.id, userId: user.id }, { $set: {
+      status: "invalidated", invalidatedAt: previous.invalidatedAt ?? at, integrityReason: reason,
+      responses: {}, essays: {}, transcript: "", feedback: null, submittedAt: null, durationSeconds: 0,
+      integrity: { ...previous.integrity, status: "invalidated", reason },
+    }, $unset: { submissionLease: "", listeningPlayed: "" } });
+    await eraseInvalidatedAudio(user.id, previous.id);
+    if (previous.replacementContentId) return { replacementResourceId: previous.replacementContentId };
+    const source = await database.content.findOne({ _id: previous.contentId });
+    if (!source) return {};
+    const rootId = previous.rootContentId ?? source.id;
+    const old = await database.attempts.find({ userId: user.id, $or: [{ rootContentId: rootId }, { contentId: rootId }], status: "invalidated" }).toArray();
+    const materials = await database.content.find({ _id: { $in: old.map(row => row.contentId) } }).toArray();
+    try {
+      const replacement = await createExamReplacement(database, source, materials.flatMap(examReplacementSourceIds));
+      await database.content.insertOne(replacement);
+      const published = await database.attempts.updateOne({ _id: previous.id, userId: user.id, replacementContentId: { $exists: false } },
+        { $set: { replacementContentId: replacement.id, "integrity.replacementResourceId": replacement.id } });
+      if (!published.modifiedCount) {
+        await database.content.deleteOne({ _id: replacement.id });
+        const winner = await database.attempts.findOne({ _id: previous.id, userId: user.id });
+        return { replacementResourceId: winner?.replacementContentId };
+      }
+      return { replacementResourceId: replacement.id };
+    } catch (error) {
+      // A genuinely exhausted source pool must not silently replay the old set.
+      if (error instanceof ExamReplacementUnavailableError) return {};
+      throw error;
+    }
+  }
+  const integrityInput = z.object({ kind: z.enum(["attempt", "placement", "assessment"]), resourceId: z.string().min(1).max(180), tabId: z.string().min(8).max(80) });
+  app.post("/api/exam-integrity/open", asyncRoute(async (request, response) => {
+    const input = integrityInput.parse(request.body);
+    let session = examIntegrityEnabled ? await guard.open(learnerOf(request), input.kind, input.resourceId, input.tabId) : null;
+    if (session) {
+      await duoService?.observeRoomDocument(learnerOf(request), input.tabId);
+      if (session.id) session = await guard.current(learnerOf(request), session.id);
+    }
+    if (session?.status === "active") {
+      const integrity = { sessionId: session.id, status: session.status, phase: session.phase };
+      if (input.kind === "attempt") await database.attempts.updateOne({ _id: input.resourceId, userId: learnerOf(request).id, status: "in-progress" }, { $set: { integrity } });
+      if (input.kind === "placement") await database.placements.updateOne({ _id: input.resourceId, userId: learnerOf(request).id, currentQuestionId: { $ne: null } }, { $set: { integrity } });
+    }
+    response.json({ enabled: examIntegrityEnabled, session });
+  }));
+  app.get("/api/exam-integrity/:id", asyncRoute(async (request, response) => {
+    response.json({ enabled: examIntegrityEnabled, session: examIntegrityEnabled ? await guard.current(learnerOf(request), idOf(request)) : null });
+  }));
+  app.post("/api/exam-integrity/:id/heartbeat", asyncRoute(async (request, response) => {
+    const input = z.object({ tabId: z.string().min(8).max(80) }).parse(request.body);
+    if (examIntegrityEnabled) {
+      // Check ownership before a room-level document observation can mutate it.
+      await guard.current(learnerOf(request), idOf(request));
+      await duoService?.observeRoomDocument(learnerOf(request), requireExamTab(input.tabId));
+    }
+    response.json({ enabled: examIntegrityEnabled, session: examIntegrityEnabled ? await guard.heartbeat(learnerOf(request), idOf(request), input.tabId) : null });
+  }));
+  app.post("/api/exam-integrity/:id/violation", asyncRoute(async (request, response) => {
+    const input = z.object({ tabId: z.string().min(8).max(80), reason: z.enum(["hidden", "page-exit", "duplicate-tab", "navigation", "heartbeat-lost"]) }).parse(request.body);
+    response.json({ enabled: examIntegrityEnabled, session: examIntegrityEnabled ? await guard.violation(learnerOf(request), idOf(request), input.tabId, input.reason) : null });
+  }));
+  async function assertExamRequest(request: Request, kind: import("../shared/exam-integrity").ExamIntegrityKind, resourceId: string): Promise<void> {
+    if (kind === "attempt") {
+      const attempt = await database.attempts.findOne({ _id: resourceId, userId: learnerOf(request).id });
+      if (!attempt) throw new ApiError(404, "Không tìm thấy lượt của bạn.");
+      if (attempt.mode === "practice" && !attempt.duoAssessmentId) return;
+    }
+    if (examIntegrityEnabled) await guard.assert(learnerOf(request), kind, resourceId, requireExamTab(request.get("X-Exam-Tab")));
+  }
+  async function armExam(user: import("./storage").UserRecord, kind: import("../shared/exam-integrity").ExamIntegrityKind, resourceId: string, tabId: string | undefined): Promise<void> {
+    if (!examIntegrityEnabled) return;
+    if (kind === "attempt") {
+      const attempt = await database.attempts.findOne({ _id: resourceId, userId: user.id });
+      if (attempt?.mode === "practice" && !attempt.duoAssessmentId) return;
+    }
+    const session = await guard.open(user, kind, resourceId, requireExamTab(tabId));
+    if (session.status === "invalidated") throw new ApiError(409, "Đã phát hiện cửa sổ khác; lượt này đã bị hủy.");
+    const integrity = { sessionId: session.id, status: session.status, phase: session.phase, ...(session.reason ? { reason: session.reason } : {}) };
+    if (kind === "attempt") await database.attempts.updateOne({ _id: resourceId, userId: user.id, status: "in-progress" }, { $set: { integrity } });
+    else if (kind === "placement") await database.placements.updateOne({ _id: resourceId, userId: user.id, currentQuestionId: { $ne: null } }, { $set: { integrity } });
+  }
 
   async function contentOf(contentId: string): Promise<StoredContent> {
     const content = await database.content.findOne({ _id: contentId });
@@ -466,6 +616,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       userId: record.userId,
     });
     if (!latest) throw new ApiError(404, "Không tìm thấy lượt luyện.");
+    if (latest.status === "invalidated") throw new ApiError(409, "Lượt đã bị hủy; không thể nộp bài.");
     if (latest.status === "submitted") {
       await duoService?.attemptSubmitted(latest);
       return latest;
@@ -486,6 +637,13 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       } else {
         latest = await claimAttemptLease(latest);
         leaseToken = (latest as LeasedAttempt).submissionLease!.token;
+      }
+      const submittingUser = examIntegrityEnabled && (latest.mode === "exam" || latest.duoAssessmentId) ? await database.users.findOne({ _id: latest.userId }) : null;
+      if (submittingUser) {
+        const state = await guard.inspectResource(submittingUser, "attempt", latest.id);
+        if (!state || state.status === "invalidated") throw new ApiError(409, "Lượt đã bị hủy trước khi nộp.");
+        const finalPart = !latest.duoAssessmentId || await finalAssessmentPartAccepted(latest);
+        if (finalPart) await guard.grading(submittingUser, "attempt", latest.id, true);
       }
       const content = await contentOf(latest.contentId);
       const expired = Boolean(
@@ -563,6 +721,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           "Trạng thái bài luyện đã thay đổi. Hãy tải lại.",
         );
       await duoService?.attemptSubmitted(updated);
+      if (submittingUser) await guard.inspectResource(submittingUser, "attempt", updated.id);
       return updated;
     } catch (error) {
       if (detectedTranscript)
@@ -572,19 +731,36 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         );
       throw error;
     } finally {
+      if (examIntegrityEnabled && (record.mode === "exam" || record.duoAssessmentId)) {
+        const user = await database.users.findOne({ _id: record.userId });
+        const current = await database.attempts.findOne({ _id: record.id, userId: record.userId });
+        if (user && current?.status === "in-progress") await guard.grading(user, "attempt", record.id, false);
+      }
       if (!heldLeaseToken) {
         try { if (leaseToken) await releaseAttemptLease(latest, leaseToken); }
         finally { submissionLocks.delete(lockKey); }
       }
     }
   }
+  async function finalAssessmentPartAccepted(record: AttemptRecord): Promise<boolean> {
+    if (!record.duoAssessmentId) return true;
+    const row = await database.db.collection<{ _id: string; userId: string; parts: { attemptId: string | null }[] }>("duo_assessments").findOne({ _id: record.duoAssessmentId, userId: record.userId });
+    if (!row || row.parts.some(part => !part.attemptId)) return false;
+    const others = row.parts.map(part => part.attemptId).filter((id): id is string => Boolean(id) && id !== record.id);
+    return await database.attempts.countDocuments({ _id: { $in: others }, userId: record.userId, status: "submitted" }) === others.length;
+  }
   async function attemptOf(
     userId: string,
     id: string,
     expire = true,
   ): Promise<AttemptRecord> {
-    const record = await database.attempts.findOne({ _id: id, userId });
+    let record = await database.attempts.findOne({ _id: id, userId });
     if (!record) throw new ApiError(404, "Không tìm thấy lượt luyện của bạn.");
+    if (examIntegrityEnabled && (record.mode === "exam" || record.duoAssessmentId) && record.status === "in-progress") {
+      const user = await database.users.findOne({ _id: userId });
+      if (user) await guard.inspectResource(user, "attempt", id);
+      record = await database.attempts.findOne({ _id: id, userId }) ?? record;
+    }
     if (
       expire &&
       record.status === "in-progress" &&
@@ -597,11 +773,18 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     return record;
   }
   async function attemptView(record: AttemptRecord): Promise<Attempt> {
+    const user = examIntegrityEnabled && (record.mode === "exam" || record.duoAssessmentId) ? await database.users.findOne({ _id: record.userId }) : null;
+    const session = user ? await guard.inspectResource(user, "attempt", record.id) : null;
+    if (session?.status === "invalidated") record = await database.attempts.findOne({ _id: record.id, userId: record.userId }) ?? record;
     const {
       _id: _id,
       userId: _userId,
       listeningPlayed: _listeningPlayed,
       submissionLease: _submissionLease,
+      invalidatedAt: _invalidatedAt,
+      integrityReason: _integrityReason,
+      replacementContentId: _replacementContentId,
+      rootContentId: _rootContentId,
       ...view
     } = record as LeasedAttempt;
     const audioAvailable = Boolean(
@@ -613,10 +796,11 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     const content = await contentOf(record.contentId);
     return {
       ...view,
+      ...(session ? { integrity: { sessionId: session.id, status: session.status, phase: session.phase, ...(session.reason ? { reason: session.reason } : {}), ...(session.replacementResourceId ? { replacementResourceId: session.replacementResourceId } : {}) } } : {}),
       feedback: completedAttemptFeedback(record, content),
       content: sanitizeContent(
         content,
-        record.mode === "exam" && record.status !== "submitted",
+        record.status === "invalidated" || record.mode === "exam" && record.status !== "submitted",
       ),
       audioAvailable,
     };
@@ -857,13 +1041,29 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           duoAssessmentId: z.string().regex(/^[\w:.-]{1,180}$/).optional(),
         })
         .parse(request.body);
-      const content = await contentOf(input.contentId);
+      if (examIntegrityEnabled && (input.mode === "exam" || input.duoAssessmentId)) requireExamTab(request.get("X-Exam-Tab"));
+      let content = await contentOf(input.contentId);
       const user = learnerOf(request);
+      const requestedId = content.id;
+      let rootContentId = requestedId;
+      if (!input.duoAssessmentId) {
+        const invalidated = await database.attempts.findOne({ userId: user.id, mode: input.mode, status: "invalidated",
+          $or: [{ rootContentId: requestedId }, { contentId: requestedId }] }, { sort: { startedAt: -1 } });
+        if (invalidated) {
+          if (!invalidated.replacementContentId) throw new ApiError(409, "Ngân hàng chưa có bộ đề tương đương chưa dùng. Hãy chọn bài khác; lượt cũ vẫn bị hủy.");
+          content = await contentOf(invalidated.replacementContentId);
+          rootContentId = invalidated.rootContentId ?? invalidated.contentId;
+        } else {
+          const predecessor = await database.attempts.findOne({ userId: user.id, replacementContentId: requestedId });
+          rootContentId = predecessor?.rootContentId ?? predecessor?.contentId ?? requestedId;
+        }
+      }
       if (input.duoAssessmentId && !duoService) throw new ApiError(403, "Lộ trình Duo chưa được bật.");
       const protectedContext = duoService ? await duoService.beforeAttempt(user, input) : {};
       if (protectedContext.existingAttemptId) {
         const bound = await database.attempts.findOne({ _id: protectedContext.existingAttemptId, userId: user.id, duoAssessmentId: input.duoAssessmentId, contentId: content.id });
         if (!bound) throw new ApiError(409, "Lượt thi Duo đã liên kết chưa sẵn sàng; hãy tải lại phòng thi.");
+        await armExam(user, "attempt", bound.id, request.get("X-Exam-Tab"));
         response.json({ attempt: await attemptView(await attemptOf(user.id, bound.id)) });
         return;
       }
@@ -880,7 +1080,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         if (existing.duoAssessmentId !== input.duoAssessmentId)
           throw new ApiError(409, "Bạn đang làm bài này ở lượt khác. Hãy nộp lượt đó trước khi bắt đầu bài đánh giá Duo.");
         await duoService?.bindAttempt(user, existing.id, input.duoAssessmentId);
-        response.json({ attempt: await attemptView(existing) });
+        await armExam(user, "attempt", existing.id, request.get("X-Exam-Tab"));
+        response.json({ attempt: await attemptView(await attemptOf(user.id, existing.id)) });
         return;
       }
       if (existing) await submitAttempt(existing);
@@ -891,6 +1092,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         id,
         userId: user.id,
         contentId: content.id,
+        rootContentId,
         title: content.title,
         skill: content.skill,
         mode: input.mode,
@@ -925,11 +1127,13 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         if (concurrent.duoAssessmentId !== input.duoAssessmentId)
           throw new ApiError(409, "Bài này đang mở ở lượt khác; không thể dùng lượt thường để xác nhận kết quả Duo.");
         await duoService?.bindAttempt(user, concurrent.id, input.duoAssessmentId);
-        response.json({ attempt: await attemptView(concurrent) });
+        await armExam(user, "attempt", concurrent.id, request.get("X-Exam-Tab"));
+        response.json({ attempt: await attemptView(await attemptOf(user.id, concurrent.id)) });
         return;
       }
       await duoService?.bindAttempt(user, record.id, input.duoAssessmentId);
-      response.status(201).json({ attempt: await attemptView(record) });
+      await armExam(user, "attempt", record.id, request.get("X-Exam-Tab"));
+      response.status(201).json({ attempt: await attemptView(await attemptOf(user.id, record.id)) });
     }),
   );
   app.get(
@@ -963,6 +1167,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     "/api/attempts/:id",
     asyncRoute(async (request, response) => {
       const input = patchSchema.parse(request.body);
+      await assertExamRequest(request, "attempt", idOf(request));
       const user = learnerOf(request);
       if (submissionLocks.has(`${user.id}:${idOf(request)}`))
         throw new ApiError(409, "Bài đang được lưu/chấm; hãy đợi kết quả trước khi sửa bản nháp.");
@@ -1033,6 +1238,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   app.post(
     "/api/attempts/:id/listening-source",
     asyncRoute(async (request, response) => {
+      await assertExamRequest(request, "attempt", idOf(request));
       const userId = learnerOf(request).id;
       const record = await attemptOf(userId, idOf(request));
       if (record.skill !== "listening")
@@ -1067,6 +1273,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   app.post(
     "/api/attempts/:id/submit",
     asyncRoute(async (request, response) => {
+      await assertExamRequest(request, "attempt", idOf(request));
       const record = await attemptOf(
         learnerOf(request).id,
         idOf(request),
@@ -1148,6 +1355,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     "/api/attempts/:id/speaking",
     upload.single("audio"),
     asyncRoute(async (request, response) => {
+      await assertExamRequest(request, "attempt", idOf(request));
       const userId = learnerOf(request).id;
       const attemptId = idOf(request);
       const lockKey = `${userId}:${attemptId}`;
@@ -1157,6 +1365,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       let record: AttemptRecord | undefined;
       try {
         record = await attemptOf(userId, attemptId, false);
+        if (record.status === "invalidated") throw new ApiError(409, "Lượt đã bị hủy; hãy làm bộ đề mới.");
         if (record.skill !== "speaking")
           throw new ApiError(400, "Đây không phải bài Speaking.");
         if (record.status === "submitted") {
@@ -1246,6 +1455,11 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
                 throw error;
               }
             }
+            const stillOwned = await database.attempts.findOne({ _id: record.id, userId: record.userId, status: "in-progress", "submissionLease.token": leaseToken });
+            if (!stillOwned) {
+              await eraseInvalidatedAudio(record.userId, record.id);
+              throw new ApiError(409, "Lượt đã bị hủy trong khi tải bản nói.");
+            }
           } catch (error) {
             await deleteOwnedRecording(record.userId, record.id, stream.id);
             throw error;
@@ -1310,6 +1524,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   app.get(
     "/api/attempts/:id/audio",
     asyncRoute(async (request, response) => {
+      const attempt = await attemptOf(learnerOf(request).id, idOf(request), false);
+      if (attempt.status === "invalidated") throw new ApiError(404, "Bản nói của lượt bị hủy đã được xóa.");
       const userId = learnerOf(request).id;
       await attemptOf(userId, idOf(request), false);
       const audio = await database.audio.findOne({
@@ -1554,6 +1770,9 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     record: PlacementRecord,
   ): Promise<PlacementState> {
     record = await settlePlacement(record);
+    const user = examIntegrityEnabled ? await database.users.findOne({ _id: record.userId }) : null;
+    const session = user ? await guard.inspectResource(user, "placement", record._id) : null;
+    if (session?.status === "invalidated") record = await database.placements.findOne({ _id: record._id, userId: record.userId }) ?? record;
     const complete = placementIsComplete(record);
     const item = !complete && record.currentQuestionId
       ? await database.placementItems.findOne({ _id: record.currentQuestionId })
@@ -1581,13 +1800,37 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       suggestedQuestionSeconds: item ? suggestedPlacementSeconds(item) : undefined,
       draftAnswer: item && record.draftAnswer?.questionId === item.id ? record.draftAnswer.answer : "",
       completionReason: record.completionReason,
+      integrity: session ? { sessionId: session.id, status: session.status, phase: session.phase, ...(session.reason ? { reason: session.reason } : {}) } : record.integrity,
     };
   }
   function placementIsComplete(record: PlacementRecord): boolean {
     return record.currentQuestionId === null && record.result !== null &&
       (record.answers.length >= record.total || record.completionReason === "deadline");
   }
+  async function withPlacementCompletion<T>(record: PlacementRecord, persist: () => Promise<T>): Promise<T> {
+    const user = examIntegrityEnabled ? await database.users.findOne({ _id: record.userId }) : null;
+    const session = user ? await guard.inspectResource(user, "placement", record._id) : null;
+    // Claim completion before publishing either the result or the learner band.
+    // A cancellation that already read the answering phase must lose its CAS;
+    // a cancellation that won first prevents this claim and all result writes.
+    // Legacy placements without a guard retain their original deadline handling.
+    if (user && session) await guard.grading(user, "placement", record._id, true);
+    try {
+      return await persist();
+    } finally {
+      if (user && session) {
+        const latest = await database.placements.findOne({ _id: record._id, userId: record.userId });
+        if (latest?.currentQuestionId) await guard.grading(user, "placement", record._id, false);
+        else await guard.inspectResource(user, "placement", record._id);
+      }
+    }
+  }
   async function settlePlacement(record: PlacementRecord): Promise<PlacementRecord> {
+    if (examIntegrityEnabled && record.currentQuestionId) {
+      const user = await database.users.findOne({ _id: record.userId });
+      if (user) await guard.inspectResource(user, "placement", record._id);
+      record = await database.placements.findOne({ _id: record._id, userId: record.userId }) ?? record;
+    }
     if (!record.currentQuestionId || placementIsComplete(record)) return record;
     if (!record.deadlineAt) {
       // Legacy active tests start a single remaining-time allowance on resume;
@@ -1626,19 +1869,21 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     feedback.summary = enough
       ? `Hết thời gian; bài chỉ gồm ${answers.length}/${record.total} câu đã gặp. ${feedback.summary}`
       : `Hết thời gian; đã lưu các câu đã gặp và đáp án. Bạn trả lời ít hơn 5 câu nên chưa đủ dữ liệu xác định trình độ. Hãy làm một bài mới.`;
-    const updated = await database.placements.findOneAndUpdate({
-      _id: record._id, userId: record.userId, currentQuestionId: record.currentQuestionId,
-      answers: record.answers, draftAnswer: record.draftAnswer === undefined ? { $exists: false } : record.draftAnswer,
-    }, { $set: { ...estimate, answers, currentQuestionId: null, draftAnswer: null, result: feedback,
-      completedAt: new Date(clockNow()).toISOString(), completionReason: "deadline" } }, { returnDocument: "after" });
-    if (!updated) return settlePlacement(await database.placements.findOne({ _id: record._id, userId: record.userId }) ?? record);
-    if (enough) {
-      await database.users.updateOne({ _id: record.userId }, { $set: { currentBand: estimate.estimatedBand,
-        personalEstimatedBand: estimate.estimatedBand, cefr: cefrForBand(estimate.estimatedBand) } });
-      const user = await database.users.findOne({ _id: record.userId });
-      if (user) await duoService?.placementCompleted(user, updated);
-    }
-    return updated;
+    return withPlacementCompletion(record, async () => {
+      const updated = await database.placements.findOneAndUpdate({
+        _id: record._id, userId: record.userId, currentQuestionId: record.currentQuestionId,
+        answers: record.answers, draftAnswer: record.draftAnswer === undefined ? { $exists: false } : record.draftAnswer,
+      }, { $set: { ...estimate, answers, currentQuestionId: null, draftAnswer: null, result: feedback,
+        completedAt: new Date(clockNow()).toISOString(), completionReason: "deadline" } }, { returnDocument: "after" });
+      if (!updated) return settlePlacement(await database.placements.findOne({ _id: record._id, userId: record.userId }) ?? record);
+      if (enough) {
+        await database.users.updateOne({ _id: record.userId }, { $set: { currentBand: estimate.estimatedBand,
+          personalEstimatedBand: estimate.estimatedBand, cefr: cefrForBand(estimate.estimatedBand) } });
+        const user = await database.users.findOne({ _id: record.userId });
+        if (user) await duoService?.placementCompleted(user, updated);
+      }
+      return updated;
+    });
   }
   async function completedPlacementFeedback(record: PlacementRecord): Promise<Feedback | null> {
     if (!placementIsComplete(record) || !record.result) return null;
@@ -1672,23 +1917,28 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       .toArray();
     return selectPlacementQuestion(
       bank,
-      record.answers.map((answer) => answer.questionId),
+      [...record.answers.map((answer) => answer.questionId), ...(record.excludedQuestionIds ?? [])],
       theta,
     );
   }
   app.get(
     "/api/placement/active",
     asyncRoute(async (request, response) => {
-      const record = await database.placements.findOne(
+      let record = await database.placements.findOne(
         { userId: learnerOf(request).id, currentQuestionId: { $ne: null } },
         { sort: { startedAt: -1 } },
       );
+      if (!record && examIntegrityEnabled) {
+        const latest = await database.placements.findOne({ userId: learnerOf(request).id }, { sort: { startedAt: -1 } });
+        if (latest?.completionReason === "invalidated") record = latest;
+      }
       response.json({ placement: record ? await placementView(record) : null });
     }),
   );
   app.post(
     "/api/placement/start",
     asyncRoute(async (request, response) => {
+      if (examIntegrityEnabled) requireExamTab(request.get("X-Exam-Tab"));
       const { mode } = z
         .object({ mode: z.enum(["quick", "deep"]).default("quick") })
         .parse(request.body);
@@ -1698,6 +1948,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         { sort: { startedAt: -1 } },
       );
       if (existing) {
+        await armExam(learnerOf(request), "placement", existing._id, request.get("X-Exam-Tab"));
         response.json({ placement: await placementView(existing) });
         return;
       }
@@ -1715,16 +1966,22 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         startedAt: new Date(clockNow()).toISOString(),
         deadlineAt: new Date(clockNow() + placementDurationSeconds(mode) * 1000).toISOString(),
       };
+      const invalidated = await database.placements.find({ userId, completionReason: "invalidated" }, { projection: { invalidatedQuestionIds: 1 } }).toArray();
+      record.excludedQuestionIds = [...new Set(invalidated.flatMap(row => row.invalidatedQuestionIds ?? []))];
+      const available = await database.placementItems.countDocuments({ _id: { $nin: record.excludedQuestionIds } });
+      if (available < record.total) throw new ApiError(409, "Đã dùng hết câu đầu vào chưa gặp. Hãy bổ sung học liệu mới trước khi làm lại.");
       record.currentQuestionId = (
         await selectQuestion(record, record.theta)
       ).id;
       await database.placements.insertOne(record);
-      response.status(201).json({ placement: await placementView(record) });
+      await armExam(learnerOf(request), "placement", record._id, request.get("X-Exam-Tab"));
+      response.status(201).json({ placement: await placementView(await database.placements.findOne({ _id: record._id }) ?? record) });
     }),
   );
   app.post(
     "/api/placement/:id/draft",
     asyncRoute(async (request, response) => {
+      await assertExamRequest(request, "placement", idOf(request));
       const input = z.object({ questionId: z.string().max(120), answer: z.string().max(500) }).parse(request.body);
       const userId = learnerOf(request).id;
       let record = await database.placements.findOne({ _id: idOf(request), userId });
@@ -1745,6 +2002,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   app.post(
     "/api/placement/:id/answer",
     asyncRoute(async (request, response) => {
+      await assertExamRequest(request, "placement", idOf(request));
       const input = z
         .object({
           questionId: z.string().max(120),
@@ -1822,27 +2080,32 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         changed.currentQuestionId = (
           await selectQuestion(changed, estimate.theta)
         ).id;
-      const updated = await database.placements.findOneAndUpdate(
-        { _id: record._id, userId, currentQuestionId: input.questionId,
-          deadlineAt: { $gt: new Date(clockNow()).toISOString() } },
-        { $set: changed },
-        { returnDocument: "after" },
-      );
-      if (!updated)
-        throw new ApiError(409, "Câu này vừa được trả lời ở phiên khác.");
-      if (complete)
-        await database.users.updateOne(
-          { _id: userId },
-          {
-            $set: {
-              currentBand: estimate.estimatedBand,
-              personalEstimatedBand: estimate.estimatedBand,
-              cefr: cefrForBand(estimate.estimatedBand),
-            },
-          },
+      const persistAnswer = async () => {
+        const updated = await database.placements.findOneAndUpdate(
+          { _id: record._id, userId, currentQuestionId: input.questionId,
+            deadlineAt: { $gt: new Date(clockNow()).toISOString() } },
+          { $set: changed },
+          { returnDocument: "after" },
         );
-      if (complete) await duoService?.placementCompleted(learnerOf(request), updated);
-      response.json({ placement: await placementView(updated) });
+        if (!updated)
+          throw new ApiError(409, "Câu này vừa được trả lời ở phiên khác.");
+        if (complete)
+          await database.users.updateOne(
+            { _id: userId },
+            {
+              $set: {
+                currentBand: estimate.estimatedBand,
+                personalEstimatedBand: estimate.estimatedBand,
+                cefr: cefrForBand(estimate.estimatedBand),
+              },
+            },
+          );
+        if (complete) await duoService?.placementCompleted(learnerOf(request), updated);
+        if (complete && examIntegrityEnabled) await guard.inspectResource(learnerOf(request), "placement", updated._id);
+        response.json({ placement: await placementView(updated) });
+      };
+      if (complete) await withPlacementCompletion(record, persistAnswer);
+      else await persistAnswer();
     }),
   );
   app.get(
@@ -1930,6 +2193,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       if ([...submissionLocks].some((key) => key.startsWith(`${userId}:`)))
         throw new ApiError(409, "Đợi bài đang chấm hoàn tất rồi xóa lịch sử.");
       const ownedRecordings = await database.audio.find({ userId }).toArray();
+      await database.db.collection("exam_integrity_sessions").deleteMany({ userId });
       await Promise.all(
         ownedRecordings.map((recording) =>
           deleteOwnedRecording(userId, recording.attemptId, recording.fileId),

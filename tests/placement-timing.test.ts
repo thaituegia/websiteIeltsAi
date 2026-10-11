@@ -26,7 +26,8 @@ test("native Mongo timed placements persist drafts/deadlines, expire safely and 
     { role: "wife", name: "Synthetic Timer B", phone: "0390000084", passwordHash: await hashPassword("synthetic-timer-password-b") },
   ] });
   await provisionDuoAccounts(db, settings);
-  const server = createApp(db, { production: false, serveClient: false, duoEnabled: true, duoCredentials: settings, duo: { now: () => now } }).listen(0, "127.0.0.1");
+  // Legacy API/resume fixtures omit monitoring; dedicated native/browser integrity suites cover strict policy.
+  const server = createApp(db, { production: false, serveClient: false, examIntegrityEnabled: false, duoEnabled: true, duoCredentials: settings, duo: { now: () => now } }).listen(0, "127.0.0.1");
   await once(server, "listening"); const address = server.address(); assert.ok(address && typeof address !== "string");
   const origin = `http://127.0.0.1:${address.port}`; const cookies = { a: "", b: "" };
   async function request(who: "a" | "b", method: string, path: string, body?: unknown, expected = 200): Promise<any> {

@@ -307,7 +307,8 @@ export interface Attempt {
   title: string;
   skill: ContentKind;
   mode: Mode;
-  status: "in-progress" | "submitted";
+  status: "in-progress" | "submitted" | "invalidated";
+  integrity?: import("./exam-integrity").ExamIntegrityState;
   startedAt: string;
   deadlineAt: string | null;
   submittedAt: string | null;
@@ -325,7 +326,7 @@ export interface AttemptSummary {
   title: string;
   skill: ContentKind;
   mode: Mode;
-  status: "in-progress" | "submitted";
+  status: "in-progress" | "submitted" | "invalidated";
   startedAt: string;
   submittedAt: string | null;
   durationSeconds: number;
@@ -402,7 +403,8 @@ export interface PlacementState {
   serverNow?: string;
   suggestedQuestionSeconds?: number;
   draftAnswer?: string;
-  completionReason?: "answered" | "deadline";
+  completionReason?: "answered" | "deadline" | "invalidated";
+  integrity?: import("./exam-integrity").ExamIntegrityState;
 }
 export interface PlacementSummary {
   id: string;
@@ -415,6 +417,7 @@ export interface PlacementSummary {
   result: Feedback | null;
 }
 export interface Health {
+  examIntegrityEnabled?: boolean;
   status: "ok";
   database: "mongodb";
   demoEnabled: boolean;

@@ -71,6 +71,12 @@ import {
 import { SectionVisuals } from "./ContentVisual";
 import "./learning.css";
 import { DuoPlacementStatus, DuoAttemptContext } from "./Duo";
+import {
+  ExamRules, ExamStartDialog, InvalidatedExam, useExamIntegrity,
+  isExamInvalidated, beginExamSubmission, completeExamIntegrity, resumeExamSubmission,
+  examHeaders,
+  useSharedRoomIntegrity,
+} from "./ExamIntegrity";
 
 const icons = {
   reading: BookOpen,
@@ -186,6 +192,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
     [actionError, setActionError] = useState(""),
     [generator, setGenerator] = useState(false),
     [page, setPage] = useState(1);
+  const [startContentId, setStartContentId] = useState("");
   useEffect(() => setPage(1), [skill, topic, band, cefr, testType, search]);
   const queryString = new URLSearchParams({
     page: String(page),
@@ -204,7 +211,11 @@ function ContentLibrary({ exam }: { exam: boolean }) {
   const progress = useApi<{ attempts: AttemptSummary[] }>(
     "/attempts?status=in-progress",
   );
-  async function begin(contentId: string) {
+  async function begin(contentId: string, accepted = false) {
+    if (exam && health?.examIntegrityEnabled !== false && !accepted) {
+      setStartContentId(contentId);
+      return;
+    }
     setBusy(contentId);
     setActionError("");
     try {
@@ -213,6 +224,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         body: json({ contentId, mode: exam ? "exam" : "practice" }),
       });
       navigate(`/learn/${result.attempt.id}`);
+      setStartContentId("");
     } catch (cause) {
       setActionError(errorMessage(cause));
     } finally {
@@ -519,6 +531,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         và CEFR của nội dung là mức tham khảo; ngân hàng chưa được hiệu chuẩn
         bởi giám khảo IELTS.
       </p>
+      {startContentId && <ExamStartDialog busy={!!busy} onClose={() => !busy && setStartContentId("")} onStart={() => void begin(startContentId, true)} />}
       {generator && (
         <Modal
           title="Tạo một bài luyện mới"
@@ -578,7 +591,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
 }
 
 export function PlacementPage() {
-  const { refresh } = useSession();
+  const { refresh, health } = useSession();
   const [params, setParams] = useSearchParams();
   const reviewId = params.get("review");
   const active = useApi<{ placement: PlacementState | null }>(
@@ -589,7 +602,17 @@ export function PlacementPage() {
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [listening, setListening] = useState(false);
+  const [startMode, setStartMode] = useState<"quick" | "deep" | null>(null);
+  const integrityEnabled = health?.examIntegrityEnabled !== false;
+  const integrity = useExamIntegrity("placement", placement?.id,
+    integrityEnabled && !reviewId && !!placement?.question && !isExamInvalidated(placement), undefined,
+    !!placement?.result && !isExamInvalidated(placement));
+  const invalidated = isExamInvalidated(placement) || integrity.invalidated;
   const cancelSpeech = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (!invalidated) return;
+    cancelSpeech.current?.(); setListening(false); setAnswer("");
+  }, [invalidated]);
   const [timerNow, setTimerNow] = useState(Date.now());
   const serverOffset = useRef(0);
   const lastExpiryPoll = useRef(0);
@@ -603,7 +626,7 @@ export function PlacementPage() {
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
-    if (reviewId || !placement?.question || remainingSeconds !== 0 || busy ||
+    if (reviewId || invalidated || !integrity.ready || !placement?.question || remainingSeconds !== 0 || busy ||
       Date.now() - lastExpiryPoll.current < 1000) return;
     lastExpiryPoll.current = Date.now();
     cancelSpeech.current?.(); setListening(false); setBusy(true);
@@ -611,7 +634,7 @@ export function PlacementPage() {
       setPlacement(result.placement); setAnswer("");
       if (result.placement.result) await refresh();
     }).catch(cause => setError(errorMessage(cause))).finally(() => setBusy(false));
-  }, [timerNow, remainingSeconds, placement, reviewId, busy, refresh]);
+  }, [timerNow, remainingSeconds, placement, reviewId, busy, refresh, invalidated, integrity.ready]);
   useEffect(() => {
     setPlacement(null);
     setAnswer("");
@@ -622,7 +645,8 @@ export function PlacementPage() {
     else if (active.data?.placement === null) setPlacement(null);
   }, [active.data, reviewId]);
   useEffect(() => () => cancelSpeech.current?.(), []);
-  async function start(mode: "quick" | "deep") {
+  async function start(mode: "quick" | "deep", accepted = false) {
+    if (integrityEnabled && !accepted) { setStartMode(mode); return; }
     setBusy(true);
     setError("");
     try {
@@ -635,6 +659,7 @@ export function PlacementPage() {
         ).placement,
       );
       setAnswer("");
+      setStartMode(null);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -642,11 +667,13 @@ export function PlacementPage() {
     }
   }
   async function submit() {
-    if (!placement?.question || !answer) return;
+    if (!placement?.question || !answer || invalidated || !integrity.ready) return;
+    const finalSubmission = integrityEnabled && placement.completed + 1 >= placement.total;
     setBusy(true);
     setError("");
     cancelSpeech.current?.();
     setListening(false);
+    if (finalSubmission) beginExamSubmission("placement", placement.id);
     try {
       const result = await api<{ placement: PlacementState }>(
         `/placement/${placement.id}/answer`,
@@ -655,6 +682,7 @@ export function PlacementPage() {
           body: json({ questionId: placement.question.id, answer }),
         },
       );
+      if (result.placement.result && !isExamInvalidated(result.placement)) completeExamIntegrity("placement", placement.id);
       setPlacement(result.placement);
       setAnswer("");
       if (result.placement.result) await refresh();
@@ -662,10 +690,11 @@ export function PlacementPage() {
       setError(errorMessage(cause));
     } finally {
       setBusy(false);
+      if (finalSubmission) void resumeExamSubmission();
     }
   }
   async function selectAnswer(value: string) {
-    if (!placement?.question || busy) return;
+    if (!placement?.question || busy || invalidated || !integrity.ready) return;
     setAnswer(value); setBusy(true); setError("");
     try {
       const result = await api<{ placement: PlacementState }>(`/placement/${placement.id}/draft`, {
@@ -721,6 +750,7 @@ export function PlacementPage() {
           <ArrowLeft size={16} /> Quay lại lịch sử học
         </Link>
       )}
+      {invalidated && <InvalidatedExam onRestart={() => { setPlacement(null); setAnswer(""); if (reviewId) setParams({}); }} />}
       {!placement && !reviewId && (
         <>
           <section className="placement-hero">
@@ -782,7 +812,7 @@ export function PlacementPage() {
               <ul>
                 <li>Thích ứng theo độ khó từng câu</li>
                 <li>Ước lượng kèm sai số chuẩn</li>
-                <li>40 phút · đồng hồ vẫn chạy khi tải lại trang</li>
+                <li>40 phút · {integrityEnabled ? "giữ nguyên tab thi trong suốt bài" : "đồng hồ vẫn chạy khi tải lại trang"}</li>
               </ul>
               <Button
                 className="secondary"
@@ -796,14 +826,17 @@ export function PlacementPage() {
           </div>
         </>
       )}
-      {reviewId && placement?.question && (
+      {reviewId && placement?.question && !invalidated && (
         <Card>
           <h2>Bài kiểm tra chưa hoàn thành</h2>
           <p>Đáp án được mở khi hoàn thành hoặc hết thời gian.</p>
           <Button onClick={() => setParams({})}>Tiếp tục kiểm tra</Button>
         </Card>
       )}
-      {placement?.question && !reviewId && (
+      {placement?.question && !reviewId && !invalidated && (
+        <>
+        {integrityEnabled && <ExamRules compact />}
+        {integrity.error && <ErrorNotice message={integrity.error} retry={() => void integrity.retry()} />}
         <Card className="placement-question">
           <div className="placement-progress">
             <span>
@@ -831,7 +864,7 @@ export function PlacementPage() {
           {remainingSeconds !== null && (
             <div className={`placement-timer notice ${remainingSeconds < 120 ? "warning" : ""}`} role="timer" aria-label="Thời gian bài kiểm tra còn lại">
               <Clock3 size={18} /><strong>{formatTime(remainingSeconds)}</strong>
-              <span>Đồng hồ tiếp tục khi tải lại. Gợi ý cho câu này: khoảng {placement.suggestedQuestionSeconds || 90} giây.</span>
+              <span>{integrityEnabled ? "Tải lại trang sẽ hủy bài. " : "Đồng hồ tiếp tục khi tải lại. "}Gợi ý cho câu này: khoảng {placement.suggestedQuestionSeconds || 90} giây.</span>
             </div>
           )}
           {placement.question.skill === "listening" ? (
@@ -867,7 +900,7 @@ export function PlacementPage() {
                   name="placement-answer"
                   value={option}
                   checked={answer === option}
-                  disabled={busy || remainingSeconds === 0}
+                  disabled={busy || remainingSeconds === 0 || !integrity.ready}
                   onChange={() => void selectAnswer(option)}
                 />
                 <span className="option-letter">
@@ -879,14 +912,15 @@ export function PlacementPage() {
           </div>
           <div className="placement-footer">
             <span className="muted tiny">Lựa chọn được tự lưu. Hết giờ sẽ mở đáp án các câu đã gặp.</span>
-            <Button disabled={busy || !answer || remainingSeconds === 0} onClick={() => void submit()}>
+            <Button disabled={busy || !answer || remainingSeconds === 0 || !integrity.ready} onClick={() => void submit()}>
               {busy ? "Đang lưu…" : "Câu tiếp theo"}
               <ArrowRight size={17} />
             </Button>
           </div>
         </Card>
+        </>
       )}
-      {placement?.result && (
+      {placement?.result && !invalidated && (
         <>
           <Card className="placement-complete">
             <CheckCircle2 size={44} />
@@ -936,6 +970,7 @@ export function PlacementPage() {
           <FeedbackView feedback={placement.result} />
         </>
       )}
+      {startMode && <ExamStartDialog busy={busy} onClose={() => !busy && setStartMode(null)} onStart={() => void start(startMode, true)} />}
     </div>
   );
 }
@@ -946,6 +981,19 @@ export function LearningPage() {
   const [attempt, setAttempt] = useState<Attempt | null>(null),
     [loading, setLoading] = useState(true),
     [error, setError] = useState("");
+  const integrityEnabled = health?.examIntegrityEnabled !== false;
+  const protectedExam = integrityEnabled && (attempt?.mode === "exam" || !!attempt?.duoAssessmentId);
+  const integrityKind = attempt?.duoAssessmentId ? "assessment" : "attempt";
+  const integrityResource = attempt?.duoAssessmentId || attempt?.id;
+  const integrity = useExamIntegrity(integrityKind, integrityResource,
+    protectedExam && !isExamInvalidated(attempt) && attempt?.integrity?.status !== "completed" && (!!attempt?.duoAssessmentId || attempt?.status === "in-progress"), attempt?.id,
+    attempt?.integrity?.status === "completed" || (!attempt?.duoAssessmentId && attempt?.status === "submitted"));
+  const roomIntegrity = useSharedRoomIntegrity(undefined, attempt?.duoAssessmentId);
+  const invalidated = isExamInvalidated(attempt) || integrity.invalidated || roomIntegrity.invalidated;
+  const grading = protectedExam && attempt?.status === "in-progress" &&
+    (attempt.integrity?.phase === "grading" || integrity.session?.phase === "grading");
+  const canWrite = useRef(false);
+  canWrite.current = !invalidated && !grading && (!protectedExam || integrity.ready);
   const [responses, setResponses] = useState<Record<string, string>>({}),
     [essays, setEssays] = useState<Record<string, string>>({}),
     [transcript, setTranscript] = useState(""),
@@ -979,6 +1027,13 @@ export function LearningPage() {
     listenUrl = useRef(""),
     timedOut = useRef(false),
     recordingStart = useRef(0);
+  useEffect(() => {
+    if (!invalidated) return;
+    setResponses({}); setEssays({}); setTranscript(""); setAudioBlob(null);
+    void recorder.current?.discard(); recorder.current = null;
+    stopSpeech.current?.(); listenAudio.current?.pause();
+    setRecording(false); setPlaying(false); setConfirm(false);
+  }, [invalidated]);
   const activeMilliseconds = useRef(0);
   const loadGeneration = useRef(0);
   const mounted = useRef(true);
@@ -1029,6 +1084,27 @@ export function LearningPage() {
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    if (!attempt || attempt.status !== "in-progress" ||
+        (!grading && integrity.session?.status !== "completed")) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await api<{ attempt: Attempt }>(`/attempts/${encodeURIComponent(attempt.id)}`);
+        if (cancelled) return;
+        setAttempt(result.attempt);
+        if (result.attempt.status === "submitted") {
+          setResponses(result.attempt.responses); setEssays(result.attempt.essays); setTranscript(result.attempt.transcript);
+          await refresh();
+        }
+      } catch (cause) {
+        if (!cancelled) setError(errorMessage(cause));
+      }
+    };
+    const timer = window.setInterval(() => { void poll(); }, 2500);
+    void poll();
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [attempt?.id, attempt?.status, grading, integrity.session?.status]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
@@ -1106,12 +1182,12 @@ export function LearningPage() {
   }, [attempt?.contentId]);
   const submitted = attempt?.status === "submitted";
   const saveDraft = useCallback(async () => {
-    if (!attempt || attempt.status !== "in-progress") return;
+    if (!attempt || attempt.status !== "in-progress" || !canWrite.current) return;
     const generation = loadGeneration.current;
     const work = saveQueue.current
       .catch(() => undefined)
       .then(async () => {
-        if (generation !== loadGeneration.current || !mounted.current) return;
+        if (generation !== loadGeneration.current || !mounted.current || !canWrite.current) return;
         const version = draftVersion.current;
         setSaveState("saving");
         setSaveError("");
@@ -1127,7 +1203,7 @@ export function LearningPage() {
             },
           );
           if (generation !== loadGeneration.current || !mounted.current) return;
-          if (result.attempt.status === "submitted") setAttempt(result.attempt);
+          if (result.attempt.status !== "in-progress") setAttempt(result.attempt);
           setSaveState(version === draftVersion.current ? "saved" : "pending");
         } catch (cause) {
           if (generation !== loadGeneration.current || !mounted.current) return;
@@ -1135,7 +1211,7 @@ export function LearningPage() {
             const current = await api<{ attempt: Attempt }>(
               `/attempts/${attempt.id}`,
             );
-            if (current.attempt.status === "submitted") {
+            if (current.attempt.status !== "in-progress") {
               setAttempt(current.attempt);
               setSaveState("saved");
               return;
@@ -1150,33 +1226,35 @@ export function LearningPage() {
     await work;
   }, [attempt?.id, attempt?.status, attempt?.startedAt]);
   useEffect(() => {
-    if (!revision || submitted || busy) return;
+    if (!revision || submitted || busy || invalidated || !integrity.ready) return;
     setSaveState("pending");
     const timer = setTimeout(() => {
       void saveDraft().catch(() => undefined);
     }, 650);
     return () => clearTimeout(timer);
-  }, [revision, submitted, busy, saveDraft]);
+  }, [revision, submitted, busy, saveDraft, invalidated, integrity.ready]);
   useEffect(() => {
-    if (!attempt || submitted || busy) return;
+    if (!attempt || submitted || busy || invalidated || !integrity.ready) return;
     const timer = setInterval(() => {
       if (document.visibilityState === "visible")
         void saveDraft().catch(() => undefined);
     }, 15000);
     return () => clearInterval(timer);
-  }, [saveDraft, submitted, busy, attempt?.id]);
+  }, [saveDraft, submitted, busy, attempt?.id, invalidated, integrity.ready]);
   function changed() {
     draftVersion.current++;
     setRevision((value) => value + 1);
     setSaveState("pending");
   }
   async function stopRecordingNow() {
+    const generation = loadGeneration.current;
     const current = recorder.current;
     recorder.current = null;
     setRecording(false);
     if (!current) return audioBlob;
     try {
       const blob = await current.stop();
+      if (!canWrite.current || !mounted.current || generation !== loadGeneration.current) return null;
       if (blob.size > 25 * 1024 * 1024)
         throw new Error(
           "Bản ghi vượt giới hạn 25 MB. Hãy ghi lại một đoạn ngắn hơn.",
@@ -1194,7 +1272,7 @@ export function LearningPage() {
     setRecordBusy(true);
     try {
       const session = await startRecording();
-      if (generation !== loadGeneration.current || !mounted.current) {
+      if (generation !== loadGeneration.current || !mounted.current || !canWrite.current) {
         await session.discard();
         return;
       }
@@ -1222,11 +1300,12 @@ export function LearningPage() {
     return () => clearInterval(timer);
   }, [recording, attempt?.mode, attempt?.content.format]);
   async function submit(timeout = false) {
-    if (!attempt || busy || submitted) return;
+    if (!attempt || busy || submitted || !canWrite.current) return;
     const generation = loadGeneration.current;
     setBusy(true);
     setConfirm(false);
     setError("");
+    let finalSubmission = false;
     try {
       let recordingBlob = recording ? await stopRecordingNow() : audioBlob;
       if (
@@ -1236,6 +1315,7 @@ export function LearningPage() {
       ) {
         const stored = await fetch(`/api/attempts/${attempt.id}/audio`, {
           credentials: "include",
+          headers: examHeaders(),
         });
         if (!stored.ok)
           throw new Error(
@@ -1244,6 +1324,18 @@ export function LearningPage() {
         recordingBlob = await stored.blob();
       }
       await saveDraft();
+      if (!canWrite.current) return;
+      if (protectedExam && !attempt.duoAssessmentId) {
+        finalSubmission = true;
+        beginExamSubmission("attempt", attempt.id);
+      }
+      else if (protectedExam && attempt.duoAssessmentId) {
+        const current = await api<{ assessment: { parts: { attemptId: string | null; status: string }[] } }>(`/duo/assessments/${encodeURIComponent(attempt.duoAssessmentId)}`);
+        if (current.assessment.parts.every(part => part.attemptId === attempt.id || (!!part.attemptId && part.status !== "in-progress"))) {
+          finalSubmission = true;
+          beginExamSubmission("assessment", attempt.duoAssessmentId);
+        }
+      }
       let result: Attempt;
       if (
         attempt.skill === "speaking" &&
@@ -1254,6 +1346,7 @@ export function LearningPage() {
           recordingBlob,
           latest.current.transcript,
           (stage, detected) => {
+            if (!mounted.current || generation !== loadGeneration.current || (!canWrite.current && !finalSubmission)) return;
             const labels: Record<string, string> = {
               transcribing: "Đang phiên âm bản ghi…",
               transcribed: "Đã phiên âm, đang xử lý…",
@@ -1272,6 +1365,8 @@ export function LearningPage() {
             method: "POST",
           })
         ).attempt;
+      if (finalSubmission && result.status === "submitted") completeExamIntegrity(integrityKind, integrityResource!);
+      else await resumeExamSubmission();
       if (generation !== loadGeneration.current || !mounted.current) return;
       setAttempt(result);
       setResponses(result.responses);
@@ -1283,6 +1378,7 @@ export function LearningPage() {
       setPlaying(false);
       await refresh();
     } catch (cause) {
+      await resumeExamSubmission();
       if (generation !== loadGeneration.current || !mounted.current) return;
       setError(`${timeout ? "Đã hết thời gian. " : ""}${errorMessage(cause)}`);
       if (attempt.skill === "speaking")
@@ -1305,6 +1401,8 @@ export function LearningPage() {
     if (
       attempt &&
       !submitted &&
+      !invalidated &&
+      integrity.ready &&
       remaining === 0 &&
       !busy &&
       !timedOut.current
@@ -1312,9 +1410,10 @@ export function LearningPage() {
       timedOut.current = true;
       void submit(true);
     }
-  }, [remaining, submitted, busy, attempt?.id]);
+  }, [remaining, submitted, busy, attempt?.id, invalidated, integrity.ready]);
   async function listen() {
-    if (!attempt) return;
+    if (!attempt || !canWrite.current) return;
+    const generation = loadGeneration.current;
     setListenBusy(true);
     setError("");
     stopSpeech.current?.();
@@ -1323,7 +1422,7 @@ export function LearningPage() {
       if (health?.services.elevenlabs) {
         const response = await fetch(
           `/api/content/${attempt.contentId}/audio`,
-          { method: "POST", credentials: "include" },
+          { method: "POST", credentials: "include", headers: examHeaders() },
         );
         if (!response.ok) {
           const payload = (await response.json().catch(() => null)) as {
@@ -1331,8 +1430,10 @@ export function LearningPage() {
           } | null;
           throw new Error(payload?.error || "Không tải được bản nghe.");
         }
+        const blob = await response.blob();
+        if (!canWrite.current || !mounted.current || generation !== loadGeneration.current) return;
         if (listenUrl.current) URL.revokeObjectURL(listenUrl.current);
-        listenUrl.current = URL.createObjectURL(await response.blob());
+        listenUrl.current = URL.createObjectURL(blob);
         const audio = new Audio(listenUrl.current);
         listenAudio.current = audio;
         audio.onended = () => setPlaying(false);
@@ -1341,6 +1442,7 @@ export function LearningPage() {
           setError("Không phát được bản nghe. Kiểm tra thiết bị âm thanh.");
         };
         await audio.play();
+        if (!canWrite.current || !mounted.current || generation !== loadGeneration.current) { audio.pause(); return; }
         setPlaying(true);
         setPaused(false);
         setListenNotice(
@@ -1352,6 +1454,7 @@ export function LearningPage() {
           source: string;
           notice: string;
         }>(`/attempts/${attempt.id}/listening-source`, { method: "POST" });
+        if (!canWrite.current || !mounted.current || generation !== loadGeneration.current) return;
         setListenNotice(source.notice);
         setPlaying(true);
         setPaused(false);
@@ -1413,6 +1516,7 @@ export function LearningPage() {
         retry={() => void load()}
       />
     );
+  if (invalidated) return <div className="stack page-stack learning-page"><InvalidatedExam href={attempt.duoAssessmentId ? "/plan" : attempt.mode === "exam" ? "/exams" : "/library"} /></div>;
   const content = attempt.content;
   const activeSection = content.sections[section] || content.sections[0];
   const Icon = icons[attempt.skill];
@@ -1432,10 +1536,13 @@ export function LearningPage() {
     }));
     changed();
   }
-  const locked = submitted || busy || remaining === 0;
+  const locked = submitted || busy || grading || remaining === 0 || (protectedExam && !integrity.ready);
   return (
     <div className="stack page-stack learning-page">
       <DuoAttemptContext attempt={attempt} />
+      {(roomIntegrity.requiresPresence || (protectedExam && !submitted && !grading)) && <ExamRules compact />}
+      {grading && <div className="notice" role="status"><Clock3 size={20} /><span>Đã gửi bài, đang chờ máy chủ chấm. Câu trả lời đã được khóa; kết quả sẽ tự cập nhật khi chấm xong.</span></div>}
+      {protectedExam && integrity.error && <ErrorNotice message={integrity.error} retry={() => void integrity.retry()} />}
       <div className="learning-breadcrumb">
         <Link to={attempt.mode === "exam" ? "/exams" : "/library"}>
           <ArrowLeft size={14} />
@@ -1518,8 +1625,7 @@ export function LearningPage() {
         <div className="notice exam-notice">
           <Clock3 size={18} />
           <span>
-            Đếm ngược theo hạn nộp trên máy chủ; tải lại trang không bắt đầu
-            lại. Không có gợi ý hoặc đáp án trước khi nộp.
+            Đếm ngược theo hạn nộp trên máy chủ; {integrityEnabled ? "tải lại trang sẽ hủy lượt thi." : "tải lại trang không bắt đầu lại."} Không có gợi ý hoặc đáp án trước khi nộp.
             {attempt.skill === "listening" &&
               " Bản nghe chỉ phát một lần, kể cả khi tải lại."}
           </span>
@@ -1877,7 +1983,7 @@ export function LearningPage() {
             </p>
           </div>
           <Button
-            disabled={busy || recording || recordBusy}
+            disabled={locked || recording || recordBusy}
             onClick={() => setConfirm(true)}
           >
             <Send size={17} />
