@@ -67,62 +67,65 @@ const skillDescriptions = {
   speaking: "Tự tin nói, diễn đạt tự nhiên",
 };
 
-/** Decorative board pieces; achievements always come from the real learning data. */
-function CampaignRelic({
-  kind,
-}: {
-  kind: "book" | "scroll" | "forge" | "compass";
-}) {
+/** Original chibi stickers; achievement state always comes from learning data. */
+function CampaignRelic({ kind }: { kind: "book" | "scroll" | "forge" | "compass" }) {
   return (
-    <svg className="campaign-relic" viewBox="0 0 132 116" aria-hidden="true">
-      <ellipse cx="66" cy="103" rx="47" ry="9" fill="#234b36" opacity=".12" />
-      <path d="M13 83 66 105 120 83 66 61Z" fill="#ad753e" stroke="#603e26" strokeWidth="3" strokeLinejoin="round" />
-      <path d="M13 83v9l53 22v-9ZM66 105v9l54-22v-9Z" fill="#785332" stroke="#603e26" strokeWidth="3" strokeLinejoin="round" />
-      {kind === "book" && (
-        <g stroke="#543923" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round">
-          <path d="m25 60 39-15 44 19-39 20Z" fill="#d65737" />
-          <path d="M25 60v13l44 20V80ZM69 80l39-16v13L69 93Z" fill="#a23627" />
-          <path d="m25 53 39-15 44 19v10L69 84 25 64Z" fill="#fff3cc" />
-          <path d="m25 51 39-15 44 19-39 17Z" fill="#e87340" />
-          <path d="m64 37 5 35v12" fill="none" />
-          <path d="m83 65 8-3v20l-8-3Z" fill="#2e6849" />
-          <path d="m40 54 16 6m25-1 13-5" stroke="#fff3cc" />
-        </g>
-      )}
-      {kind === "scroll" && (
-        <g stroke="#543923" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round">
-          <path d="M35 31h50l11 53H46Z" fill="#ffefc9" />
-          <path d="M35 31c-14 0-13 15 0 15h13l-2-15ZM85 31c-10 0-10 15 0 15h12" fill="#e3b56c" />
-          <path d="M46 84c-12 0-12 14 0 14h48c13 0 13-14 0-14Z" fill="#e3b56c" />
-          <path d="m51 53 25-2m-22 13 26-2m-23 13 14-1" stroke="#997a4a" />
-          <circle cx="85" cy="71" r="13" fill="#cc4b31" />
-          <path d="m85 64 2 4 4 1-3 3 1 5-4-3-4 3 1-5-3-3 4-1Z" fill="#ffd992" stroke="none" />
-        </g>
-      )}
-      {kind === "forge" && (
-        <g stroke="#543923" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round">
-          <path d="M40 48h51l-7 18H66v15H52V65H38l-14-11Z" fill="#42634d" />
-          <path d="M46 81h26l7 10H39Z" fill="#35513f" />
-          <path d="m70 32 29 28 7-7-29-28Z" fill="#b88044" />
-          <path d="m57 24 13-15 22 21-13 15Z" fill="#e6bd75" />
-          <path d="m36 30 2-10m9 15 8-8m-26 4-8-6" stroke="#e87340" />
-        </g>
-      )}
-      {kind === "compass" && (
-        <g stroke="#543923" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round">
-          <path d="M35 38 66 23l32 15v43L66 97 35 81Z" fill="#ce8f4c" />
-          <circle cx="66" cy="59" r="28" fill="#fbe6b5" />
-          <circle cx="66" cy="59" r="20" fill="#fff5d8" stroke="#c5a168" strokeDasharray="3 4" />
-          <path d="m66 34 10 25-10 25-10-25Z" fill="#2d6647" />
-          <path d="m66 34 10 25H56Z" fill="#df5635" />
-          <circle cx="66" cy="59" r="4" fill="#ffda8c" />
-          <path d="M66 20v-9m-5 0h10" stroke="#dca459" />
-        </g>
-      )}
+    <svg className="campaign-relic" viewBox="0 0 132 116" aria-hidden="true" focusable="false">
+      <ellipse cx="66" cy="58" rx="52" ry="49" fill={kind === "forge" ? "#def5e9" : "#eee6ff"} />
+      <ellipse cx="66" cy="103" rx="36" ry="5" fill="#343247" opacity=".08" />
+      <g stroke="#343247" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        {kind === "book" ? (
+          <>
+            <path d="M25 34q22-8 41 2 19-10 41-2v53q-22-7-41 2-19-9-41-2Z" fill="#e75d70" />
+            <path d="M29 27q19-6 37 5 18-11 37-5v52q-20-5-37 5-17-10-37-5Z" fill="#fffdf9" />
+            <path d="M66 32v52M37 38l14 2m-14 7 11 2m29-10 15-2m-15 12 12-2" fill="none" stroke="#c9bed8" />
+            <path d="M85 25v24l6-5 6 3V24" fill="#83ceb3" />
+            <circle cx="48" cy="62" r="2.8" fill="#343247" stroke="none" />
+            <circle cx="84" cy="62" r="2.8" fill="#343247" stroke="none" />
+            <path d="M59 66q7 8 14 0" fill="none" />
+            <ellipse cx="40" cy="67" rx="5" ry="3" fill="#ffb5bd" stroke="none" />
+            <ellipse cx="92" cy="67" rx="5" ry="3" fill="#ffb5bd" stroke="none" />
+          </>
+        ) : kind === "scroll" ? (
+          <>
+            <rect x="35" y="23" width="63" height="74" rx="10" fill="#fff0b6" />
+            <path d="M47 19h33v12H47Z" fill="#bb9cdd" />
+            <path d="M48 41h28m-28 8h21m-21 34h32" stroke="#c9a557" />
+            <circle cx="54" cy="63" r="2.8" fill="#343247" stroke="none" />
+            <circle cx="78" cy="63" r="2.8" fill="#343247" stroke="none" />
+            <path d="M60 70q6 6 12 0" fill="none" />
+            <circle cx="98" cy="88" r="15" fill="#e75d70" />
+            <path d="m91 88 5 5 9-10" fill="none" stroke="#fffdf9" />
+          </>
+        ) : kind === "forge" ? (
+          <>
+            <path d="M66 62V43m0 10q-22 3-26-14 22-7 26 14m0 9q24-1 26-18-24-7-26 18" fill="#83ceb3" />
+            <path d="M38 66h56l-7 29H45Z" fill="#f6a9b2" />
+            <rect x="34" y="61" width="64" height="10" rx="5" fill="#e75d70" />
+            <circle cx="55" cy="80" r="2.8" fill="#343247" stroke="none" />
+            <circle cx="77" cy="80" r="2.8" fill="#343247" stroke="none" />
+            <path d="M60 87q6 6 12 0" fill="none" />
+            <path d="m66 17 4 7 8 1-6 6 1 8-7-4-7 4 1-8-6-6 8-1Z" fill="#ffe17d" />
+          </>
+        ) : (
+          <>
+            <circle cx="66" cy="62" r="36" fill="#fff0b6" />
+            <circle cx="66" cy="62" r="28" fill="#fffdf9" />
+            <path d="M60 25v-9h12v9M66 37v8m-25 17h8m34 0h8" fill="none" />
+            <path d="m66 42 8 20-8 8-8-8Z" fill="#e75d70" />
+            <path d="m66 82-8-20 8 8 8-8Z" fill="#83ceb3" />
+            <circle cx="48" cy="60" r="2.8" fill="#343247" stroke="none" />
+            <circle cx="84" cy="60" r="2.8" fill="#343247" stroke="none" />
+            <path d="M57 76q9 9 18 0" fill="none" />
+          </>
+        )}
+      </g>
+      <path d="m19 16 3 6 6 1-5 4 1 6-5-3-5 3 1-6-5-4 6-1Z" fill="#ffe17d" />
+      <circle cx="115" cy="73" r="4" fill="#83ceb3" />
+      <path d="M107 22v10m-5-5h10" stroke="#e75d70" strokeWidth="3" strokeLinecap="round" />
     </svg>
   );
 }
-
 function CampaignBanner({
   kind,
   eyebrow,
@@ -202,8 +205,8 @@ export function DashboardPage() {
     <div className="stack page-stack campaign-dashboard">
       <PageHeader
         eyebrow={greeting.toUpperCase()}
-        title={`Chào ${name}, cùng tiến bộ nhé.`}
-        description="Mở bản đồ, chọn thử thách và cùng nhau viết tiếp hành trình."
+        title={`Chào ${name}, học một chút nhé!`}
+        description="Một bài học nhỏ hôm nay, một bước gần hơn tới mục tiêu của chúng mình."
         action={
           <Link to="/plan" className="button secondary small">
             Lộ trình của hai người
@@ -218,9 +221,9 @@ export function DashboardPage() {
             HÀNH TRÌNH ĐẾN BAND {user.targetBand.toFixed(1)}
           </div>
           <h2>
-            Mỗi lượt học.
+            Học vui mỗi ngày.
             <br />
-            <em>Một chặng đi xa hơn.</em>
+            <em>Tiến xa cùng nhau.</em>
           </h2>
           <p>
             {user.currentBand == null
@@ -246,13 +249,13 @@ export function DashboardPage() {
         <div className="hero-art">
           <img
             className="campaign-world"
-            src="/assets/campaign-world.webp"
+            src="/assets/chibi-world.webp"
             alt=""
             decoding="async"
           />
           <div className="hero-art-tag">
-            HỎA × MỘC
-            <strong>Hai người. Một hành trình.</strong>
+            ĐÔI BẠN CÙNG TIẾN
+            <strong>Đi một bước. Vui một chút.</strong>
           </div>
           <div className="hero-art-note">
             <span className="status-dot" />
@@ -1256,7 +1259,7 @@ export function HistoryPage() {
   return (
     <div className="stack page-stack campaign-history">
       <PageHeader
-        eyebrow="NHẬT KÝ CHIẾN DỊCH"
+        eyebrow="NHỮNG BƯỚC TIẾN ĐÃ GOM GÓP"
         title="Lịch sử học"
         description="Mở lại bài đã làm, xem phản hồi và tiếp tục bài đang dang dở."
       />

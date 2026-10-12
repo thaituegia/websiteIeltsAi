@@ -4,7 +4,7 @@ Website luyện IELTS bằng **React 19 + TypeScript + Vite**, **Node.js 24 + Ex
 
 Yêu cầu trực tiếp của người dùng quyết định công nghệ và cách truy cập: **kho bài tập và đề thi thử luôn được làm riêng; chỉ kỳ thi nâng band cần cả hai cùng vào phòng**. Đặc tả Duo v1.1 bổ sung placement theo điểm thấp hơn, Duo Gate và bảo lưu kết quả đạt. [Ma trận yêu cầu](docs/requirements.md), [hợp đồng API](docs/api-contract.md), [cấu hình đăng nhập riêng](docs/duo-auth.md) và [kết quả kiểm tra](docs/validation.md) mô tả chi tiết.
 
-Giao diện [chiến dịch Hỏa + Mộc](docs/campaign-design.md) dùng bản đồ hoạt hình, quân cờ và huy hiệu theo tiến độ thật của cả hai. Font Be Vietnam Pro hỗ trợ tiếng Việt được lưu trong dự án và phục vụ cùng website.
+Giao diện [chibi và hành trình cá ngựa](docs/campaign-design.md) dùng nền kem, san hô, mint, lilac và vàng nhẹ. Hai quân ngựa có tên riêng theo tiến độ từng người, với mốc chờ Gate và huy hiệu chung. Font Be Vietnam Pro hỗ trợ tiếng Việt được lưu trong dự án và phục vụ cùng website.
 
 ## Chạy local
 

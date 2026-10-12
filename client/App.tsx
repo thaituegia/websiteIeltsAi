@@ -43,6 +43,7 @@ import {
 import { LibraryPage, ExamPage, PlacementPage, LearningPage } from "./Learning";
 import { DuoPlanPage, DuoAssessmentPage, DuoRoomPage } from "./Duo";
 import { initializeExamIntegrity, observeExamRoute } from "./ExamIntegrity";
+import { ChibiPawn } from "./ChibiPawn";
 
 const links = [
   ["/dashboard", "Tổng quan", LayoutDashboard],
@@ -148,7 +149,7 @@ export default function App() {
           <Link to="/dashboard" className="brand-link">
             <Logo />
           </Link>
-          <p className="sidebar-caption">BÀN ĐIỀU HÀNH CHIẾN DỊCH</p>
+          <p className="sidebar-caption">GÓC HỌC CỦA CHÚNG MÌNH</p>
           <nav aria-label="Điều hướng chính">
             {links.map(([path, label, Icon]) => (
               <NavLink
@@ -173,8 +174,8 @@ export default function App() {
             </Link>
           </div>
           <div className="sidebar-user">
-            <div className="avatar">
-              {user.name.split(" ").at(-1)?.[0]?.toUpperCase() || "H"}
+            <div className="avatar chibi-avatar">
+              {user.duoRole ? <ChibiPawn role={user.duoRole} /> : user.name.split(" ").at(-1)?.[0]?.toUpperCase() || "H"}
             </div>
             <div>
               <strong>{user.name}</strong>
@@ -193,7 +194,7 @@ export default function App() {
           <div className="topbar">
             <span className="topbar-note">
               <span className="status-dot" />
-              Không gian học của hai người
+              Cùng học, cùng vui
             </span>
             <div className="topbar-right">
               <span className="element-pair" aria-label="Phong cách Hỏa và Mộc">
@@ -206,10 +207,10 @@ export default function App() {
               </span>
               <Link
                 to="/settings"
-                className="avatar small"
+                className="avatar small chibi-avatar"
                 aria-label="Hồ sơ của bạn"
               >
-                {user.name.split(" ").at(-1)?.[0]?.toUpperCase()}
+                {user.duoRole ? <ChibiPawn role={user.duoRole} /> : user.name.split(" ").at(-1)?.[0]?.toUpperCase()}
               </Link>
             </div>
           </div>
@@ -254,13 +255,13 @@ export default function App() {
 function Logo() {
   return (
     <span className="brand">
-      <span className="brand-mark">
-        <Flame size={23} strokeWidth={2} />
-        <Trees size={16} strokeWidth={2} />
+      <span className="brand-mark chibi-brand-mark" aria-hidden="true">
+        <ChibiPawn role="husband" />
+        <ChibiPawn role="wife" />
       </span>
       <span>
         IELTS<span className="brand-ai"> AI</span>
-        <small>ĐỒNG HÀNH CHINH PHỤC</small>
+        <small>CHƠI VUI · HỌC GIỎI</small>
       </span>
     </span>
   );
@@ -487,16 +488,16 @@ function LegacyAuthPage({
         <Logo />
         <div className="auth-story-content">
           <div className="pill">
-            <Sparkles size={16} />A little progress. Every day.
+            <Sparkles size={16} />Học vui hơn khi có nhau.
           </div>
           <h1>
-            Mở cánh cửa mới.
+            Đi cùng nhau.
             <br />
-            <em>Bắt đầu với IELTS.</em>
+            <em>Giỏi hơn mỗi ngày.</em>
           </h1>
           <p>
-            Hiểu trình độ của bạn, luyện đúng điều cần luyện và biến từng buổi
-            học thành một bước tiến.
+            Một góc học nhỏ, hai người bạn đồng hành. Chọn một thử thách,
+            góp nhặt từng bước tiến và cùng nhau chạm tới band 8.0.
           </p>
           <div className="auth-feature">
             <Check />
@@ -663,7 +664,7 @@ export function LearningIllustration() {
   return (
     <img
       className="learning-illustration campaign-world"
-      src="/assets/campaign-world.webp"
+      src="/assets/chibi-world.webp"
       width={1536}
       height={1024}
       alt=""

@@ -1,20 +1,20 @@
 :root {
   font-family: "Be Vietnam Pro", system-ui, sans-serif;
-  color: #263c2b;
-  background: #f7f1e5;
+  color: #343247;
+  background: #fffaf5;
   font-synthesis: none;
   font-weight: 400;
   font-size: 15px;
   line-height: 1.6;
-  --navy: #193e2d;
-  --teal: #b9472d;
-  --teal-dark: #963822;
-  --cream: #f7f1e5;
-  --muted: #66715b;
-  --border: #ded6c0;
-  --peach: #edb588;
+  --navy: #343247;
+  --teal: #cf405d;
+  --teal-dark: #b32d49;
+  --cream: #fffaf5;
+  --muted: #625e73;
+  --border: #e5ddea;
+  --peach: #ffe0d2;
   --white: #fff;
-  --shadow: 0 6px 22px #463b2110;
+  --shadow: 0 4px 0 #eee6ee, 0 10px 24px #55446508;
 }
 * {
   box-sizing: border-box;
@@ -92,19 +92,19 @@ p {
 }
 button:focus-visible,
 a:focus-visible {
-  outline: 3px solid #b9472d;
+  outline: 3px solid #7a58b2;
   outline-offset: 4px;
 }
 input:focus,
 select:focus,
 textarea:focus {
-  outline: 3px solid #edd5ad;
+  outline: 3px solid #c8b5ee;
   outline-offset: 1px;
   border-color: var(--teal);
 }
 ::selection {
-  background: #efd6ac;
-  color: #123a36;
+  background: #e6d8ff;
+  color: #343247;
 }
 .button {
   display: inline-flex;

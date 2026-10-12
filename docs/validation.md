@@ -1,5 +1,15 @@
 # Kết quả kiểm tra
 
+## Chibi và lộ trình cá ngựa — 2026-10-12
+
+Toàn bộ giao diện dùng kem, san hô, mint, lilac và vàng nhẹ, với minh họa chibi mới, logo/avatar/favicon cá ngựa và font Be Vietnam Pro được phục vụ tại chỗ. Bàn cờ có hai quân khác màu, tên đầy đủ trong bảng tiến độ và nhãn truy cập; vị trí là buổi chưa hoàn thành tiếp theo hoặc mốc chờ theo dữ liệu riêng của mỗi người. Một người học xong chỉ di chuyển quân của người đó; Gate chưa đủ hai kết quả đạt vẫn giữ các buổi tiếp theo khóa. Chọn ô chỉ cuộn/focus thẻ buổi học, không ghi tiến độ.
+
+**20/20 kiểm tra trình duyệt đạt trong 2,1 phút**, desktop/mobile, gồm chín trang chính, font/asset/bố cục, huy hiệu theo kết quả thật, hai quân tiến độc lập, nội dung Reading/Listening/chart/map, xác nhận kiểm tra, practice resume và chuyển phần thi có giám sát. Sau sửa nhỏ nhãn cùng ô trên điện thoại, rebuild rồi chạy lại riêng hai tình huống cá ngựa: **2/2 đạt trong 30,1 giây**, kiểm tra nhãn không đè nhau hoặc tràn khỏi bàn cờ. Các ảnh cuối đã được xem trên cả hai kích thước; screenshot bàn cờ chỉ ẩn mobile bar tạm thời để xuất hình, không đổi thanh điều hướng của sản phẩm.
+
+**Pipeline native trên source cuối đạt trong 77 giây**: cached frozen `npm ci --offline`, strict TypeScript client/server + Vite, prune và full seed manifest; **512 MiB RAM, không thêm swap, CPU 0.5, network none**, peak chạm giới hạn nhưng OOM/OOM-kill bằng 0. Cả 343 input source khớp lúc hậu kiểm; sau đó chỉ bổ sung tài liệu/ảnh preview. Manifest giữ đúng **966 content / 810 bài luyện / 156 đề / 648 từ / 480 câu placement**. Bằng chứng ở ignored `.local/chibi-release/bounded-build-v2`; bản sao app của proof đã được dọn riêng sau khi container kết thúc. Đây là pipeline dùng cache, chưa phải full-network Dockerfile build hoặc triển khai VPS.
+
+Backend, học liệu, tài khoản, bài làm, audio, AI và quy tắc giữ trang không đổi. Snapshot canonical vẫn giữ toàn bộ 700 bản ghi nền trong 10 collection; tests chỉ dùng tài khoản tổng hợp/database riêng. Không lặp lại suite Node backend vì không đổi logic backend. Kiểm tra HTTPS chỉ đọc xác nhận VPS đang có ngân hàng v3, giám sát và cấu hình OpenAI; chưa chứng minh giao diện chibi đã triển khai. Ảnh preview chỉ chứa tài khoản tổng hợp: [tổng quan](screenshots/chibi-desktop-dashboard.png), [bàn cờ máy tính](screenshots/chibi-desktop-board.png), [bàn cờ điện thoại](screenshots/chibi-mobile-board.png).
+
 ## Giữ trang kiểm tra và thay bộ câu hỏi — 2026-10-11
 
 Phạm vi cuối là **placement, lượt `mode: exam`, Duo Gate và thi nâng band**. Practice thông thường vẫn tự lưu/resume qua điều hướng, tab ẩn và reload. Lượt kiểm tra đang trả lời bị hủy khi trang bị ẩn, rời/reload/đóng trang, có trang website đã đăng nhập cùng tài khoản khác hoặc mất heartbeat quá lease **25 giây**. Vi phạm trong phòng chung đang thi hủy lượt hiện tại của cả hai, kể cả Companion; trước bắt đầu, rời trong lúc chuẩn bị/đếm ngược bỏ Ready và đưa phòng về chờ. Bài hoàn thành, điểm, tiến độ và pass cũ được giữ.

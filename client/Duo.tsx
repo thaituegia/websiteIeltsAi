@@ -11,6 +11,7 @@ import {
   Check,
   CircleCheck,
   Clock3,
+  Dice5,
   Flag,
   HeartHandshake,
   Leaf,
@@ -28,6 +29,7 @@ import type {
   DuoLessonView,
   DuoResultStatus,
   DuoRoomView,
+  DuoRole,
   DuoSnapshot,
 } from "../shared/duo";
 import { api, json } from "./api";
@@ -43,6 +45,7 @@ import {
   bandLabel,
 } from "./components";
 import "./duo.css";
+import { ChibiPawn } from "./ChibiPawn";
 import { ExamRules, ExamStartDialog, InvalidatedExam, isExamInvalidated, useExamIntegrity, connectSharedRoom, updateSharedRoom, useSharedRoomIntegrity } from "./ExamIntegrity";
 
 const message = (cause: unknown) =>
@@ -134,41 +137,37 @@ function CampaignEmblem({
 }) {
   return (
     <svg className={`duo-emblem ${className}`} viewBox="0 0 120 120" aria-hidden="true">
-      <ellipse cx="60" cy="101" rx="43" ry="10" fill="#193e2d" opacity=".15" />
-      <path d="M15 88 60 66l45 22-45 24Z" fill="#b8894a" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
-      <path d="M15 80 60 58l45 22-45 23Z" fill="#d8df9f" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
+      <ellipse cx="60" cy="103" rx="38" ry="8" fill="#353047" opacity=".12" />
+      <path d="M20 86c0-10 18-17 40-17s40 7 40 17v6c0 10-18 17-40 17s-40-7-40-17Z" fill="#d1b8f0" stroke="#353047" strokeWidth="3" />
+      <ellipse cx="60" cy="85" rx="40" ry="17" fill="#efe3fa" stroke="#353047" strokeWidth="3" />
       {kind === "camp" ? (
         <>
-          <path d="m34 82 25-47 28 47Z" fill="#c95134" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
-          <path d="m59 35 11 47H47Z" fill="#f3ca7b" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
-          <path d="M25 75v-9m-9 0 9-24 9 24Z" fill="#315e3c" stroke="#193e2d" strokeWidth="3" strokeLinejoin="round" />
-          <path d="M94 67V25m0 0h18l-5 8 5 8H94" fill="#eab55b" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
-          <path d="m76 92 16-8m-16 0 16 8" stroke="#573b29" strokeWidth="4" strokeLinecap="round" />
-          <path d="M79 83c-6-9 6-13 5-22 10 9 14 17 5 22Z" fill="#ef8641" stroke="#9b3d26" strokeWidth="2.5" />
+          <rect x="29" y="29" width="61" height="59" rx="17" fill="#fffaf1" stroke="#353047" strokeWidth="3" transform="rotate(-8 60 58)" />
+          <path d="M39 83c11 5 30 5 43-2" stroke="#ffd0cb" strokeWidth="7" strokeLinecap="round" />
+          <g fill="#f06464"><circle cx="43" cy="45" r="5" /><circle cx="74" cy="40" r="5" /><circle cx="59" cy="58" r="5" /><circle cx="45" cy="73" r="5" /><circle cx="78" cy="70" r="5" /></g>
+          <path d="m96 26 2 6 6 2-6 2-2 6-2-6-6-2 6-2Z" fill="#ffe49c" stroke="#353047" strokeWidth="2" />
         </>
       ) : kind === "gate" ? (
         <>
-          <path d="M29 80V39h10v8h10v-8h22v8h10v-8h10v41Z" fill="#e7c285" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
-          <path d="M49 80V66a11 11 0 0 1 22 0v14" fill="#193e2d" stroke="#573b29" strokeWidth="3" />
-          <path d="M39 56v13m42-13v13" stroke="#a37547" strokeWidth="4" strokeLinecap="round" />
-          <path d="M60 39V17m0 0h22l-7 9 7 7H60" fill="#c95134" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
-          <path d="m51 87 9-6 10 6-10 5Z" fill="#eecb91" />
+          <path d="M29 86V53a31 31 0 0 1 62 0v33H76V53a16 16 0 0 0-32 0v33Z" fill="#3ca68b" stroke="#353047" strokeWidth="3" strokeLinejoin="round" />
+          <path d="M37 81V53a23 23 0 0 1 46 0v28" stroke="#c9f1df" strokeWidth="5" strokeLinecap="round" />
+          <path d="m60 25 3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1Z" fill="#ffe49c" stroke="#353047" strokeWidth="2" />
+          <path d="m52 82 7 6 11-14" stroke="#3ca68b" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
         </>
       ) : kind === "trophy" ? (
         <>
-          <path d="M43 34H29v12c0 15 17 21 23 16m25-28h14v12c0 15-17 21-23 16" fill="none" stroke="#a56a28" strokeWidth="5" strokeLinejoin="round" />
-          <path d="M40 29h40v19c0 16-10 23-20 23S40 64 40 48Z" fill="#f0bb51" stroke="#573b29" strokeWidth="3" />
-          <path d="M60 71v12m-15 0h30v9H45Z" fill="#c9933a" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
-          <path d="m60 38 4 8 9 2-7 6 1 9-7-4-7 4 1-9-7-6 9-2Z" fill="#fff0bb" />
-          <path d="m28 25-5-8m70 8 5-8M60 18V8" stroke="#eab55b" strokeWidth="3" strokeLinecap="round" />
+          <path d="M43 34H29v12c0 15 17 21 23 16m25-28h14v12c0 15-17 21-23 16" fill="none" stroke="#353047" strokeWidth="5" strokeLinejoin="round" />
+          <path d="M40 29h40v19c0 16-10 23-20 23S40 64 40 48Z" fill="#ffe49c" stroke="#353047" strokeWidth="3" />
+          <path d="M60 71v12m-15 0h30v9H45Z" fill="#f6c765" stroke="#353047" strokeWidth="3" strokeLinejoin="round" />
+          <circle cx="51" cy="48" r="2.7" fill="#353047" /><circle cx="69" cy="48" r="2.7" fill="#353047" /><path d="M54 56q6 7 12 0" stroke="#353047" strokeWidth="2.5" strokeLinecap="round" />
+          <path d="m28 25-5-8m70 8 5-8M60 18V8" stroke="#f06464" strokeWidth="3" strokeLinecap="round" />
         </>
       ) : (
         <>
-          <path d="m27 80 32-56 33 56Z" fill="#8f9b79" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
-          <path d="m59 24-13 23 12-5 10 7 3-6Z" fill="#fff4d7" stroke="#573b29" strokeWidth="2" strokeLinejoin="round" />
-          <path d="M59 24V8m0 0h23l-7 8 7 8H59" fill="#c95134" stroke="#573b29" strokeWidth="3" strokeLinejoin="round" />
-          <path d="m32 84 8-19 8 19m29 2 8-18 8 18" fill="#315e3c" stroke="#193e2d" strokeWidth="2.5" strokeLinejoin="round" />
-          <path d="m53 86 6-12 5-6" fill="none" stroke="#eecb91" strokeWidth="5" strokeLinecap="round" />
+          <rect x="33" y="67" width="55" height="22" rx="8" fill="#3ca68b" stroke="#353047" strokeWidth="3" />
+          <rect x="39" y="48" width="43" height="22" rx="8" fill="#ffe49c" stroke="#353047" strokeWidth="3" />
+          <path d="M60 48V13m0 0h30l-8 11 8 11H60" fill="#f06464" stroke="#353047" strokeWidth="3" strokeLinejoin="round" />
+          <path d="m28 37 2 6 6 2-6 2-2 6-2-6-6-2 6-2Zm65 24 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z" fill="#ffe49c" stroke="#353047" strokeWidth="2" />
         </>
       )}
     </svg>
@@ -223,23 +222,67 @@ function CampaignRewards({ duo }: { duo: DuoSnapshot }) {
 function lessonAnchor(band: DuoBandView, lesson: DuoLessonView) {
   return `duo-stop-${String(band.band).replace(".", "-")}-${lesson.number}`;
 }
+type BoardPositionState = "next-lesson" | "waiting-gate" | "promotion" | "completed" | "waiting-entry";
+type BoardPosition = { lesson?: DuoLessonView; index: number; state: BoardPositionState; label: string; detail: string };
+/** Positions describe confirmed progress and the next available step, never live presence. */
+function boardPosition(band: DuoBandView, role: DuoRole): BoardPosition {
+  const lastIndex = Math.max(0, band.lessons.length - 1);
+  const end = band.lessons[lastIndex];
+  if (band.completed) return { lesson: end, index: lastIndex, state: "completed", label: "Đã về đích chặng này", detail: `Đã cùng hoàn thành band ${band.band.toFixed(1)}. Có thể ôn lại mọi buổi học.` };
+  if (!band.unlocked) return { lesson: band.lessons[0], index: 0, state: "waiting-entry", label: "Chờ vào chặng", detail: `Band ${band.band.toFixed(1)} mở khi cả hai đạt kỳ thi nâng band trước.` };
+  const nextIndex = band.lessons.findIndex((lesson) => lesson.unlocked && !lesson.completed[role]);
+  if (nextIndex !== -1) {
+    const lesson = band.lessons[nextIndex];
+    return { lesson, index: nextIndex, state: "next-lesson", label: `Buổi tiếp theo: Buổi ${String(lesson.number).padStart(2, "0")}`, detail: lesson.title };
+  }
+  const gate = band.gates.find((item) => !item.unlocked);
+  if (gate) {
+    const checkpoint = band.lessons.findIndex((lesson) => lesson.number === gate.afterLesson);
+    const index = checkpoint === -1 ? lastIndex : checkpoint;
+    const result = gate.results[role];
+    const detail = result === "passed"
+      ? "Đã đạt cổng này; chờ bạn đồng hành đạt để cùng bước tiếp."
+      : !gate.eligible
+        ? "Đã xong phần học đang mở; chờ cả hai hoàn thành các buổi trước cổng."
+        : result
+          ? `Kết quả Duo Gate: ${resultName[result]}. Cổng mở khi cả hai đạt.`
+          : "Đã xong phần học đang mở. Mỗi người làm Duo Gate riêng; cả hai đạt để mở chặng tiếp.";
+    return { lesson: band.lessons[index], index, state: "waiting-gate", label: `Chờ Duo Gate ${gate.number} · sau Buổi ${String(gate.afterLesson).padStart(2, "0")}`, detail };
+  }
+  const result = band.promotionResults[role];
+  return {
+    lesson: end, index: lastIndex, state: "promotion",
+    label: result === "passed" ? "Đã đạt thi nâng band · chờ cả hai" : band.promotionEligible ? "Sẵn sàng thi nâng band" : "Chờ thi nâng band",
+    detail: result === "passed" ? "Kết quả đạt của bạn được giữ; chờ cả hai đạt để mở band tiếp theo." : result ? `Kết quả thi nâng band: ${resultName[result]}.` : band.promotionEligible ? "Cùng vào phòng và sẵn sàng để bắt đầu kỳ thi nâng band." : "Đã xong các buổi học của mình; chờ cả hai đủ điều kiện thi nâng band.",
+  };
+}
 function CampaignMap({ band, duo }: { band: DuoBandView; duo: DuoSnapshot }) {
   const next = band.completed ? undefined : band.lessons.find((lesson) => lesson.unlocked && !lesson.completed[duo.role]);
+  const positions = (["husband", "wife"] as const).map((role) => ({ role, member: duo.members.find((member) => member.role === role), ...boardPosition(band, role) }));
+  const yourPosition = positions.find((position) => position.role === duo.role)!;
   const complete = band.lessons.filter((lesson) => lesson.completed.husband && lesson.completed.wife).length;
-  const rows = Math.ceil(band.lessons.length / 5);
+  const rows = Math.max(1, Math.ceil(band.lessons.length / 5));
   const road = Array.from({ length: rows }, (_, row) => {
-    const y = 65 + row * 115;
-    return row === 0 ? `M100 ${y} H900` : row % 2 ? `Q990 ${y - 57} 900 ${y} H100` : `Q10 ${y - 57} 100 ${y} H900`;
+    const y = 115 + row * 175;
+    return row === 0 ? `M100 ${y} H900` : row % 2 ? `Q990 ${y - 88} 900 ${y} H100` : `Q10 ${y - 88} 100 ${y} H900`;
   }).join(" ");
   return (
     <Card className="duo-campaign-map">
       <div className="duo-map-heading">
-        <div><p className="eyebrow">BẢN ĐỒ CHIẾN DỊCH · BAND {band.band.toFixed(1)}</p><h2>Đi từng bước, về cùng một đích</h2><p>Chọn một quân cờ để xem buổi học và tiến độ của cả hai.</p></div>
+        <div><p className="eyebrow">BÀN CỜ CỦA CHÚNG MÌNH · BAND {band.band.toFixed(1)}</p><h2>Hai chú ngựa, mỗi người một nhịp</h2><p>Quân cá ngựa đứng ở buổi học tiếp theo hoặc mốc đang chờ. Chọn một ô để xem buổi học.</p></div>
         <span className="duo-map-progress"><CircleCheck size={18} /><strong>{complete}/{band.lessons.length}</strong><span>buổi cùng hoàn thành</span></span>
       </div>
+      <div className="duo-board-positions" aria-label="Vị trí của từng người theo tiến độ đã lưu">
+        {positions.map((position) => (
+          <div className={`duo-position-summary duo-position-${position.role}`} data-role={position.role} key={position.role}>
+            <span className="duo-position-color" aria-hidden="true" />
+            <div><strong>{position.member?.name ?? roleName[position.role]}</strong><span>{position.label}</span><small>{position.detail}</small></div>
+          </div>
+        ))}
+      </div>
       <div className="duo-board" style={{ "--duo-map-rows": rows } as CSSProperties}>
-        <svg className="duo-board-road" viewBox={`0 0 1000 ${rows * 115}`} preserveAspectRatio="none" aria-hidden="true"><path d={road} fill="none" stroke="#a88b54" strokeWidth="23" strokeLinecap="round" opacity=".22" /><path d={road} fill="none" stroke="#fff5d8" strokeWidth="13" strokeLinecap="round" /><path d={road} fill="none" stroke="#9d8353" strokeWidth="2" strokeDasharray="5 12" strokeLinecap="round" /></svg>
-        <div className="duo-board-terrain" aria-hidden="true"><span className="duo-map-tree tree-one" /><span className="duo-map-tree tree-two" /><span className="duo-map-tree tree-three" /><span className="duo-map-hill" /></div>
+        <svg className="duo-board-road" viewBox={`0 0 1000 ${rows * 175}`} preserveAspectRatio="none" aria-hidden="true"><path d={road} fill="none" stroke="#d5c4e8" strokeWidth="29" strokeLinecap="round" /><path d={road} fill="none" stroke="#fffaf1" strokeWidth="19" strokeLinecap="round" /><path d={road} fill="none" stroke="#b7a0cf" strokeWidth="2" strokeDasharray="5 12" strokeLinecap="round" /></svg>
+        <div className="duo-board-terrain" aria-hidden="true"><span className="duo-map-tree tree-one" /><span className="duo-map-tree tree-two" /><span className="duo-map-tree tree-three" /><span className="duo-map-hill" /><Dice5 className="duo-board-dice" size={30} /></div>
         {band.lessons.map((lesson, index) => {
           const both = lesson.completed.husband && lesson.completed.wife;
           const one = lesson.completed.husband || lesson.completed.wife;
@@ -267,9 +310,31 @@ function CampaignMap({ band, duo }: { band: DuoBandView; duo: DuoSnapshot }) {
             </a>
           );
         })}
+        {positions.map((position) => {
+          const row = Math.floor(position.index / 5), column = row % 2 ? 5 - position.index % 5 : position.index % 5 + 1;
+          const shared = positions.every((item) => item.index === position.index);
+          return (
+            <span
+              className={`duo-board-pawn duo-member-pawn pawn-${position.role} ${shared ? "shared-stop" : ""}`}
+              key={position.role}
+              style={{ gridColumn: column, gridRow: row + 1 }}
+              role="img"
+              aria-label={`${position.member?.name ?? roleName[position.role]} · ${position.label}`}
+              data-testid={`duo-pawn-${position.role}`}
+              data-role={position.role}
+              data-lesson={position.lesson?.number ?? "entry"}
+              data-lesson-number={position.lesson?.number ?? "entry"}
+              data-position-state={position.state}
+            >
+              <ChibiPawn role={position.role} />
+              <span className="duo-pawn-name">{position.member?.name.split(" ").at(-1) ?? roleName[position.role]}</span>
+            </span>
+          );
+        })}
       </div>
       <div className="duo-board-footer">
-        <p><Flag size={17} />{!band.unlocked ? "Chặng này đang chờ cả hai vượt kỳ thi nâng band trước." : band.completed ? "Hai người đã chinh phục chặng này. Các buổi học luôn có thể ôn lại." : next ? `Lượt học gợi ý cho bạn: Buổi ${String(next.number).padStart(2, "0")}.` : "Bạn đã hoàn thành các buổi hiện đã mở. Xem Duo Gate để cùng bước tiếp."}</p>
+        <small className="duo-board-note">Quân ngựa bước tới buổi tiếp theo khi bạn hoàn thành bài học. Mỗi người cứ tiến theo nhịp riêng của mình.</small>
+        <p><Flag size={17} />{!band.unlocked ? "Chặng này đang chờ cả hai vượt kỳ thi nâng band trước." : band.completed ? "Hai người đã chinh phục chặng này. Các buổi học luôn có thể ôn lại." : next ? `Lượt học gợi ý cho bạn: Buổi ${String(next.number).padStart(2, "0")}.` : yourPosition.state === "promotion" ? yourPosition.label : "Bạn đã hoàn thành các buổi hiện đã mở. Xem Duo Gate để cùng bước tiếp."}</p>
         <div className="duo-map-legend" aria-label="Chú giải bản đồ"><span><i className="complete" />Cả hai đã hoàn thành</span><span><i className="partial" />Một người đã hoàn thành</span><span><i className="open" />Đã mở</span><span><LockKeyhole size={12} />Chưa mở</span></div>
       </div>
     </Card>
@@ -280,7 +345,7 @@ function MemberLevels({ duo }: { duo: DuoSnapshot }) {
     <div className="duo-members">
       {duo.members.map((member) => (
         <div className={`duo-member duo-member-${member.role}`} key={member.id}>
-          <span className="avatar">{member.name.split(" ").at(-1)?.[0]}</span>
+          <span className="avatar duo-member-avatar" aria-hidden="true"><ChibiPawn role={member.role} /></span>
           <div>
             <strong>{member.name}</strong>
             <small>
@@ -461,13 +526,13 @@ export function DuoPlanPage() {
           </Link>
         }
       />
-      <section className="duo-campaign-intro" aria-label="Chiến dịch học tập của hai người">
+      <section className="duo-campaign-intro" aria-label="Hành trình cá ngựa của hai người">
         <div className="duo-campaign-intro-copy">
-          <span className="duo-campaign-ribbon"><Flag size={15} />CHIẾN DỊCH ĐỒNG HÀNH</span>
-          <h2>Hai người, một bản đồ.<br />Cùng chinh phục band 8.0.</h2>
-          <p>Mỗi buổi học là một bước tiến. Mỗi chặng hoàn thành là một dấu ấn của chúng mình.</p>
+          <span className="duo-campaign-ribbon"><Dice5 size={16} />HÀNH TRÌNH CÁ NGỰA</span>
+          <h2>Học một chút.<br />Tiến một ô, cùng nhau.</h2>
+          <p>Ngựa hồng và ngựa xanh đi theo nhịp học của từng người. Cùng vượt Duo Gate, cùng về đích band {bandLabel(duo.path?.targetBand ?? 8)}.</p>
         </div>
-        <img className="duo-campaign-world" src="/assets/campaign-world.webp" alt="" />
+        <img className="duo-campaign-world" src="/assets/chibi-world.webp" alt="" />
       </section>
       <Card className="duo-overview">
         <div className="duo-levels">

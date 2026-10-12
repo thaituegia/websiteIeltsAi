@@ -105,59 +105,21 @@ const skillDescriptions: Record<ContentKind, string> = {
   grammar: "Nền tảng vững vàng cho cả bốn kỹ năng.",
 };
 
-/* Decorative campaign scenery. Progress and results remain in the real lesson UI. */
+/* Decorative artwork never alters questions, charts or learning progress. */
 function LibraryCampaignArt({ exam }: { exam: boolean }) {
   return (
-    <svg className="campaign-intro-art" viewBox="0 0 420 260" aria-hidden="true" focusable="false">
-      <ellipse cx="223" cy="225" rx="177" ry="20" fill="#172f22" opacity=".15" />
-      <path d="m32 162 163-101 191 99-174 79Z" fill="#85603d" stroke="#624a32" strokeWidth="3" strokeLinejoin="round" />
-      <path d="m32 146 163-99 191 98-174 79Z" fill="#acc286" stroke="#624a32" strokeWidth="3" strokeLinejoin="round" />
-      <path d="m51 144 144-85 174 86-157 67Z" fill="#cad49b" />
-      <path d="M102 170c53-47 53-58 91-59 47-1 11 55 78 61 18 2 29-7 42-19" fill="none" stroke="#fff2c9" strokeWidth="17" strokeLinecap="round" />
-      <path d="M102 170c53-47 53-58 91-59 47-1 11 55 78 61 18 2 29-7 42-19" fill="none" stroke="#ae8148" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="2 10" />
-      {[{ x: 80, y: 133 }, { x: 122, y: 110 }, { x: 295, y: 188 }, { x: 335, y: 172 }].map(({ x, y }) => (
-        <g key={`${x}-${y}`} transform={`translate(${x} ${y})`}>
-          <ellipse cx="0" cy="11" rx="15" ry="6" fill="#6e884b" opacity=".45" />
-          <path d="M0-7v18" stroke="#775533" strokeWidth="6" strokeLinecap="round" />
-          <path d="m0-43-18 32h8L-22 5h44L10-11h8Z" fill="#315e3d" stroke="#25492f" strokeWidth="2" strokeLinejoin="round" />
-          <path d="m0-37-11 21h7L-13-1H0Z" fill="#6c954e" />
-        </g>
-      ))}
-      <g transform="translate(261 47)">
-        <path d="m-31 73 49 26 50-28-50-23Z" fill="#55734c" opacity=".28" />
-        <path d="M-23 19v58l43 22V44Z" fill="#c36b44" stroke="#713f2e" strokeWidth="3" />
-        <path d="m20 44 40-20v53L20 99Z" fill="#e6af69" stroke="#713f2e" strokeWidth="3" />
-        <path d="m-23 19 39-22 44 27-40 20Z" fill="#fff0c7" stroke="#713f2e" strokeWidth="3" />
-        <path d="M-28 21V2l10 5V-4l10 5v12l11 6V8l11 6v20Z" fill="#f2c987" stroke="#713f2e" strokeWidth="3" strokeLinejoin="round" />
-        <path d="M48 29V11l10-5V-5l10-5v11l10-5v18Z" fill="#e4ac60" stroke="#713f2e" strokeWidth="3" strokeLinejoin="round" />
-        <path d="M1 65c0-13 14-7 14 8v19L1 84Z" fill="#663a2a" />
-        <path d="M27 8V-33" stroke="#713f2e" strokeWidth="4" strokeLinecap="round" />
-        <path d="m29-33 32 10-32 10Z" fill="#d54d30" stroke="#8b3a27" strokeWidth="2" strokeLinejoin="round" />
-      </g>
-      <g transform="translate(190 127) rotate(-8)">
-        <ellipse cx="0" cy="34" rx="28" ry="10" fill="#607e45" opacity=".35" />
-        <path d="m-23-14 45 8v37l-45-7Z" fill="#e9ca84" stroke="#7d572d" strokeWidth="3" strokeLinejoin="round" />
-        <path d="m-23-14 8-6 44 8-7 6Z" fill="#fff0bf" stroke="#7d572d" strokeWidth="2" />
-        <path d="m22-6 7-6v38l-7 5Z" fill="#b78847" stroke="#7d572d" strokeWidth="2" />
-        <path d="m-13-3 25 5m-25 5 20 3m-20 5 24 4" stroke="#a07742" strokeWidth="2.5" strokeLinecap="round" />
-        <circle cx="12" cy="22" r="7" fill="#b8492d" stroke="#813923" strokeWidth="2" />
-      </g>
-      <g transform="translate(103 173)">
-        <ellipse cx="0" cy="0" rx="20" ry="10" fill="#7d4d2e" />
-        <ellipse cx="0" cy="-4" rx="20" ry="10" fill="#fff2c1" stroke="#94632f" strokeWidth="3" />
-        <path d="M0-4v-35" stroke="#76452b" strokeWidth="4" strokeLinecap="round" />
-        <path d="m2-39 27 9-27 11Z" fill={exam ? "#d24d30" : "#3c724c"} stroke="#73462b" strokeWidth="2" strokeLinejoin="round" />
-      </g>
-      <g transform="translate(346 118)">
-        <path d="m-20 9 20 10 22-12V-7L1-17-20-6Z" fill="#cc8b35" stroke="#855523" strokeWidth="3" strokeLinejoin="round" />
-        <path d="m-20-6 21 10 21-11M1 4v15" fill="none" stroke="#855523" strokeWidth="3" />
-        <path d="m-11-11 22 10M-9 15V0m20 15V0" fill="none" stroke="#ffdc76" strokeWidth="4" />
-        <path d="m-5-36 4 8 9 2-8 5-1 10-6-7-9 1 5-8-4-8Z" fill="#f7c44c" stroke="#c58b29" strokeWidth="2" />
-      </g>
-    </svg>
+    <img
+      className="campaign-intro-art chibi-intro-art"
+      src="/assets/chibi-world.webp"
+      width={1536}
+      height={1024}
+      alt=""
+      aria-hidden="true"
+      decoding="async"
+      data-scene={exam ? "exam" : "practice"}
+    />
   );
 }
-
 function QuestTerrain() {
   return (
     <svg className="content-art-landscape" viewBox="0 0 300 130" aria-hidden="true" focusable="false">
