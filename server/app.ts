@@ -146,6 +146,9 @@ const asyncRoute =
   (request: Request, response: Response, next: NextFunction) => {
     void fn(request, response).catch(next);
   };
+// Bound browsing and readiness reads instead of waiting for the proxy's long
+// timeout when an already connected MongoDB stops answering.
+const LIBRARY_READ_TIMEOUT_MS = 5_000;
 const idOf = (request: Request): string => {
   const id = request.params.id;
   if (typeof id !== "string" || !/^[\w:.-]{1,180}$/.test(id))
@@ -238,7 +241,9 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   }
   async function placementAudioReadiness() {
     if (!speechCapabilities().configured) return speechAudio.readiness([]);
-    const items = await database.placementItems.find({ skill: "listening" }, { projection: { id: 1, text: 1 } }).toArray();
+    const items = await database.placementItems.find({ skill: "listening" }, {
+      projection: { id: 1, text: 1 }, timeoutMS: LIBRARY_READ_TIMEOUT_MS, timeoutMode: "cursorLifetime",
+    }).toArray();
     return speechAudio.readiness(items.map(item => ({ id: item.id, title: "", text: item.text })));
   }
   const duoService = duoEnabled ? createDuoService(database, { ...config.duo, ensureAudioReady: requireReadyListening }) : null;
@@ -571,8 +576,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     else if (kind === "placement") await database.placements.updateOne({ _id: resourceId, userId: user.id, currentQuestionId: { $ne: null } }, { $set: { integrity } });
   }
 
-  async function contentOf(contentId: string): Promise<StoredContent> {
-    const content = await database.content.findOne({ _id: contentId });
+  async function contentOf(contentId: string, timeoutMS?: number): Promise<StoredContent> {
+    const content = await database.content.findOne({ _id: contentId }, { timeoutMS });
     if (!content) throw new ApiError(404, "Không tìm thấy bài luyện.");
     const { _id: _id, ...value } = content;
     return value;
@@ -960,13 +965,13 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       );
       const [items, total, topics] = await Promise.all([
         database.content
-          .find(filter)
+          .find(filter, { timeoutMS: LIBRARY_READ_TIMEOUT_MS, timeoutMode: "cursorLifetime" })
           .sort({ band: 1, title: 1 })
           .skip((page - 1) * pageSize)
           .limit(pageSize)
           .toArray(),
-        database.content.countDocuments(filter),
-        database.content.distinct("topic"),
+        database.content.countDocuments(filter, { timeoutMS: LIBRARY_READ_TIMEOUT_MS }),
+        database.content.distinct("topic", {}, { timeoutMS: LIBRARY_READ_TIMEOUT_MS }),
       ]);
       response.json({
         items: items.map((content) => sanitizeContent(content, true)),
@@ -1019,12 +1024,12 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     "/api/content/:id/listening-audio/readiness",
     asyncRoute(async (request, response) => {
       const mode = z.enum(["practice", "exam"]).parse(request.query.mode || "practice");
-      let content = await contentOf(idOf(request));
+      let content = await contentOf(idOf(request), LIBRARY_READ_TIMEOUT_MS);
       const previous = await database.attempts.findOne({
         userId: learnerOf(request).id, mode, status: "invalidated",
         $or: [{ rootContentId: content.id }, { contentId: content.id }],
-      }, { sort: { startedAt: -1 } });
-      if (previous?.replacementContentId) content = await contentOf(previous.replacementContentId);
+      }, { sort: { startedAt: -1 }, timeoutMS: LIBRARY_READ_TIMEOUT_MS });
+      if (previous?.replacementContentId) content = await contentOf(previous.replacementContentId, LIBRARY_READ_TIMEOUT_MS);
       const audio = await speechAudio.readiness(content.skill === "listening" ? content.sections : []);
       response.set("Cache-Control", "private, no-store").json({ audio });
     }),

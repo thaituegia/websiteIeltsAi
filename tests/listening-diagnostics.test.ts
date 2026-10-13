@@ -39,7 +39,9 @@ with tempfile.TemporaryDirectory(prefix='ielts-listening-diagnostic-test-') as f
   state[service]={'Id':identifier,'Name':'/'+(name if service=='worker' else service),'Image':image,'Labels':labels,
    'State':{'Status':'running','Running':True,'OOMKilled':service=='app','ExitCode':0,'StartedAt':'2026-10-13T01:01:01Z','Health':{'Status':'healthy','Log':[{'Output':secret} ]},'Error':secret},
    'RestartCount':2,'Memory':384*1048576,'MemorySwap':384*1048576,'NanoCpus':250000000,'CpuQuota':0,'CpuPeriod':0,
-   'Networks':{project+'_web':{},project+'_database':{}},'Ports':{'3001/tcp':[{'HostIp':'127.0.0.1','HostPort':'19088'}]} if service=='app' else {}}
+   'Networks':{project+'_web':{},project+'_database':{}},
+   'Ports':{'3001/tcp':[{'HostIp':'127.0.0.1','HostPort':'19088'}]} if service=='app' else {},
+   'ConfiguredPorts':{'3001/tcp':[{'HostIp':'127.0.0.1','HostPort':'19088'}]} if service=='app' else {}}
  statepath=root/'state.json';calls=root/'calls.jsonl';statepath.write_text(json.dumps(state))
  binary=root/'docker'
  binary.write_text('#!'+sys.executable+'\n'+r'''
@@ -51,6 +53,7 @@ if args[0]=='ps':
  print(rows[service]['Id'])
 elif args[0]=='inspect':
  assert '.Config.Env' not in args[2]
+ assert '.HostConfig.PortBindings' in args[2]
  value=next((x for x in rows.values() if x['Id']==args[-1] or x['Name']=='/'+args[-1]),None)
  if value is None:sys.exit(1)
  print(json.dumps(value))
@@ -59,6 +62,8 @@ elif args[0]=='stats':
   print(json.dumps({'ID':x['Id'][:12],'CPUPerc':'0.25%','MemUsage':'100MiB / 384MiB','MemPerc':'26.04%','PIDs':'7','Name':os.environ['IELTS_SYNTHETIC_SECRET']}))
 elif args[0]=='logs':
  print('API failure: TypeError '+os.environ['IELTS_SYNTHETIC_SECRET'],file=sys.stderr)
+ if args[-1]==rows['worker']['Id']:
+  print(json.dumps({'configured':True,'state':'paused','total':432,'ready':7,'pending':424,'failed':1,'lastErrorCode':'quota','private':os.environ['IELTS_SYNTHETIC_SECRET']}))
 elif args[0]=='stop':
  assert args[1]=='--time=30' and args[2]==rows['worker']['Id']
  rows['worker']['State']['Running']=False;rows['worker']['State']['Status']='exited';p.write_text(json.dumps(rows));print(args[2])
@@ -71,6 +76,7 @@ else:raise AssertionError('Unexpected command '+args[0])
   report=m.diagnose();assert report['containers']['app']['oomKilled'] is True
   assert report['containers']['app']['restarts']==2 and report['usage']['app']['PIDs']=='7'
   assert report['logs']['app']['type-error']==1 and report['logs']['app']['api-failure']==1
+  assert report['logs']['workerProgress']=={'configured':True,'state':'paused','total':432,'ready':7,'pending':424,'failed':1,'lastErrorCode':'quota'}
   assert report['health']['localDomainTLS']['ok'] is True
   assert secret not in json.dumps(report)
   assert all(json.loads(x)[0] in ('ps','inspect','stats','logs') for x in calls.read_text().splitlines())
@@ -80,10 +86,26 @@ else:raise AssertionError('Unexpected command '+args[0])
   mutations=[json.loads(x) for x in calls.read_text().splitlines() if json.loads(x)[0] not in ('ps','inspect','stats','logs')]
   assert mutations==[['stop','--time=30',state['worker']['Id']]]
   after=json.loads(statepath.read_text());assert all(after[x]==state[x] for x in ('app','mongo','proxy'))
- elif scenario in ('foreign-worker','foreign-app','wrong-port','worker-image'):
+ elif scenario=='exited-oom-app':
+  state['app']['State'].update(Status='exited',Running=False,OOMKilled=True,ExitCode=137)
+  state['app']['Ports']={};statepath.write_text(json.dumps(state))
+  report=m.diagnose();app=report['containers']['app']
+  assert app['status']=='exited' and app['running'] is False and app['oomKilled'] is True and app['exitCode']==137
+  assert all(json.loads(x)[0] in ('ps','inspect','stats','logs') for x in calls.read_text().splitlines())
+  assert json.loads(statepath.read_text())==state and secret not in json.dumps(report)
+  calls.write_text('');report=m.diagnose(True)
+  assert report['workerPause']['stopped'] is True and report['workerPause']['cacheAndContainerRetained'] is True
+  mutations=[json.loads(x) for x in calls.read_text().splitlines() if json.loads(x)[0] not in ('ps','inspect','stats','logs')]
+  assert mutations==[['stop','--time=30',state['worker']['Id']]]
+  after=json.loads(statepath.read_text());assert all(after[x]==state[x] for x in ('app','mongo','proxy'))
+ elif scenario in ('foreign-worker','foreign-app','wrong-port','wrong-configured-port','exited-wrong-configured-port','worker-port','worker-image'):
   if scenario=='foreign-worker':state['worker']['Labels']['ielts.speech.owner']='/opt/other-project'
   if scenario=='foreign-app':state['app']['Labels']['com.docker.compose.project.working_dir']='/opt/other-project/deploy'
   if scenario=='wrong-port':state['app']['Ports']['3001/tcp'][0]['HostIp']='0.0.0.0'
+  if scenario in ('wrong-configured-port','exited-wrong-configured-port'):
+   state['app']['ConfiguredPorts']['3001/tcp'][0]['HostIp']='0.0.0.0'
+   if scenario=='exited-wrong-configured-port':state['app']['State'].update(Status='exited',Running=False);state['app']['Ports']={}
+  if scenario=='worker-port':state['worker']['ConfiguredPorts']={'3001/tcp':[{'HostIp':'127.0.0.1','HostPort':'19089'}]}
   if scenario=='worker-image':state['worker']['Image']='sha256:'+'0'*64
   statepath.write_text(json.dumps(state))
   try:m.diagnose(True);raise AssertionError('Expected refusal')
@@ -129,7 +151,7 @@ else:raise AssertionError('Unexpected command '+args[0])
  print('synthetic fixture passed')
 `;
 
-for (const scenario of ["default", "pause", "foreign-worker", "foreign-app", "wrong-port", "worker-image", "duplicate-selector", "missing-worker", "gateway-log", "verified-local-tls"]) {
+for (const scenario of ["default", "pause", "exited-oom-app", "foreign-worker", "foreign-app", "wrong-port", "wrong-configured-port", "exited-wrong-configured-port", "worker-port", "worker-image", "duplicate-selector", "missing-worker", "gateway-log", "verified-local-tls"]) {
   test(`Listening diagnostic ${scenario} confines inspection and mutations to its owned installation`, () => {
     const result = spawnSync("python3", ["-c", fixture, script, scenario], { encoding: "utf8", timeout: 20_000 });
     assert.equal(result.status, 0, result.stderr);

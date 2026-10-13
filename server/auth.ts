@@ -98,9 +98,9 @@ export function attachLearner(database: Database, options: DuoAuthenticationOpti
         const session = await database.sessions.findOne({
           _id: hashToken(token),
           expiresAt: { $gt: new Date() },
-        });
+        }, { timeoutMS: 5_000 });
         if (session) {
-          const learner = await database.users.findOne({ _id: session.userId });
+          const learner = await database.users.findOne({ _id: session.userId }, { timeoutMS: 5_000 });
           if (learner) {
             const account = options.duo && duoAccountForUser(options.duo, learner);
             const sessionVersion = (session as typeof session & { duoCredentialVersion?: string }).duoCredentialVersion;

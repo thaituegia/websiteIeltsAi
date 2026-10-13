@@ -26,7 +26,8 @@ INSPECT_FORMAT = ('{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Imag
                   '"RestartCount":{{json .RestartCount}},"Memory":{{json .HostConfig.Memory}},'
                   '"MemorySwap":{{json .HostConfig.MemorySwap}},"NanoCpus":{{json .HostConfig.NanoCpus}},'
                   '"CpuQuota":{{json .HostConfig.CpuQuota}},"CpuPeriod":{{json .HostConfig.CpuPeriod}},'
-                  '"Networks":{{json .NetworkSettings.Networks}},"Ports":{{json .NetworkSettings.Ports}}}')
+                  '"Networks":{{json .NetworkSettings.Networks}},"Ports":{{json .NetworkSettings.Ports}},'
+                  '"ConfiguredPorts":{{json .HostConfig.PortBindings}}}')
 
 
 class Refusal(RuntimeError):
@@ -106,9 +107,15 @@ def containers(project):
                 labels.get('com.docker.compose.service') != service or
                 labels.get('com.docker.compose.project.working_dir') != str(LIVE_DIR / 'deploy')):
             raise Refusal('Service ownership does not match this exact installation.')
-        if service == 'app' and row.get('Ports', {}).get('3001/tcp') != [
-                {'HostIp': '127.0.0.1', 'HostPort': '19088'}]:
-            raise Refusal('App loopback binding does not match this exact installation.')
+        if service == 'app':
+            expected = [{'HostIp': '127.0.0.1', 'HostPort': '19088'}]
+            # Docker clears runtime bindings after an exit/OOM; the configured
+            # binding still proves ownership and permits diagnosing that exit.
+            configured = (row.get('ConfiguredPorts') or {}).get('3001/tcp')
+            runtime = (row.get('Ports') or {}).get('3001/tcp')
+            running = (row.get('State') or {}).get('Running') is True
+            if configured != expected or (running and runtime != expected):
+                raise Refusal('App loopback binding does not match this exact installation.')
         rows[service] = row
     name = 'ielts-speech-prewarm-' + hashlib.sha256(project.encode()).hexdigest()[:16]
     worker = inspect(name, optional=True)
@@ -127,7 +134,8 @@ def validate_worker(worker, app, project, name):
             not re.fullmatch(r'[a-f0-9]{40}', labels.get('ielts.speech.commit', '')) or
             worker.get('Image') != app.get('Image') or
             set(worker.get('Networks', {})) != {project + '_web', project + '_database'} or
-            any(worker.get('Ports', {}).values())):
+            any((worker.get('Ports') or {}).values()) or
+            any((worker.get('ConfiguredPorts') or {}).values())):
         raise Refusal('Worker ownership/image/network/ports do not match; nothing stopped.')
 
 
@@ -256,7 +264,28 @@ def log_summary(rows):
                            optional=True, include_stderr=True)
             # Never emit raw text or provider/account values from either stream.
             result[kind] = classifications(text or '')
+            if kind == 'worker':
+                result['workerProgress'] = worker_progress(text or '')
     return result
+
+
+def worker_progress(text):
+    last = None
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+            if not isinstance(row, dict) or row.get('state') not in ('pending', 'running', 'complete', 'paused', 'unconfigured'):
+                continue
+            if any(type(row.get(key)) is not int or not 0 <= row[key] <= 1_000_000 for key in ('total', 'ready', 'pending', 'failed')):
+                continue
+            last = {key: row[key] for key in ('state', 'total', 'ready', 'pending', 'failed')}
+            if type(row.get('configured')) is bool:
+                last['configured'] = row['configured']
+            if row.get('lastErrorCode') in ('auth', 'quota', 'rate-limit', 'unavailable', 'invalid', 'storage', 'interrupted'):
+                last['lastErrorCode'] = row['lastErrorCode']
+        except (TypeError, ValueError):
+            continue
+    return last
 
 
 def file_metadata():

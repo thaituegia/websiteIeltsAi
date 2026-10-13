@@ -132,7 +132,10 @@ export function Modal({
       ref={ref}
       className="modal"
       aria-label={title}
-      onCancel={onClose}
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}

@@ -163,6 +163,12 @@ function ContentLibrary({ exam }: { exam: boolean }) {
   const [audioReadiness, setAudioReadiness] = useState<Record<string, ListeningAudioReadiness>>({});
   const [audioReadinessContentId, setAudioReadinessContentId] = useState("");
   const [audioReadinessRetryId, setAudioReadinessRetryId] = useState("");
+  const [audioCheckingId, setAudioCheckingId] = useState("");
+  const [contentActionErrors, setContentActionErrors] = useState<Record<string, string>>({});
+  const audioReadinessRequest = useRef<AbortController | null>(null);
+  const actionGeneration = useRef(0);
+  const attemptStarting = useRef(false);
+  const [attemptStartBusy, setAttemptStartBusy] = useState(false);
   useEffect(() => setPage(1), [skill, topic, band, cefr, testType, search]);
   const queryString = new URLSearchParams({
     page: String(page),
@@ -175,63 +181,115 @@ function ContentLibrary({ exam }: { exam: boolean }) {
     ...(search ? { q: search } : {}),
     ...(exam ? { format: "full-mock" } : {}),
   }).toString();
+  useEffect(() => {
+    if (attemptStarting.current) return;
+    ++actionGeneration.current;
+    audioReadinessRequest.current?.abort();
+    setBusy(""); setAudioCheckingId(""); setStartContentId("");
+    setActionError(""); setAudioReadinessRetryId(""); setAudioReadinessContentId(""); setContentActionErrors({});
+    return () => {
+      ++actionGeneration.current;
+      audioReadinessRequest.current?.abort();
+    };
+  }, [queryString, exam]);
   const { data, loading, error, reload } = useApi<LibraryResult>(
     `/content?${queryString}`,
+    10_000,
   );
   const progress = useApi<{ attempts: AttemptSummary[] }>(
     "/attempts?status=in-progress",
   );
-  async function checkAudioReadiness(contentId: string) {
+  function clearContentError(contentId: string) {
+    setContentActionErrors(current => {
+      const next = { ...current }; delete next[contentId]; return next;
+    });
+  }
+  function showContentError(contentId: string, cause: unknown) {
+    const message = errorMessage(cause);
+    setContentActionErrors(current => ({ ...current, [contentId]: message }));
+    if (!data?.items.some(item => item.id === contentId)) setActionError(message);
+  }
+  async function checkAudioReadiness(contentId: string, generation: number) {
+    audioReadinessRequest.current?.abort();
+    const controller = new AbortController();
+    audioReadinessRequest.current = controller;
+    setAudioCheckingId(contentId);
     try {
       const { audio } = await api<{ audio: ListeningAudioReadiness }>(
         `/content/${encodeURIComponent(contentId)}/listening-audio/readiness?mode=${exam ? "exam" : "practice"}`,
+        { signal: controller.signal, timeoutMs: 10_000 },
       );
+      if (controller.signal.aborted || generation !== actionGeneration.current) return false;
       setAudioReadiness(current => ({ ...current, [contentId]: audio }));
       setAudioReadinessContentId(contentId);
       return audio.ready;
     } catch (cause) {
+      if (controller.signal.aborted || generation !== actionGeneration.current) return false;
       setAudioReadinessRetryId(contentId);
       throw cause;
+    } finally {
+      if (audioReadinessRequest.current === controller) {
+        audioReadinessRequest.current = null;
+        if (generation === actionGeneration.current) setAudioCheckingId("");
+      }
     }
   }
   async function refreshAudioReadiness(contentId: string) {
-    if (busy) return;
+    if (busy || attemptStarting.current) return;
+    const generation = ++actionGeneration.current;
     setBusy(contentId); setActionError(""); setAudioReadinessRetryId("");
-    try { await checkAudioReadiness(contentId); }
-    catch (cause) { setActionError(errorMessage(cause)); }
-    finally { setBusy(""); }
+    clearContentError(contentId);
+    try { await checkAudioReadiness(contentId, generation); }
+    catch (cause) { if (generation === actionGeneration.current) showContentError(contentId, cause); }
+    finally { if (generation === actionGeneration.current) setBusy(""); }
   }
   async function begin(contentId: string, accepted = false, contentSkill?: ContentKind) {
-    if (busy && busy !== "generate") return;
+    if (attemptStarting.current || (busy && busy !== "generate")) return;
+    const generation = ++actionGeneration.current;
+    let postingAttempt = false;
     setBusy(contentId);
     setActionError("");
     setAudioReadinessRetryId("");
+    clearContentError(contentId);
     try {
       const listening = (contentSkill || data?.items.find(item => item.id === contentId)?.skill) === "listening"
         || !!audioReadiness[contentId];
-      if (hasAiSpeech(health) && listening && !await checkAudioReadiness(contentId)) {
-        setStartContentId("");
+      if (hasAiSpeech(health) && listening && !await checkAudioReadiness(contentId, generation)) {
+        if (generation === actionGeneration.current && !accepted) setStartContentId("");
         return;
       }
+      if (generation !== actionGeneration.current) return;
       if (exam && health?.examIntegrityEnabled !== false && !accepted) {
         setStartContentId(contentId);
         return;
       }
+      postingAttempt = true;
+      attemptStarting.current = true;
+      setAttemptStartBusy(true);
       const result = await api<{ attempt: Attempt }>("/attempts", {
         method: "POST",
         body: json({ contentId, mode: exam ? "exam" : "practice" }),
       });
+      // A committed sitting remains reachable even if this library was left.
+      // Only readiness reads can be cancelled by changing filters/navigation.
       navigate(`/learn/${result.attempt.id}`);
       setStartContentId("");
     } catch (cause) {
-      setStartContentId("");
-      setActionError(errorMessage(cause));
+      if (postingAttempt || generation === actionGeneration.current) {
+        if (!accepted) setStartContentId("");
+        showContentError(contentId, cause);
+      }
     } finally {
-      setBusy("");
+      if (postingAttempt) {
+        attemptStarting.current = false;
+        setAttemptStartBusy(false);
+      }
+      if (postingAttempt || generation === actionGeneration.current) setBusy("");
     }
   }
   async function generate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (attemptStarting.current) return;
     setBusy("generate");
     setActionError("");
     setAudioReadinessRetryId("");
@@ -270,6 +328,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
           !exam && (
             <Button
               className="secondary small"
+              disabled={attemptStartBusy}
               onClick={() => setGenerator(true)}
             >
               <Sparkles size={16} />
@@ -344,7 +403,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         role="group"
         aria-label="Lọc theo kỹ năng"
       >
-        <button className={!skill ? "active" : ""} onClick={() => setSkill("")}>
+        <button className={!skill ? "active" : ""} disabled={attemptStartBusy} onClick={() => setSkill("")}>
           Tất cả
         </button>
         {Object.entries(icons)
@@ -353,6 +412,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
             <button
               key={key}
               className={skill === key ? "active" : ""}
+              disabled={attemptStartBusy}
               onClick={() => setSkill(key)}
             >
               <Icon size={17} />
@@ -364,6 +424,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         className="filter-bar learning-filters"
         onSubmit={(event) => {
           event.preventDefault();
+          if (attemptStarting.current) return;
           setSearch(query);
         }}
       >
@@ -372,12 +433,14 @@ function ContentLibrary({ exam }: { exam: boolean }) {
           <input
             aria-label="Tìm bài tập"
             placeholder="Tìm một bài, một chủ đề…"
+            disabled={attemptStartBusy}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
         <select
           aria-label="Chủ đề"
+          disabled={attemptStartBusy}
           value={topic}
           onChange={(event) => setTopic(event.target.value)}
         >
@@ -390,6 +453,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         </select>
         <select
           aria-label="Band bài tập"
+          disabled={attemptStartBusy}
           value={band}
           onChange={(event) => setBand(event.target.value)}
         >
@@ -402,6 +466,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         </select>
         <select
           aria-label="CEFR"
+          disabled={attemptStartBusy}
           value={cefr}
           onChange={(event) => setCefr(event.target.value)}
         >
@@ -412,6 +477,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         </select>
         <select
           aria-label="Hình thức IELTS"
+          disabled={attemptStartBusy}
           value={testType}
           onChange={(event) =>
             setTestType(event.target.value as typeof testType)
@@ -420,10 +486,12 @@ function ContentLibrary({ exam }: { exam: boolean }) {
           <option value="academic">Academic</option>
           <option value="general">General Training</option>
         </select>
-        <Button className="secondary small" type="submit">
+        <Button className="secondary small" type="submit" disabled={attemptStartBusy}>
           Tìm
         </Button>
       </form>
+      {audioCheckingId && !data?.items.some(item => item.id === audioCheckingId)
+        && <Loading text="Đang kiểm tra bản nghe…" />}
       {actionError && <ErrorNotice message={actionError} retry={audioReadinessRetryId
         ? () => void refreshAudioReadiness(audioReadinessRetryId) : undefined} />}
       {hasAiSpeech(health) && audioReadiness[audioReadinessContentId]
@@ -502,14 +570,23 @@ function ContentLibrary({ exam }: { exam: boolean }) {
                       disabled={!!busy || (hasAiSpeech(health) && audioReadiness[item.id]?.ready === false)}
                       onClick={() => void begin(item.id)}
                     >
-                      {busy === item.id
+                      {audioCheckingId === item.id
+                        ? "Đang kiểm tra âm thanh…"
+                        : busy === item.id
                         ? "Đang mở…"
                         : exam
                           ? "Bắt đầu thi thử"
                           : "Bắt đầu luyện"}
                       <ArrowRight size={16} />
                     </Button>
-                    {hasAiSpeech(health) && audioReadiness[item.id] && (
+                    {audioCheckingId === item.id && <Loading text="Đang kiểm tra bản nghe…" />}
+                    {contentActionErrors[item.id] && (
+                      <ErrorNotice message={contentActionErrors[item.id]} retry={!busy ? () => {
+                        if (audioReadinessRetryId === item.id) void refreshAudioReadiness(item.id);
+                        else void begin(item.id);
+                      } : undefined} />
+                    )}
+                    {audioCheckingId !== item.id && hasAiSpeech(health) && audioReadiness[item.id] && (
                       <div className="stack">
                         <small className="muted" role="status">{audioReadiness[item.id].notice}</small>
                         {!audioReadiness[item.id].ready && (
@@ -529,7 +606,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
             <div className="library-pagination">
               <Button
                 className="secondary small"
-                disabled={page === 1}
+                disabled={attemptStartBusy || page === 1}
                 onClick={() => {
                   setPage((value) => value - 1);
                   window.scrollTo({ top: 0 });
@@ -543,7 +620,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
               </span>
               <Button
                 className="secondary small"
-                disabled={page * 24 >= data.total}
+                disabled={attemptStartBusy || page * 24 >= data.total}
                 onClick={() => {
                   setPage((value) => value + 1);
                   window.scrollTo({ top: 0 });
@@ -561,7 +638,31 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         và CEFR của nội dung là mức tham khảo; ngân hàng chưa được hiệu chuẩn
         bởi giám khảo IELTS.
       </p>
-      {startContentId && <ExamStartDialog busy={!!busy} onClose={() => !busy && setStartContentId("")} onStart={() => void begin(startContentId, true)} />}
+      {startContentId && (
+        <Modal title="Quy định phòng thi" onClose={() => !busy && setStartContentId("")}>
+          <ExamRules />
+          {audioCheckingId === startContentId && <Loading text="Đang kiểm tra bản nghe…" />}
+          {contentActionErrors[startContentId] && <ErrorNotice message={contentActionErrors[startContentId]} />}
+          {audioReadiness[startContentId]?.ready === false && (
+            <div className="notice" role="status">
+              <span>{audioReadiness[startContentId].notice}</span>
+              <Button className="secondary small" disabled={!!busy}
+                onClick={() => void refreshAudioReadiness(startContentId)}>
+                Kiểm tra lại âm thanh
+              </Button>
+            </div>
+          )}
+          <div className="row wrap">
+            <Button disabled={!!busy || audioReadiness[startContentId]?.ready === false}
+              onClick={() => void begin(startContentId, true)}>
+              Tôi hiểu, bắt đầu bài thi
+            </Button>
+            <Button className="secondary" disabled={!!busy} onClick={() => setStartContentId("")}>
+              Quay lại
+            </Button>
+          </div>
+        </Modal>
+      )}
       {generator && (
         <Modal
           title="Tạo một bài luyện mới"

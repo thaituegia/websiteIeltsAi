@@ -24,11 +24,15 @@ Chạy `--inspect` chỉ đọc trạng thái; `--once --max-clips 32` chuẩn b
 
 Backend kiểm tra lại quyền, tình trạng bài, thời gian và khóa thi sau khi tải audio. Exam nhận audio một lần; lỗi tải hoặc ngắt kết nối trước khi nhận không tiêu hao lượt. Đổi câu hoặc rời bài hủy phần phát đang chờ trên trình duyệt. Cache hỏng/đọc lỗi không âm thầm gọi AI tạo lại trong bài thi.
 
+Kho bài và kiểm tra audio trên giao diện có giới hạn 10 giây, hiển thị trạng thái/lỗi và nút thử lại cạnh bài vừa chọn. Đổi bộ lọc hoặc rời trang hủy yêu cầu kiểm tra cũ. Các truy vấn đọc xác thực, kho bài, học liệu và metadata audio dùng MongoDB CSOT 5 giây; tải từng đoạn GridFS trong lượt nghe có giới hạn 20 giây. Lỗi đọc trả 503 và giữ audio đã lưu; không gọi AI để bù. Không áp giới hạn 10 giây cho việc nộp bài/chấm AI. Hộp quy định thi được giữ khi kiểm tra lại audio tạm lỗi sau xác nhận; chưa tạo lượt làm hoặc đồng hồ cho đến khi đủ audio.
+
 Response có `X-Speech-Provider`, `X-Speech-Voices` (số giọng thực tế dùng) và `X-Speech-Cache: hit`; health có `services.speech` mô tả cấu hình. Các GET `/api/content/:id/listening-audio/readiness`, `/api/placement/audio/readiness`, `/api/listening-audio/status` cần đăng nhập, chỉ đọc trạng thái/count; không lộ lời thoại/đáp án hoặc tạo audio. Nút kiểm tra lại trên giao diện chỉ gọi GET. Route `POST /api/content/:id/audio` cũ vẫn tương thích và chỉ đọc cache. Speaking ghi âm/nhận dạng/chấm điểm được giữ nguyên.
 
 ## Triển khai
 
 `deploy/run-speech-update.py` nhận commit và SHA256 archive đã ghim, gọi updater giữ dữ liệu hiện tại rồi tạo container worker riêng từ cùng image app. Worker có 384 MiB RAM, không thêm swap, 0,25 CPU, filesystem chỉ đọc, không capabilities, không mở cổng và log có giới hạn. Chỉ worker tham gia cả mạng dữ liệu riêng và mạng web để gọi nhà cung cấp. Cấu hình/key nằm trong file riêng hoặc được mở trong bộ nhớ; không đưa key vào lệnh hoặc frontend. Không reset band/tài khoản/tiến độ. Lệnh không khẳng định cả kho đã hoàn tất ngay: theo dõi log/count, bài nào đủ audio sẽ mở, toàn bộ kho tiếp tục được chuẩn bị.
+
+Nếu website báo 502, chạy `python3 deploy/diagnose-listening.py` bằng root trên VPS sau khi lấy đúng phiên bản script. Lệnh mặc định chỉ đọc, xác minh đúng project và báo trạng thái/OOM/restart/tài nguyên của app, MongoDB, proxy, worker; kiểm tra health trực tiếp và HTTPS qua Nginx; thống kê nhóm lỗi/route từ log riêng. Không in key, cookie, URL chứa ID bài làm hay log nguyên văn. Health 200 không chứng minh route mở bài hoạt động hoặc không có lỗi gián đoạn trước đó. Thiếu audio có trạng thái pending/409, không tự gây 502. Chỉ dùng `--pause-worker` khi cần kiểm tra ảnh hưởng tài nguyên: dừng đúng worker đã xác minh, giữ container/cache/tài khoản/tiến độ và các project khác.
 
 ## Kiểm tra
 

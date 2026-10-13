@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { Binary, GridFSBucket, MongoClient, type Collection } from "mongodb";
+import { Binary, GridFSBucket, MongoClient, MongoOperationTimeoutError, type Collection, type FindOptions } from "mongodb";
 import { SpeechAudioCache, SpeechProviderError, speechCapabilities, synthesizeSpeechAudio } from "../server/speech-audio";
 import type { Database } from "../server/storage";
 import type { ContentSection } from "../shared/types";
@@ -251,6 +251,101 @@ test("section GridFS cache keeps learner reads free and resumes durable provider
       assert.equal(commands.filter(command => command.name === "find" && command.collection === "speech_audio.files").length, 2);
       assert.equal(commands.filter(command => command.name === "find" && command.collection === "speech_audio_jobs").length, 2);
       assert.ok(commands.every(command => !mutationCommands.has(command.name) && command.collection !== "speech_audio.chunks"));
+    });
+    await t.test("native metadata deadlines return safe failures without writes or provider work", async () => {
+      assert.match(db.databaseName, ownedDatabasePattern);
+      const internals = cache as unknown as { files: Collection; jobs: Collection };
+      const snapshot = async () => Object.fromEntries(await Promise.all(
+        ["users", "recordings.files", "speech_audio_jobs", "speech_audio.files", "speech_audio.chunks"].map(async name =>
+          [name, await db.collection(name).find().sort({ _id: 1 }).toArray()]),
+      ));
+      const before = await snapshot(), providerCalls = calls;
+      for (const collection of [internals.files, internals.jobs]) {
+        const original = collection.find.bind(collection);
+        let intercepted = 0, timeouts = 0;
+        collection.find = ((filter = {}, options: FindOptions = {}) => {
+          assert.equal(options.timeoutMS, 5000);
+          assert.equal(options.timeoutMode, "cursorLifetime");
+          intercepted++;
+          // Delay only queries in this owned database; no server-wide failpoint.
+          // Keep the native cursor/transport and accelerate the production bound.
+          const cursor = original({ ...filter, $where: "function(){sleep(1000);return true;}" }, { ...options, timeoutMS: 150 });
+          const toArray = cursor.toArray.bind(cursor);
+          cursor.toArray = async () => {
+            try { return await toArray(); }
+            catch (error) {
+              assert.ok(error instanceof MongoOperationTimeoutError);
+              timeouts++; throw error;
+            }
+          };
+          return cursor;
+        }) as typeof collection.find;
+        commands.length = 0;
+        const started = performance.now();
+        try {
+          await assert.rejects(cache.readiness(sections), error => {
+            assert.ok(hasStatus(503)(error));
+            assert.equal((error as Error).message, "Không thể kiểm tra audio lúc này. Vui lòng thử lại sau.");
+            return true;
+          });
+          await assert.rejects(cache.getReady(sections), error => {
+            assert.ok(hasStatus(503)(error));
+            assert.equal((error as Error).message, "Không thể tải audio lúc này. Vui lòng thử lại sau.");
+            return true;
+          });
+          assert.equal(intercepted, 2); assert.equal(timeouts, 2);
+          assert.ok(performance.now() - started < 2000, "Native CSOT must interrupt stalled metadata queries");
+          assert.equal(calls, providerCalls);
+          assert.ok(commands.every(command => !mutationCommands.has(command.name) && command.collection !== "speech_audio.chunks"));
+        } finally { collection.find = original; }
+        assert.deepEqual(await snapshot(), before);
+      }
+      assert.equal((await cache.readiness(sections)).state, "ready");
+      assert.equal((await cache.getReady(sections)).cached, true);
+      assert.equal(calls, providerCalls);
+    });
+    await t.test("native GridFS deadlines stop stalled playback without consuming or repairing audio", async () => {
+      assert.match(db.databaseName, ownedDatabasePattern);
+      const internals = cache as unknown as { bucket: GridFSBucket };
+      const original = internals.bucket.openDownloadStream.bind(internals.bucket), providerCalls = calls;
+      const snapshot = async () => Object.fromEntries(await Promise.all(
+        ["users", "recordings.files", "speech_audio_jobs", "speech_audio.files", "speech_audio.chunks"].map(async name =>
+          [name, await db.collection(name).find().sort({ _id: 1 }).toArray()]),
+      ));
+      const before = await snapshot();
+      let download: ReturnType<GridFSBucket["openDownloadStream"]> | undefined, chunkQueries = 0, timedOut = false;
+      let chunks: Collection | undefined, originalFind: Collection["find"] | undefined;
+      internals.bucket.openDownloadStream = ((id, options) => {
+        assert.equal(options?.timeoutMS, 20000);
+        const stream = download = original(id, { ...options, timeoutMS: 150 });
+        stream.once("error", error => { timedOut = error instanceof MongoOperationTimeoutError; });
+        chunks = (stream as unknown as { s: { chunks: Collection } }).s.chunks;
+        const find = originalFind = chunks.find.bind(chunks);
+        chunks.find = ((filter = {}, options = {}) => {
+          chunkQueries++;
+          return find({ ...filter, $where: "function(){sleep(1000);return true;}" }, options);
+        }) as typeof chunks.find;
+        return stream;
+      }) as typeof internals.bucket.openDownloadStream;
+      commands.length = 0;
+      const started = performance.now();
+      try {
+        await assert.rejects(cache.getReady(sections), error => {
+          assert.ok(hasStatus(503)(error));
+          assert.equal((error as Error).message, "Không thể tải audio lúc này. Vui lòng thử lại sau.");
+          return true;
+        });
+        assert.ok(performance.now() - started < 2000, "Native CSOT must interrupt stalled GridFS reads");
+        assert.equal(chunkQueries, 1); assert.equal(download?.destroyed, true); assert.equal(timedOut, true);
+        assert.equal(calls, providerCalls);
+        assert.ok(commands.every(command => !mutationCommands.has(command.name)));
+      } finally {
+        internals.bucket.openDownloadStream = original;
+        if (chunks && originalFind) chunks.find = originalFind;
+      }
+      assert.deepEqual(await snapshot(), before);
+      assert.equal((await cache.getReady(sections)).cached, true);
+      assert.equal(calls, providerCalls);
     });
     await t.test("source IDs, titles, duplicate transcript fields and normalized role labels reuse a canonical section", async () => {
       const before = calls;

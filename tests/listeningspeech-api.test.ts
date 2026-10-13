@@ -233,7 +233,8 @@ test("native HTTP Listening audio reads prepared authored audio and fences learn
     await t.test("prewarmed practice audio is private, shared across accounts and cache-only", async () => {
       await prewarm(primary.sections);
       assert.equal(requests.length, 3);
-      assert.deepEqual(requests.map(row => row.body.input), primary.sections[0].dialogue!.map(row => row.text));
+      // Background turns may reach the provider concurrently; every input stays exact.
+      assert.deepEqual(requests.map(row => row.body.input).sort(), primary.sections[0].dialogue!.map(row => row.text).sort());
       assert.equal(new Set(requests.map(row => row.body.voice)).size, 2);
       const a = await begin("a", primary, "practice"), b = await begin("b", primary, "practice");
       const otherSkill = await begin("a", reading, "practice");

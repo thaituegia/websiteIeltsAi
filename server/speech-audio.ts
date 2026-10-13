@@ -24,6 +24,8 @@ const REQUEST_TIMEOUT_MS = 120_000;
 const GENERATION_TIMEOUT_MS = 15 * 60_000;
 const LEASE_MS = 45_000;
 const POLL_MS = 250;
+const CACHE_METADATA_TIMEOUT_MS = 5_000;
+const CACHE_DOWNLOAD_TIMEOUT_MS = 20_000;
 
 interface Configuration { provider: Provider; key: string; voices: string[]; model: string }
 interface VoicedTurn extends SpeechTurn { voice: string; delivery: string }
@@ -409,9 +411,14 @@ export class SpeechAudioCache {
 
   private async publishedFiles(plans: Plan[]): Promise<Map<string, GridFSFile>> {
     const fingerprints = [...new Set(plans.map(plan => plan.fingerprint))];
+    // Bound the whole cursor, including later batches and stalled Mongo replies.
     const [files, jobs] = await Promise.all([
-      this.files.find({ "metadata.fingerprint": { $in: fingerprints }, "metadata.kind": "section" }).toArray(),
-      this.jobs.find({ _id: { $in: fingerprints }, state: "ready" }).toArray(),
+      this.files.find({ "metadata.fingerprint": { $in: fingerprints }, "metadata.kind": "section" }, {
+        timeoutMS: CACHE_METADATA_TIMEOUT_MS, timeoutMode: "cursorLifetime",
+      }).toArray(),
+      this.jobs.find({ _id: { $in: fingerprints }, state: "ready" }, {
+        timeoutMS: CACHE_METADATA_TIMEOUT_MS, timeoutMode: "cursorLifetime",
+      }).toArray(),
     ]);
     const readyJobs = new Map(jobs.map(job => [job._id, job]));
     const byFingerprint = new Map(files.map(file => [file.metadata?.fingerprint, file]));
@@ -449,7 +456,8 @@ export class SpeechAudioCache {
         const file = published.get(plan.fingerprint)!;
         bytes += file.length - 44 + (results.length ? TURN_GAP_BYTES : 0);
         if (bytes > MAX_AUDIO_BYTES) throw new ApiError(400, "Audio vượt giới hạn dung lượng.");
-        const result = await this.readFile(file, plan);
+        // GridFS CSOT bounds the complete learner download stream.
+        const result = await this.readFile(file, plan, "section", CACHE_DOWNLOAD_TIMEOUT_MS);
         if (!result) throw new ApiError(409, PREPARATION_NOTICE);
         results.push(result);
       }
@@ -471,9 +479,9 @@ export class SpeechAudioCache {
     };
   }
 
-  private async readFile(file: GridFSFile, plan: Plan, kind: "section" | "turn" = "section"): Promise<CachedResult | null> {
+  private async readFile(file: GridFSFile, plan: Plan, kind: "section" | "turn" = "section", timeoutMS?: number): Promise<CachedResult | null> {
     if (!this.validMetadata(file, plan, kind)) return null;
-    const buffer = Buffer.allocUnsafe(file.length), stream = this.bucket!.openDownloadStream(file._id);
+    const buffer = Buffer.allocUnsafe(file.length), stream = this.bucket!.openDownloadStream(file._id, timeoutMS === undefined ? undefined : { timeoutMS });
     let offset = 0;
     try {
       for await (const value of stream) {

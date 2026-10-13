@@ -21,17 +21,21 @@ export function useSession() {
   if (!value) throw new Error("Session provider is missing");
   return value;
 }
-export function useApi<T>(path: string) {
+export function useApi<T>(path: string, timeoutMs?: number) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const requestId = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
   const reload = useCallback(async () => {
     const id = ++requestId.current;
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
     setLoading(true);
     setError("");
     try {
-      const result = await api<T>(path);
+      const result = await api<T>(path, { signal: controller.signal, timeoutMs });
       if (id === requestId.current) setData(result);
     } catch (cause) {
       if (id === requestId.current)
@@ -39,11 +43,12 @@ export function useApi<T>(path: string) {
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, [path]);
+  }, [path, timeoutMs]);
   useEffect(() => {
     void reload();
     return () => {
       ++requestId.current;
+      activeRequest.current?.abort();
     };
   }, [reload]);
   return { data, setData, loading, error, reload };
