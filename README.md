@@ -47,7 +47,7 @@ Mức đạt Gate mặc định 70% câu hỏi khách quan. Thi nâng band cần
 | --- | --- |
 | Kho bài tập | Tìm/lọc kỹ năng, chủ đề, CEFR, band tới 8.0 và Academic/GT; mỗi người mở riêng. |
 | Reading | Passage, MCQ, T/F/NG, Y/N/NG, matching, chọn nhiều đáp án, completion, sơ đồ; server chấm, giải thích và evidence sau nộp. |
-| Listening | Bốn phần xã hội/học thuật, đối thoại và bẫy đính chính/phủ định; map/plan/diagram và completion; ElevenLabs khi cấu hình hoặc TTS trình duyệt ghi rõ nguồn. |
+| Listening | Bốn phần xã hội/học thuật, đối thoại và bẫy đính chính/phủ định; map/plan/diagram và completion; OpenAI hoặc ElevenLabs nhiều nhân vật, hoặc TTS trình duyệt ghi rõ nguồn. |
 | Writing | Academic line/bar/pie/table/map/process/mixed charts, GT letter, Task 2; lưu nháp; mỗi task có tiêu chí và Task 2 trọng số gấp đôi. |
 | Speaking | Ba parts, ghi âm WAV PCM mono 16 kHz, nghe lại, lưu riêng bằng GridFS; Whisper STT và OpenAI Audio chấm từ bản ghi; Azure âm học là lựa chọn bổ sung. |
 | Thi thử thường | Reading 3 sections/40 câu/60 phút; Listening 4 parts/40 câu/30 phút; Writing 2 tasks/60 phút; Speaking 3 parts/11–14 phút. Luôn mở riêng; chế độ Exam hủy lượt đang làm khi rời hoặc tải lại trang. |
@@ -92,7 +92,9 @@ Mọi band là **ước lượng luyện tập, không phải điểm IELTS chí
 
 Thiếu OpenAI: Writing/Speaking lưu bài, metrics/checklist và band `null`. Transcript không đủ để đo phát âm. Với WAV PCM 16 kHz/16-bit/mono, `SPEAKING_AUDIO_MODEL=gpt-audio` nghe bản ghi, yêu cầu dẫn chứng có mốc thời gian cho độ trôi chảy và phát âm, dẫn chứng nguyên văn cho ngữ pháp/từ vựng. Thiếu lời nói, dưới 10 giây hoặc thiếu tiêu chí thì không tạo band toàn kỹ năng. Azure scores 0–100 không quy đổi trực tiếp thành band. Kết quả nâng band tiếp tục chờ nếu thiếu chấm AI/bằng chứng âm học; `POST /api/attempts/:id/regrade` chấm lại từ bài/bản ghi đã lưu của chính người đó. Lỗi provider giữ dữ liệu và trả lỗi để thử lại. Tests dùng transport/fixtures kiểm soát không chứng minh đã gọi nhà cung cấp live.
 
-TTS trình duyệt là giọng máy tự luyện, không phải ElevenLabs hay accent đã kiểm định. Exam ẩn transcript/hints và chỉ cấp nguồn nghe một lần; đây là mô phỏng tự học, không phải thi có giám sát hay chống gian lận tuyệt đối.
+Listening và câu nghe trong placement dùng cùng bộ tách lời thoại: chỉ đọc lời nói, bỏ nhãn như `Teacher:`/`Pupil:` và tiêu đề phần. Mỗi nhân vật giữ một giọng suốt cảnh, kể cả lời nói dài cần chia nhỏ. Cấu hình OpenAI có sẵn được dùng cho `gpt-4o-mini-tts`; ElevenLabs là lựa chọn khi không cấu hình OpenAI và có ba voice IDs khác nhau. Âm thanh được tạo khi bấm nghe, lưu riêng trong MongoDB để dùng lại; không tạo hàng loạt cả ngân hàng. Xem [cách tạo và kiểm tra bài nghe](docs/listening-audio.md).
+
+TTS trình duyệt chọn các giọng tiếng Anh có trên thiết bị. Khi thiết bị chỉ có một giọng, giao diện thông báo giới hạn đó. Exam ẩn transcript/hints và chỉ cấp nguồn nghe một lần; lỗi tạo audio hoặc hủy yêu cầu trước khi nhận audio không tiêu hao lượt nghe. Đây là mô phỏng tự học, không phải thi có giám sát hay chống gian lận tuyệt đối.
 
 ## Cấu hình server
 
@@ -105,7 +107,7 @@ Không commit credentials hoặc dùng `VITE_*` cho secrets. `.env.example` có 
 | `DUO_GATE_INTERVAL` | 5 hoặc 10, mặc định 5. |
 | `DUO_SESSIONS_PER_BAND`, `DUO_SESSIONS_BY_BAND` | Mặc định 20 buổi; override số buổi theo band bằng JSON server-owned. |
 | `DUO_PASS_PERCENT`, `DUO_STRICT_RETAKE_MODE` | Mặc định 70 và false; không nhận ngưỡng từ client. |
-| `IELTS_OPENAI_API_KEY` | OpenAI Writing/Speaking/content/STT; `OPENAI_API_KEY` là alias local. |
+| `IELTS_OPENAI_API_KEY` | OpenAI Writing/Speaking/content/STT và Listening nhiều giọng (`gpt-4o-mini-tts`); `OPENAI_API_KEY` là alias local. |
 | `CONTENT_MODEL`, `EXTRACTOR_MODEL`, `SCORING_MODEL`, `TRANSCRIPTION_MODEL`, `SPEAKING_AUDIO_MODEL` | Models server; bản cài đích dùng gpt-4o, whisper-1 và gpt-audio. |
 | `ELEVENLABS_API_KEY`, ba biến `ELEVENLABS_VOICE_*`, `ELEVENLABS_MODEL` | TTS nhiều nhân vật bằng voice IDs thực; mặc định model eleven_v3. |
 | `IELTS_AZURE_SPEECH_KEY`, `IELTS_AZURE_SPEECH_REGION` | Phân tích âm học; aliases local Azure được hỗ trợ. |

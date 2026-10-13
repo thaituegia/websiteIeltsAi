@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
 import { ApiError } from "./errors";
+import { SpeechAudioCache, type SpeechAudioResult } from "./speech-audio";
 import { placementDurationSeconds, suggestedPlacementSeconds } from "./placement-timing";
 import { ExamGuard, requireExamTab, type ExamTarget, type ExamResetResult } from "./exam-guard";
 import { createExamReplacement, examReplacementSourceIds, ExamReplacementUnavailableError } from "./exam-variants";
@@ -24,7 +25,6 @@ import {
   services,
   evaluateWriting,
   evaluateSpeaking,
-  listeningAudio,
   generateContent,
 } from "./ai";
 import {
@@ -235,6 +235,16 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   if (!Number.isInteger(maxLearners) || maxLearners < 1 || maxLearners > 100)
     throw new Error("MAX_LEARNERS must be between 1 and 100.");
   const app = express();
+  const speechAudio = new SpeechAudioCache(database);
+  function sendSpeechAudio(response: Response, audio: SpeechAudioResult & { cached: boolean }): void {
+    response.set({
+      "Cache-Control": "private, no-store",
+      "X-Speech-Provider": audio.provider,
+      "X-Speech-Voices": String(audio.voiceCount),
+      "X-Speech-Cache": audio.cached ? "hit" : "miss",
+    });
+    response.type(audio.mimetype).send(audio.buffer);
+  }
   app.disable("x-powered-by");
   app.set(
     "trust proxy",
@@ -1010,14 +1020,18 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           409,
           "Exam chỉ phát bản nghe một lần. Chọn Practice để nghe lại.",
         );
-      const result = await listeningAudio(content);
+      if (exam) await assertExamRequest(request, "attempt", exam.id);
+      const result = await speechAudio.get(content.sections);
+      if (response.destroyed || response.writableEnded) return;
       if (exam) {
+        await assertExamRequest(request, "attempt", exam.id);
         const claimed = await database.attempts.updateOne(
           {
             _id: exam.id,
             userId,
             status: "in-progress",
             listeningPlayed: { $ne: true },
+            $or: [{ deadlineAt: null }, { deadlineAt: { $gt: new Date(clockNow()).toISOString() } }],
           },
           { $set: { listeningPlayed: true } },
         );
@@ -1026,8 +1040,12 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
             409,
             "Bản nghe đã phát hoặc trạng thái bài đã thay đổi.",
           );
+        if (response.destroyed) {
+          await database.attempts.updateOne({ _id: exam.id, userId, status: "in-progress", listeningPlayed: true }, { $unset: { listeningPlayed: "" } });
+          return;
+        }
       }
-      response.type(result.mimetype).send(result.buffer);
+      sendSpeechAudio(response, result);
     }),
   );
 
@@ -1266,8 +1284,40 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         sections: content.sections,
         source: "browser-tts",
         notice:
-          "Giọng đọc của trình duyệt để tự luyện; accent chưa kiểm định. Exam này không phải kỳ thi có giám sát.",
+          "Giọng đọc tiếng Anh trên thiết bị; nhân vật dùng giọng khác nhau khi thiết bị có đủ giọng.",
       });
+    }),
+  );
+  app.post(
+    "/api/attempts/:id/listening-audio",
+    asyncRoute(async (request, response) => {
+      const id = idOf(request), userId = learnerOf(request).id;
+      await assertExamRequest(request, "attempt", id);
+      let record = await attemptOf(userId, id);
+      if (record.skill !== "listening") throw new ApiError(400, "Đây không phải bài Listening.");
+      if (record.status !== "in-progress") throw new ApiError(409, "Lượt nghe này không còn đang làm.");
+      if (record.mode === "exam" && record.listeningPlayed)
+        throw new ApiError(409, "Exam chỉ phát bản nghe một lần. Chọn Practice để nghe lại.");
+      const content = await contentOf(record.contentId);
+      const audio = await speechAudio.get(content.sections);
+      if (response.destroyed || response.writableEnded) return;
+      // A slow generator may finish after a tab violation, deadline or submit.
+      // Cache generic authored audio, but never revive or mutate that sitting.
+      await assertExamRequest(request, "attempt", id);
+      record = await attemptOf(userId, id);
+      if (record.status !== "in-progress") throw new ApiError(409, "Lượt nghe đã kết thúc hoặc bị hủy.");
+      if (record.mode === "exam") {
+        const claimed = await database.attempts.updateOne({
+          _id: id, userId, status: "in-progress", listeningPlayed: { $ne: true },
+          $or: [{ deadlineAt: null }, { deadlineAt: { $gt: new Date(clockNow()).toISOString() } }],
+        }, { $set: { listeningPlayed: true } });
+        if (!claimed.modifiedCount) throw new ApiError(409, "Bản nghe đã phát hoặc lượt thi đã kết thúc.");
+        if (response.destroyed) {
+          await database.attempts.updateOne({ _id: id, userId, status: "in-progress", listeningPlayed: true }, { $unset: { listeningPlayed: "" } });
+          return;
+        }
+      }
+      sendSpeechAudio(response, audio);
     }),
   );
   app.post(
@@ -1933,6 +1983,30 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         if (latest?.completionReason === "invalidated") record = latest;
       }
       response.json({ placement: record ? await placementView(record) : null });
+    }),
+  );
+  app.post(
+    "/api/placement/:id/audio",
+    asyncRoute(async (request, response) => {
+      const id = idOf(request), userId = learnerOf(request).id;
+      const { questionId } = z.object({ questionId: z.string().min(1).max(200) }).parse(request.body);
+      let record = await database.placements.findOne({ _id: id, userId });
+      if (!record) throw new ApiError(404, "Không tìm thấy bài đầu vào của bạn.");
+      await assertExamRequest(request, "placement", id);
+      record = await settlePlacement(record);
+      if (record.currentQuestionId !== questionId || record.completedAt || record.invalidatedAt)
+        throw new ApiError(409, "Câu nghe này không còn là câu hiện tại.");
+      const item = await database.placementItems.findOne({ _id: questionId });
+      if (!item || item.skill !== "listening") throw new ApiError(400, "Câu hiện tại không phải bài nghe.");
+      const audio = await speechAudio.get([{ id: item.id, title: "", text: item.text }]);
+      if (response.destroyed || response.writableEnded) return;
+      await assertExamRequest(request, "placement", id);
+      const latest = await database.placements.findOne({ _id: id, userId });
+      if (!latest) throw new ApiError(404, "Không tìm thấy bài đầu vào của bạn.");
+      record = await settlePlacement(latest);
+      if (record.currentQuestionId !== questionId || record.completedAt || record.invalidatedAt)
+        throw new ApiError(409, "Câu nghe đã đổi hoặc bài đầu vào đã kết thúc.");
+      sendSpeechAudio(response, audio);
     }),
   );
   app.post(

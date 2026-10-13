@@ -185,6 +185,7 @@ test("AI adapters: honest offline, two-stage evidence, weighting, provider error
           openai: false,
           elevenlabs: false,
           azure: false,
+          speech: { configured: false, provider: null, voiceCount: 0 },
         });
       });
     },
@@ -522,17 +523,20 @@ test("AI adapters: honest offline, two-stage evidence, weighting, provider error
             inputs: { text: string; voice_id: string }[];
           };
           assert.deepEqual(
-            parsed.inputs.slice(1).map((input) => input.voice_id),
+            parsed.inputs.map((input) => input.voice_id),
             ["test-british", "test-american", "test-australian"],
           );
-          return new Response(new Uint8Array([0xff, 0xfb, 0x90, 0x00]), {
-            headers: { "content-type": "audio/mpeg" },
+          assert.deepEqual(parsed.inputs.map(input => input.text), ["Good morning.", "Hello.", "Thanks."]);
+          return new Response(new Uint8Array([0, 0, 0xff, 0x7f]), {
+            headers: { "content-type": "audio/pcm" },
           });
         },
         async () => {
           const audio = await listeningAudio(sample);
-          assert.equal(audio.mimetype, "audio/mpeg");
-          assert.equal(audio.buffer.length, 4);
+          assert.equal(audio.mimetype, "audio/wav");
+          assert.equal(audio.buffer.toString("ascii", 0, 4), "RIFF");
+          assert.equal(audio.buffer.readUInt32LE(24), 16_000);
+          assert.ok(audio.buffer.length > 44);
           assert.equal(services().elevenlabs, true);
         },
       );

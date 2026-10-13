@@ -41,6 +41,7 @@ import type {
   ContentKind,
   ContentSection,
   Feedback,
+  Health,
   LibraryResult,
   PlacementState,
   Question,
@@ -63,6 +64,7 @@ import {
   skillNames,
 } from "./components";
 import {
+  fetchListeningAudio,
   speakSections,
   startRecording,
   submitSpeaking,
@@ -97,6 +99,8 @@ const formatTime = (seconds: number) =>
     .padStart(2, "0")}:${Math.floor(Math.max(0, seconds) % 60)
     .toString()
     .padStart(2, "0")}`;
+const hasAiSpeech = (health: Health | null) => health?.services.speech?.configured
+  ?? !!(health?.services.openai || health?.services.elevenlabs);
 const skillDescriptions: Record<ContentKind, string> = {
   reading: "Đọc sâu. Hiểu rõ. Tìm đúng bằng chứng.",
   listening: "Lắng nghe từng ý, nắm bắt từng chi tiết.",
@@ -563,23 +567,53 @@ export function PlacementPage() {
     [answer, setAnswer] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
-    [listening, setListening] = useState(false);
+    [listening, setListening] = useState(false),
+    [listenPreparing, setListenPreparing] = useState(false),
+    [listenNotice, setListenNotice] = useState("");
   const [startMode, setStartMode] = useState<"quick" | "deep" | null>(null);
   const integrityEnabled = health?.examIntegrityEnabled !== false;
   const integrity = useExamIntegrity("placement", placement?.id,
     integrityEnabled && !reviewId && !!placement?.question && !isExamInvalidated(placement), undefined,
     !!placement?.result && !isExamInvalidated(placement));
   const invalidated = isExamInvalidated(placement) || integrity.invalidated;
-  const cancelSpeech = useRef<(() => void) | null>(null);
+  const cancelSpeech = useRef<(() => void) | null>(null),
+    placementAudio = useRef<HTMLAudioElement | null>(null),
+    placementAudioUrl = useRef(""),
+    placementAudioRequest = useRef<AbortController | null>(null),
+    placementListenGeneration = useRef(0),
+    placementListenActive = useRef(false),
+    placementMounted = useRef(true),
+    placementCanListen = useRef(false),
+    placementQuestionKey = useRef("");
+  placementQuestionKey.current = `${placement?.id || ""}:${placement?.question?.id || ""}`;
+  const clearPlacementListening = useCallback(() => {
+    placementListenGeneration.current++;
+    placementListenActive.current = false;
+    placementAudioRequest.current?.abort(); placementAudioRequest.current = null;
+    cancelSpeech.current?.(); cancelSpeech.current = null;
+    if (placementAudio.current) {
+      placementAudio.current.pause();
+      placementAudio.current.onended = null; placementAudio.current.onerror = null;
+      placementAudio.current = null;
+    }
+    if (placementAudioUrl.current) URL.revokeObjectURL(placementAudioUrl.current);
+    placementAudioUrl.current = "";
+  }, []);
   useEffect(() => {
     if (!invalidated) return;
-    cancelSpeech.current?.(); setListening(false); setAnswer("");
-  }, [invalidated]);
+    clearPlacementListening(); setListening(false); setListenPreparing(false); setAnswer("");
+  }, [invalidated, clearPlacementListening]);
   const [timerNow, setTimerNow] = useState(Date.now());
   const serverOffset = useRef(0);
   const lastExpiryPoll = useRef(0);
   const remainingSeconds = placement?.deadlineAt
     ? Math.max(0, Math.ceil((Date.parse(placement.deadlineAt) - timerNow - serverOffset.current) / 1000)) : null;
+  placementCanListen.current = !reviewId && !invalidated && integrity.ready
+    && !!placement?.question && remainingSeconds !== 0;
+  useEffect(() => {
+    clearPlacementListening(); setListening(false); setListenPreparing(false); setListenNotice("");
+    return clearPlacementListening;
+  }, [placement?.id, placement?.question?.id, reviewId, clearPlacementListening]);
   useEffect(() => {
     if (placement?.serverNow) serverOffset.current = Date.parse(placement.serverNow) - Date.now();
   }, [placement]);
@@ -591,7 +625,7 @@ export function PlacementPage() {
     if (reviewId || invalidated || !integrity.ready || !placement?.question || remainingSeconds !== 0 || busy ||
       Date.now() - lastExpiryPoll.current < 1000) return;
     lastExpiryPoll.current = Date.now();
-    cancelSpeech.current?.(); setListening(false); setBusy(true);
+    clearPlacementListening(); setListening(false); setListenPreparing(false); setBusy(true);
     void api<{ placement: PlacementState }>(`/placement/${placement.id}`).then(async result => {
       setPlacement(result.placement); setAnswer("");
       if (result.placement.result) await refresh();
@@ -606,7 +640,10 @@ export function PlacementPage() {
     if (found && (!reviewId || found.id === reviewId)) { setPlacement(found); setAnswer(found.draftAnswer || ""); }
     else if (active.data?.placement === null) setPlacement(null);
   }, [active.data, reviewId]);
-  useEffect(() => () => cancelSpeech.current?.(), []);
+  useEffect(() => {
+    placementMounted.current = true;
+    return () => { placementMounted.current = false; clearPlacementListening(); };
+  }, [clearPlacementListening]);
   async function start(mode: "quick" | "deep", accepted = false) {
     if (integrityEnabled && !accepted) { setStartMode(mode); return; }
     setBusy(true);
@@ -633,8 +670,9 @@ export function PlacementPage() {
     const finalSubmission = integrityEnabled && placement.completed + 1 >= placement.total;
     setBusy(true);
     setError("");
-    cancelSpeech.current?.();
+    clearPlacementListening();
     setListening(false);
+    setListenPreparing(false);
     if (finalSubmission) beginExamSubmission("placement", placement.id);
     try {
       const result = await api<{ placement: PlacementState }>(
@@ -667,28 +705,56 @@ export function PlacementPage() {
     } catch (cause) { setError(errorMessage(cause)); }
     finally { setBusy(false); }
   }
-  function listen() {
-    if (!placement?.question) return;
+  async function listen() {
+    if (!placement?.question || !placementCanListen.current || busy || placementListenActive.current) return;
+    clearPlacementListening();
+    const generation = placementListenGeneration.current;
+    const questionKey = placementQuestionKey.current;
+    const isCurrent = () => placementMounted.current && placementCanListen.current
+      && generation === placementListenGeneration.current && questionKey === placementQuestionKey.current;
+    placementListenActive.current = true;
+    setError(""); setListening(true);
+    const finish = () => {
+      if (!isCurrent()) return;
+      placementListenActive.current = false;
+      setListening(false); setListenPreparing(false);
+    };
     try {
-      cancelSpeech.current?.();
-      setListening(true);
-      cancelSpeech.current = speakSections(
-        [
-          {
-            id: placement.question.id,
-            title: "",
-            text: placement.question.text,
-          },
-        ],
-        () => setListening(false),
-        (message) => {
-          setError(message);
-          setListening(false);
-        },
-      );
+      if (hasAiSpeech(health)) {
+        setListenPreparing(true);
+        setListenNotice("Đang chuẩn bị âm thanh; lần đầu cần thời gian tạo giọng AI.");
+        const controller = new AbortController(); placementAudioRequest.current = controller;
+        const result = await fetchListeningAudio(`/api/placement/${encodeURIComponent(placement.id)}/audio`,
+          controller.signal, { questionId: placement.question.id });
+        if (!isCurrent()) return;
+        placementAudioUrl.current = URL.createObjectURL(result.blob);
+        const audio = new Audio(placementAudioUrl.current); placementAudio.current = audio;
+        audio.onended = finish;
+        audio.onerror = () => {
+          if (!isCurrent()) return;
+          setError("Không phát được bản nghe AI. Kiểm tra âm lượng và thử lại."); finish();
+        };
+        setListenNotice(result.notice);
+        await audio.play();
+        if (!isCurrent()) { audio.pause(); return; }
+        setListenPreparing(false);
+      } else {
+        setListenNotice("Giọng máy của trình duyệt · accent chưa kiểm định.");
+        cancelSpeech.current = speakSections(
+          [{ id: placement.question.id, title: "", text: placement.question.text }],
+          finish,
+          message => { if (isCurrent()) { setError(message); finish(); } },
+          { onNotice: message => { if (isCurrent()) setListenNotice(message); } },
+        );
+      }
     } catch (cause) {
-      setError(errorMessage(cause));
-      setListening(false);
+      if (isCurrent()) {
+        setError(errorMessage(cause));
+        if (hasAiSpeech(health)) setListenNotice("Âm thanh AI chưa sẵn sàng.");
+        finish();
+      }
+    } finally {
+      if (generation === placementListenGeneration.current) placementAudioRequest.current = null;
     }
   }
   if (active.loading) return <Loading />;
@@ -835,13 +901,13 @@ export function PlacementPage() {
               <p>Nghe đoạn văn rồi chọn câu trả lời.</p>
               <Button
                 className="secondary"
-                onClick={listen}
-                disabled={listening}
+                onClick={() => void listen()}
+                disabled={listening || busy || remainingSeconds === 0 || !integrity.ready}
               >
                 <Volume2 size={17} />
-                {listening ? "Đang phát…" : "Nghe đoạn văn"}
+                {listenPreparing ? "Đang chuẩn bị âm thanh…" : listening ? "Đang phát…" : "Nghe đoạn văn"}
               </Button>
-              <small>Giọng máy của trình duyệt · accent chưa kiểm định</small>
+              <small>{listenNotice || (hasAiSpeech(health) ? "Giọng AI theo nhân vật" : "Giọng máy của trình duyệt · accent chưa kiểm định")}</small>
             </div>
           ) : (
             <div className="reading-passage placement-passage">
@@ -975,6 +1041,7 @@ export function LearningPage() {
   const [playing, setPlaying] = useState(false),
     [paused, setPaused] = useState(false),
     [listenNotice, setListenNotice] = useState(""),
+    [listenVoiceCount, setListenVoiceCount] = useState<number | null>(null),
     [listenBusy, setListenBusy] = useState(false),
     [showTranscript, setShowTranscript] = useState(false),
     [savedWord, setSavedWord] = useState(""),
@@ -987,15 +1054,35 @@ export function LearningPage() {
     stopSpeech = useRef<(() => void) | null>(null),
     listenAudio = useRef<HTMLAudioElement | null>(null),
     listenUrl = useRef(""),
+    listenRequest = useRef<AbortController | null>(null),
+    listenPlaybackGeneration = useRef(0),
+    listenRequestActive = useRef(false),
     timedOut = useRef(false),
     recordingStart = useRef(0);
+  const clearListeningPlayback = useCallback(() => {
+    listenPlaybackGeneration.current++;
+    listenRequestActive.current = false;
+    listenRequest.current?.abort(); listenRequest.current = null;
+    stopSpeech.current?.(); stopSpeech.current = null;
+    if (listenAudio.current) {
+      listenAudio.current.pause();
+      listenAudio.current.onended = null; listenAudio.current.onerror = null;
+      listenAudio.current = null;
+    }
+    if (listenUrl.current) URL.revokeObjectURL(listenUrl.current);
+    listenUrl.current = "";
+  }, []);
   useEffect(() => {
     if (!invalidated) return;
     setResponses({}); setEssays({}); setTranscript(""); setAudioBlob(null);
     void recorder.current?.discard(); recorder.current = null;
-    stopSpeech.current?.(); listenAudio.current?.pause();
-    setRecording(false); setPlaying(false); setConfirm(false);
-  }, [invalidated]);
+    clearListeningPlayback();
+    setRecording(false); setPlaying(false); setPaused(false); setListenBusy(false); setConfirm(false);
+  }, [invalidated, clearListeningPlayback]);
+  useEffect(() => {
+    if (attempt?.status !== "submitted" && !grading) return;
+    clearListeningPlayback(); setPlaying(false); setPaused(false); setListenBusy(false);
+  }, [attempt?.status, grading, clearListeningPlayback]);
   const activeMilliseconds = useRef(0);
   const loadGeneration = useRef(0);
   const mounted = useRef(true);
@@ -1005,6 +1092,7 @@ export function LearningPage() {
   latest.current = { responses, essays, transcript };
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
+    clearListeningPlayback(); setPlaying(false); setPaused(false); setListenBusy(false); setListenNotice(""); setListenVoiceCount(null);
     setLoading(true);
     setError("");
     setAttempt(null);
@@ -1036,7 +1124,7 @@ export function LearningPage() {
       if (generation === loadGeneration.current && mounted.current)
         setLoading(false);
     }
-  }, [id]);
+  }, [id, clearListeningPlayback]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -1086,11 +1174,9 @@ export function LearningPage() {
   useEffect(
     () => () => {
       void recorder.current?.discard();
-      stopSpeech.current?.();
-      listenAudio.current?.pause();
-      if (listenUrl.current) URL.revokeObjectURL(listenUrl.current);
+      clearListeningPlayback();
     },
-    [id],
+    [id, clearListeningPlayback],
   );
   useEffect(() => {
     if (!audioBlob) {
@@ -1335,9 +1421,8 @@ export function LearningPage() {
       setEssays(result.essays);
       setTranscript(result.transcript);
       setSaveState("saved");
-      stopSpeech.current?.();
-      listenAudio.current?.pause();
-      setPlaying(false);
+      clearListeningPlayback();
+      setPlaying(false); setPaused(false); setListenBusy(false);
       await refresh();
     } catch (cause) {
       await resumeExamSubmission();
@@ -1374,74 +1459,82 @@ export function LearningPage() {
     }
   }, [remaining, submitted, busy, attempt?.id, invalidated, integrity.ready]);
   async function listen() {
-    if (!attempt || !canWrite.current) return;
+    if (!attempt || attempt.status !== "in-progress" || !canWrite.current || busy
+      || remaining === 0 || listenRequestActive.current) return;
+    clearListeningPlayback();
     const generation = loadGeneration.current;
+    const playbackGeneration = listenPlaybackGeneration.current;
+    const isCurrent = () => canWrite.current && mounted.current && generation === loadGeneration.current
+      && playbackGeneration === listenPlaybackGeneration.current;
+    listenRequestActive.current = true;
     setListenBusy(true);
-    setError("");
-    stopSpeech.current?.();
-    listenAudio.current?.pause();
+    setError(""); setPlaying(false); setPaused(false);
     try {
-      if (health?.services.elevenlabs) {
-        const response = await fetch(
-          `/api/content/${attempt.contentId}/audio`,
-          { method: "POST", credentials: "include", headers: examHeaders() },
-        );
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as {
-            error?: string;
-          } | null;
-          throw new Error(payload?.error || "Không tải được bản nghe.");
-        }
-        const blob = await response.blob();
-        if (!canWrite.current || !mounted.current || generation !== loadGeneration.current) return;
-        if (listenUrl.current) URL.revokeObjectURL(listenUrl.current);
-        listenUrl.current = URL.createObjectURL(blob);
+      if (hasAiSpeech(health)) {
+        setListenNotice("Đang chuẩn bị âm thanh; lần đầu cần thời gian tạo giọng AI.");
+        const controller = new AbortController(); listenRequest.current = controller;
+        const result = await fetchListeningAudio(`/api/attempts/${encodeURIComponent(attempt.id)}/listening-audio`, controller.signal);
+        if (!isCurrent()) return;
+        listenUrl.current = URL.createObjectURL(result.blob);
         const audio = new Audio(listenUrl.current);
         listenAudio.current = audio;
-        audio.onended = () => setPlaying(false);
+        audio.onended = () => { if (isCurrent()) { setPlaying(false); setPaused(false); } };
         audio.onerror = () => {
-          setPlaying(false);
+          if (!isCurrent()) return;
+          setPlaying(false); setPaused(false);
           setError("Không phát được bản nghe. Kiểm tra thiết bị âm thanh.");
         };
+        setListenNotice(result.notice); setListenVoiceCount(result.voiceCount);
         await audio.play();
-        if (!canWrite.current || !mounted.current || generation !== loadGeneration.current) { audio.pause(); return; }
+        if (!isCurrent()) { audio.pause(); return; }
         setPlaying(true);
         setPaused(false);
-        setListenNotice(
-          "Giọng đọc ElevenLabs · nội dung tự biên soạn, accent chưa kiểm định.",
-        );
       } else {
         const source = await api<{
           sections: ContentSection[];
           source: string;
           notice: string;
-        }>(`/attempts/${attempt.id}/listening-source`, { method: "POST" });
-        if (!canWrite.current || !mounted.current || generation !== loadGeneration.current) return;
+        }>(`/attempts/${encodeURIComponent(attempt.id)}/listening-source`, { method: "POST" });
+        if (!isCurrent()) return;
         setListenNotice(source.notice);
         setPlaying(true);
         setPaused(false);
         stopSpeech.current = speakSections(
           source.sections,
-          () => setPlaying(false),
+          () => { if (isCurrent()) { setPlaying(false); setPaused(false); } },
           (message) => {
+            if (!isCurrent()) return;
             setError(message);
-            setPlaying(false);
+            setPlaying(false); setPaused(false);
           },
+          { onNotice: message => { if (isCurrent()) setListenNotice(message); } },
         );
       }
     } catch (cause) {
-      setError(errorMessage(cause));
-      setPlaying(false);
+      if (isCurrent()) {
+        setError(errorMessage(cause));
+        if (hasAiSpeech(health)) setListenNotice("Âm thanh AI chưa sẵn sàng.");
+        setPlaying(false); setPaused(false);
+      }
     } finally {
-      setListenBusy(false);
+      if (playbackGeneration === listenPlaybackGeneration.current) {
+        listenRequest.current = null; listenRequestActive.current = false;
+        if (generation === loadGeneration.current && mounted.current) setListenBusy(false);
+      }
     }
   }
   function pauseListening() {
+    if (!canWrite.current || !playing || listenBusy) return;
+    const generation = loadGeneration.current;
+    const playbackGeneration = listenPlaybackGeneration.current;
     if (paused) {
       if (listenAudio.current)
         void listenAudio.current
           .play()
-          .catch((cause) => setError(errorMessage(cause)));
+          .catch((cause) => {
+            if (canWrite.current && mounted.current && generation === loadGeneration.current
+              && playbackGeneration === listenPlaybackGeneration.current) setError(errorMessage(cause));
+          });
       else speechSynthesis.resume();
     } else {
       if (listenAudio.current) listenAudio.current.pause();
@@ -1450,10 +1543,10 @@ export function LearningPage() {
     setPaused(!paused);
   }
   function endListening() {
-    stopSpeech.current?.();
-    listenAudio.current?.pause();
+    clearListeningPlayback();
     setPlaying(false);
     setPaused(false);
+    setListenBusy(false);
   }
   async function saveVocabulary(word: VocabularyEntry) {
     setSavedWord(`saving:${word.id}`);
@@ -1626,8 +1719,8 @@ export function LearningPage() {
           <div>
             <h3>Nghe và ghi lại điều bạn hiểu</h3>
             <p>
-              {health?.services.elevenlabs
-                ? "Giọng đọc nhiều nhân vật từ ElevenLabs"
+              {hasAiSpeech(health)
+                ? (listenVoiceCount ?? health?.services.speech?.voiceCount) === 1 ? "Giọng AI theo nhân vật" : "Nhiều giọng AI theo nhân vật"
                 : "Giọng máy của trình duyệt · âm thanh tự luyện"}
             </p>
             <small>
@@ -1664,7 +1757,7 @@ export function LearningPage() {
                 onClick={() => void listen()}
               >
                 <Play size={16} />
-                {listenBusy ? "Đang tải…" : "Phát bản nghe"}
+                {listenBusy ? "Đang chuẩn bị âm thanh…" : "Phát bản nghe"}
               </Button>
             )}
           </div>

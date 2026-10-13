@@ -52,7 +52,7 @@ bash deploy/init.sh YOUR_IP 8443 website-ielts-ai-prod --self-signed
 
 Trình duyệt sẽ hiện cảnh báo chứng chỉ; cần chấp nhận chứng chỉ này trước khi đăng nhập hoặc ghi âm. Chứng chỉ tự ký không mang trạng thái tin cậy công khai. `init.sh` từ chối ghi đè cấu hình đã có và không khởi chạy container.
 
-Các file runtime được đặt trong `.local/deploy/`, đã nằm ngoài Git và Docker build context nhờ `.gitignore` và `.dockerignore` của project. Chỉ sửa `.local/deploy/app.env` trên server để thêm API key thật nếu muốn chấm AI trực tiếp, giọng đọc ElevenLabs và Azure pronunciation. Để trống thì tính năng offline/checklist vẫn dùng được; không tạo điểm AI giả. Không ghi key vào Compose hoặc tài liệu. Giá trị chứa `$` hoặc `#` nên được đặt trong dấu nháy đơn trong env file.
+Các file runtime được đặt trong `.local/deploy/`, đã nằm ngoài Git và Docker build context nhờ `.gitignore` và `.dockerignore` của project. Chỉ sửa `.local/deploy/app.env` trên server để thêm API key thật nếu muốn chấm AI trực tiếp, tạo bài nghe nhiều giọng bằng OpenAI/ElevenLabs và Azure pronunciation. Bản cài có OpenAI dùng luôn key server hiện tại để tạo audio khi bấm nghe và lưu dùng lại; không cần thêm key vào frontend. Để trống thì tính năng offline/checklist vẫn dùng được; không tạo điểm AI giả. Không ghi key vào Compose hoặc tài liệu. Giá trị chứa `$` hoặc `#` nên được đặt trong dấu nháy đơn trong env file.
 
 `APP_ORIGIN` được tạo từ đúng `https://host:port`; URL truy cập phải khớp giá trị này. App chỉ có một instance; giới hạn hai tài khoản thật. Production tắt tài khoản demo, người dùng đăng ký trên giao diện.
 

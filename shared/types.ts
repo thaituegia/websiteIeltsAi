@@ -423,7 +423,16 @@ export interface Health {
   demoEnabled: boolean;
   duoEnabled?: boolean;
   authMode?: "phone" | "email";
-  services: { openai: boolean; elevenlabs: boolean; azure: boolean };
+  services: {
+    openai: boolean;
+    elevenlabs: boolean;
+    azure: boolean;
+    speech?: {
+      configured: boolean;
+      provider: "openai" | "elevenlabs" | null;
+      voiceCount: number;
+    };
+  };
   bank: {
     lessons: number;
     mocks: number;

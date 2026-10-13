@@ -10,6 +10,7 @@ import type {
   TestType,
 } from "../shared/types";
 import { ApiError } from "./errors";
+import { speechCapabilities, synthesizeSpeechAudio } from "./speech-audio";
 import {
   contentStructureIssues,
   ieltsQuestionTypeSchema,
@@ -125,9 +126,10 @@ export function services(): Health["services"] {
   return {
     openai: Boolean(openAIKey()),
     elevenlabs: Boolean(
-      process.env.ELEVENLABS_API_KEY?.trim() && voiceIds().every(Boolean),
+      process.env.ELEVENLABS_API_KEY?.trim() && voiceIds().every(Boolean) && new Set(voiceIds()).size === 3,
     ),
     azure: Boolean(azureKey() && azureRegion()),
+    speech: speechCapabilities(),
   };
 }
 
@@ -894,64 +896,8 @@ export async function listeningAudio(
 ): Promise<{ buffer: Buffer; mimetype: string }> {
   if (content.skill !== "listening")
     throw new ApiError(400, "Audio này chỉ dành cho bài Listening.");
-  if (!services().elevenlabs)
-    throw new ApiError(
-      503,
-      "Chưa cấu hình ElevenLabs và ba voice IDs. Có thể luyện bằng giọng đọc của trình duyệt; đó không phải audio ElevenLabs hay accent được kiểm định.",
-    );
-  const ids = voiceIds();
-  const accents = ["british", "american", "australian"];
-  const inputs = content.sections.flatMap((section) => [
-    {
-      text: `Section ${content.sections.indexOf(section) + 1}. ${section.title}`,
-      voice_id: ids[0],
-    },
-    ...(section.dialogue?.length
-      ? section.dialogue.map((line) => ({
-          text: line.text,
-          voice_id: ids[accents.indexOf(line.accent)] ?? ids[0],
-        }))
-      : [{ text: section.text, voice_id: ids[0] }]),
-  ]);
-  if (
-    !inputs.length ||
-    inputs.reduce((sum, input) => sum + input.text.length, 0) > 40_000
-  )
-    throw new ApiError(
-      400,
-      "Script audio rỗng hoặc vượt giới hạn một lần tạo.",
-    );
-  const response = await request(
-    "https://api.elevenlabs.io/v1/text-to-dialogue?output_format=mp3_44100_128",
-    {
-      method: "POST",
-      headers: {
-        "xi-api-key": process.env.ELEVENLABS_API_KEY?.trim() ?? "",
-        "Content-Type": "application/json",
-        Accept: "audio/mpeg",
-      },
-      body: JSON.stringify({
-        inputs,
-        model_id: process.env.ELEVENLABS_MODEL?.trim() || "eleven_v3",
-      }),
-    },
-    "ElevenLabs",
-    120_000,
-  );
-  const mimetype = response.headers.get("content-type")?.split(";")[0] ?? "";
-  if (!mimetype.startsWith("audio/")) {
-    await response.body?.cancel();
-    throw new ApiError(502, "ElevenLabs chưa trả về audio hợp lệ.");
-  }
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (!buffer.length || buffer.length > 25 * 1024 * 1024)
-    throw new ApiError(
-      502,
-      "Audio ElevenLabs rỗng hoặc vượt giới hạn lưu trữ.",
-    );
-  return { buffer, mimetype };
+  return synthesizeSpeechAudio(content.sections);
 }
-
 const generatedSectionSchema = z.object({
   id: z.string().min(1).max(100),
   title: z.string().min(1).max(300),
