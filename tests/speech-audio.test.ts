@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { Binary, GridFSBucket, MongoClient, MongoOperationTimeoutError, type Collection, type FindOptions } from "mongodb";
-import { SpeechAudioCache, SpeechProviderError, speechCapabilities, synthesizeSpeechAudio } from "../server/speech-audio";
+import { Binary, GridFSBucket, MongoClient, MongoOperationTimeoutError, ObjectId, type Collection, type FindOptions } from "mongodb";
+import { SpeechAudioCache, SpeechCacheError, SpeechProviderError, speechCapabilities, speechSectionFingerprint, synthesizeSpeechAudio } from "../server/speech-audio";
 import type { Database } from "../server/storage";
 import type { ContentSection } from "../shared/types";
 
@@ -517,10 +517,106 @@ test("section GridFS cache keeps learner reads free and resumes durable provider
         });
         throw new Error("Synthetic provider must abort.");
       };
-      try { await assert.rejects(cache.get(changed), hasStatus(503)); }
+      try { await assert.rejects(cache.get(changed), error => error instanceof SpeechCacheError && error.kind === "lease-lost" && error.stage === "lease-heartbeat"); }
       finally { globalThis.setInterval = previousInterval; globalThis.fetch = mockFetch; }
       assert.equal(await db.collection("speech_audio.files").countDocuments(), filesBefore);
       assert.equal(await db.collection("speech_audio_jobs").countDocuments({ owner: "synthetic-replacement-worker", state: "generating" }), 1);
+    });
+    await t.test("provider transport deadline ends before a delayed turn-storage failure", async () => {
+      const changed = changedSections("Delayed synthetic turn upload"), delayedCache = new SpeechAudioCache(database);
+      const internals = delayedCache as unknown as { upload(...args: unknown[]): Promise<ObjectId> };
+      const originalUpload = internals.upload.bind(internals), originalTimer = globalThis.setTimeout, originalFetch = globalThis.fetch;
+      const signals: AbortSignal[] = [];
+      globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => originalTimer(callback, delay === 120000 ? 10 : delay, ...args)) as typeof setTimeout;
+      globalThis.fetch = async (_url, init) => { signals.push(init!.signal!); return pcmResponse(); };
+      internals.upload = async () => { await new Promise(resolve => originalTimer(resolve, 30)); throw new MongoOperationTimeoutError("synthetic private storage timeout"); };
+      try {
+        await assert.rejects(delayedCache.get(changed), error => error instanceof SpeechCacheError && error.kind === "storage" && error.stage === "cache-write" && error.status === 503);
+        assert.equal(signals.length, 2);
+        assert.ok(signals.every(signal => !signal.aborted), "provider timers must not cover GridFS work");
+      } finally { internals.upload = originalUpload; globalThis.setTimeout = originalTimer; globalThis.fetch = originalFetch; }
+    });
+    await t.test("worker GridFS reads use native deadlines and preserve completed audio", async () => {
+      const internals = cache as unknown as { bucket: GridFSBucket }, original = internals.bucket.openDownloadStream.bind(internals.bucket);
+      const beforeFiles = await db.collection("speech_audio.files").find().sort({ _id: 1 }).toArray(), beforeChunks = await db.collection("speech_audio.chunks").find().sort({ _id: 1 }).toArray();
+      const before = calls; let timedOut = false, chunks: Collection | undefined, originalFind: Collection["find"] | undefined;
+      internals.bucket.openDownloadStream = ((id, options) => {
+        assert.equal(options?.timeoutMS, 30000);
+        const stream = original(id, { ...options, timeoutMS: 150 });
+        stream.once("error", error => { timedOut = error instanceof MongoOperationTimeoutError; });
+        chunks = (stream as unknown as { s: { chunks: Collection } }).s.chunks;
+        const find = originalFind = chunks.find.bind(chunks);
+        chunks.find = ((filter = {}, findOptions = {}) => find({ ...filter, $where: "function(){sleep(1000);return true;}" }, findOptions)) as typeof chunks.find;
+        return stream;
+      }) as typeof internals.bucket.openDownloadStream;
+      try { await assert.rejects(cache.get(sections), error => error instanceof SpeechCacheError && error.kind === "storage" && error.stage === "cache-read"); assert.equal(timedOut, true); }
+      finally { internals.bucket.openDownloadStream = original; if (chunks && originalFind) chunks.find = originalFind; }
+      assert.deepEqual(await db.collection("speech_audio.files").find().sort({ _id: 1 }).toArray(), beforeFiles);
+      assert.deepEqual(await db.collection("speech_audio.chunks").find().sort({ _id: 1 }).toArray(), beforeChunks);
+      assert.equal((await otherCache.getReady(sections)).cached, true); assert.equal(calls, before);
+    });
+    await t.test("worker metadata queries use native deadlines without repairing or repurchasing audio", async () => {
+      const internals = cache as unknown as { files: Collection }, original = internals.files.findOne.bind(internals.files);
+      const beforeFiles = await db.collection("speech_audio.files").find().sort({ _id: 1 }).toArray(), beforeJobs = await db.collection("speech_audio_jobs").find().sort({ _id: 1 }).toArray();
+      const before = calls; let timedOut = false;
+      internals.files.findOne = (async (...args: Parameters<typeof original>) => {
+        assert.equal(args[1]?.timeoutMS, 20000);
+        try { return await original({ ...args[0], $where: "function(){sleep(1000);return true;}" }, { ...args[1], timeoutMS: 150 }); }
+        catch (error) { timedOut = error instanceof MongoOperationTimeoutError; throw error; }
+      }) as typeof internals.files.findOne;
+      try { await assert.rejects(cache.get(sections), error => error instanceof SpeechCacheError && error.kind === "storage" && error.stage === "cache-metadata"); assert.equal(timedOut, true); }
+      finally { internals.files.findOne = original; }
+      assert.deepEqual(await db.collection("speech_audio.files").find().sort({ _id: 1 }).toArray(), beforeFiles);
+      assert.deepEqual(await db.collection("speech_audio_jobs").find().sort({ _id: 1 }).toArray(), beforeJobs);
+      assert.equal((await otherCache.getReady(sections)).cached, true); assert.equal(calls, before);
+    });
+    await t.test("native GridFS upload deadline bounds a saturated owned Mongo pool", async () => {
+      const boundedClient = new MongoClient("mongodb://127.0.0.1:27017", { serverSelectionTimeoutMS: 5000, maxPoolSize: 1, monitorCommands: true });
+      await boundedClient.connect();
+      const boundedDb = boundedClient.db(name), boundedCache = new SpeechAudioCache({ db: boundedDb } as Database);
+      const internals = boundedCache as unknown as { bucket: GridFSBucket }, original = internals.bucket.openUploadStream.bind(internals.bucket);
+      let blocked: Promise<unknown> | undefined, timedOut = false;
+      internals.bucket.openUploadStream = ((filename, options) => {
+        assert.equal(options?.timeoutMS, 30000);
+        const stream = original(filename, { ...options, timeoutMS: 150 }), end = stream.end.bind(stream);
+        let started!: () => void;
+        const waiting = new Promise<void>(resolve => { started = resolve; });
+        const observe = (event: { databaseName: string; commandName: string; command: { find?: string } }) => {
+          if (event.databaseName === name && event.commandName === "find" && event.command.find === "users") { boundedClient.off("commandStarted", observe); started(); }
+        };
+        boundedClient.on("commandStarted", observe);
+        stream.once("error", error => { timedOut = error instanceof MongoOperationTimeoutError; });
+        stream.end = ((buffer: Buffer) => {
+          // The sole connection is occupied by a query in this owned DB only.
+          blocked = boundedDb.collection("users").find({ $where: "function(){sleep(600);return true;}" }, { timeoutMS: 2000 }).toArray();
+          void waiting.then(() => end(buffer)); return stream;
+        }) as typeof stream.end;
+        return stream;
+      }) as typeof internals.bucket.openUploadStream;
+      const changed = [{ id: "synthetic-native-upload-timeout", title: "", text: "A synthetic upload with a bounded native storage deadline." }];
+      const before = calls, startedAt = performance.now();
+      try {
+        await assert.rejects(boundedCache.get(changed), error => error instanceof SpeechCacheError && error.kind === "storage" && error.stage === "cache-write");
+        assert.equal(timedOut, true); assert.ok(performance.now() - startedAt < 2500);
+        assert.equal(calls, before + 1);
+        assert.equal(await db.collection("speech_audio.files").countDocuments({ "metadata.fingerprint": speechSectionFingerprint(changed[0]) }), 0);
+      } finally { internals.bucket.openUploadStream = original; await blocked; await boundedClient.close(); }
+    });
+    await t.test("an ambiguous publication reply keeps a completed section reusable without new provider calls", async () => {
+      const changed = changedSections("Ambiguous synthetic publish"), publishingCache = new SpeechAudioCache(database);
+      const internals = publishingCache as unknown as { jobs: Collection }, original = internals.jobs.updateOne.bind(internals.jobs);
+      let failed = false;
+      internals.jobs.updateOne = (async (...args: Parameters<typeof original>) => {
+        const result = await original(...args);
+        if (!failed && !Array.isArray(args[1]) && args[1].$set?.state === "ready") { failed = true; throw new MongoOperationTimeoutError("synthetic private ambiguous reply"); }
+        return result;
+      }) as typeof internals.jobs.updateOne;
+      const before = calls;
+      try { await assert.rejects(publishingCache.get(changed), error => error instanceof SpeechCacheError && error.kind === "storage" && error.stage === "cache-publish"); }
+      finally { internals.jobs.updateOne = original; }
+      assert.equal(failed, true); assert.equal(calls, before + 3);
+      assert.equal((await new SpeechAudioCache(secondDatabase).get(changed)).cached, true);
+      assert.equal(calls, before + 3);
     });
     await t.test("ElevenLabs model and configured voice changes invalidate durable sections", async () => {
       delete process.env.IELTS_OPENAI_API_KEY;

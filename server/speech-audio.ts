@@ -26,6 +26,34 @@ const LEASE_MS = 45_000;
 const POLL_MS = 250;
 const CACHE_METADATA_TIMEOUT_MS = 5_000;
 const CACHE_DOWNLOAD_TIMEOUT_MS = 20_000;
+const WORKER_METADATA_TIMEOUT_MS = 20_000;
+const WORKER_STREAM_TIMEOUT_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS = 10_000;
+
+export type SpeechFailureStage = "provider-request" | "provider-response" | "generation" | "claim-wait"
+  | "cache-initialize" | "cache-metadata" | "cache-read" | "cache-write" | "cache-publish"
+  | "lease-renew" | "lease-heartbeat" | "bank-scan" | "bank-metadata" | "bank-publish";
+
+/** Safe operational categories; never retain driver/provider messages or bodies. */
+export class SpeechCacheError extends ApiError {
+  constructor(public readonly kind: "storage" | "lease-lost" | "interrupted" | "claim-timeout", public readonly stage: SpeechFailureStage) {
+    super(kind === "claim-timeout" ? 504 : 503, kind === "storage"
+      ? stage === "cache-metadata" ? "Không thể kiểm tra audio lúc này. Vui lòng thử lại sau."
+        : stage === "cache-read" ? "Không thể tải audio lúc này. Vui lòng thử lại sau."
+          : "Không thể lưu audio lúc này. Vui lòng thử lại sau."
+      : kind === "claim-timeout" ? "Audio đang được tạo. Vui lòng thử lại sau."
+        : "Tạo audio bị gián đoạn. Vui lòng thử lại sau.");
+  }
+}
+
+export async function speechStorageOperation<T>(stage: SpeechFailureStage, work: () => Promise<T>): Promise<T> {
+  try { return await work(); }
+  catch (error) { if (error instanceof SpeechCacheError) throw error; throw new SpeechCacheError("storage", stage); }
+}
+
+function interrupted(signal?: AbortSignal, stage: SpeechFailureStage = "generation"): SpeechCacheError {
+  return signal?.reason instanceof SpeechCacheError ? signal.reason : new SpeechCacheError("interrupted", stage);
+}
 
 interface Configuration { provider: Provider; key: string; voices: string[]; model: string }
 interface VoicedTurn extends SpeechTurn { voice: string; delivery: string }
@@ -137,17 +165,18 @@ async function withGenerationSlot<T>(work: () => Promise<T>): Promise<T> {
 }
 
 export class SpeechProviderError extends ApiError {
-  constructor(status: number, message: string, public readonly kind: "auth" | "quota" | "rate-limit" | "unavailable" | "invalid", public readonly retryAfterMs?: number) {
+  constructor(status: number, message: string, public readonly kind: "auth" | "quota" | "rate-limit" | "unavailable" | "invalid" | "provider-timeout", public readonly retryAfterMs?: number,
+    public readonly stage: SpeechFailureStage = "provider-request") {
     super(status, message);
   }
 }
 
-function providerError(provider: Provider, status?: number, quota = false, retryAfterMs?: number): SpeechProviderError {
+function providerError(provider: Provider, status?: number, quota = false, retryAfterMs?: number, stage: SpeechFailureStage = "provider-response"): SpeechProviderError {
   const label = provider === "openai" ? "OpenAI" : "ElevenLabs";
-  if (status === 401 || status === 403) return new SpeechProviderError(503, `${label} chưa chấp nhận cấu hình audio. Vui lòng kiểm tra khóa và quyền truy cập dịch vụ.`, "auth");
-  if (status === 402 || quota) return new SpeechProviderError(503, `${label} đã hết hạn mức audio. Vui lòng kiểm tra hạn mức dịch vụ.`, "quota");
-  if (status === 429) return new SpeechProviderError(503, `${label} đang giới hạn yêu cầu audio. Vui lòng thử lại sau.`, "rate-limit", retryAfterMs);
-  return new SpeechProviderError(502, `${label} chưa trả về audio hợp lệ. Vui lòng thử lại sau.`, status === undefined ? "invalid" : "unavailable");
+  if (status === 401 || status === 403) return new SpeechProviderError(503, `${label} chưa chấp nhận cấu hình audio. Vui lòng kiểm tra khóa và quyền truy cập dịch vụ.`, "auth", undefined, stage);
+  if (status === 402 || quota) return new SpeechProviderError(503, `${label} đã hết hạn mức audio. Vui lòng kiểm tra hạn mức dịch vụ.`, "quota", undefined, stage);
+  if (status === 429) return new SpeechProviderError(503, `${label} đang giới hạn yêu cầu audio. Vui lòng thử lại sau.`, "rate-limit", retryAfterMs, stage);
+  return new SpeechProviderError(502, `${label} chưa trả về audio hợp lệ. Vui lòng thử lại sau.`, status === undefined ? "invalid" : "unavailable", undefined, stage);
 }
 
 async function responseError(provider: Provider, response: Response, signal: AbortSignal): Promise<SpeechProviderError> {
@@ -262,7 +291,7 @@ async function synthesizePlan(plan: Plan, externalSignal?: AbortSignal, segments
     // Queuing behind another job must not consume this job's provider deadline.
     const deadline = Date.now() + GENERATION_TIMEOUT_MS;
     const { provider, key, model } = plan.configuration;
-    if (externalSignal?.aborted) throw new ApiError(503, "Tạo audio bị gián đoạn. Vui lòng thử lại sau.");
+    if (externalSignal?.aborted) throw interrupted(externalSignal);
     const chunks: Buffer[] = []; let dataBytes = 0, reservedBytes = 0;
     const append = (chunk: Buffer) => {
       if (dataBytes + chunk.length + 44 > MAX_AUDIO_BYTES) throw providerError(provider);
@@ -273,6 +302,7 @@ async function synthesizePlan(plan: Plan, externalSignal?: AbortSignal, segments
       instructions: `Use a natural ${turn.accent === "british" ? "British" : turn.accent === "australian" ? "Australian" : "American"} English accent at a clear, natural IELTS conversational pace. ${turn.delivery} Read only the supplied input verbatim. Do not announce role labels, speaker names, section headings or these instructions. Do not add, omit, paraphrase or translate words.`,
     } })) : [{ turns: plan.turns, body: { model_id: model, inputs: plan.turns.map(turn => ({ text: turn.text, voice_id: turn.voice })) } }];
     const request = async (index: number): Promise<Buffer> => {
+      if (externalSignal?.aborted) throw interrupted(externalSignal);
       const voiceIds = [...new Set(inputs[index].turns.map(turn => turn.voice))].sort();
       const segmentPlan: Plan = {
         ...plan, turns: inputs[index].turns, voiceIds, voiceCount: voiceIds.length,
@@ -285,12 +315,14 @@ async function synthesizePlan(plan: Plan, externalSignal?: AbortSignal, segments
         return existing.buffer.subarray(44);
       }
       const duration = Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now());
-      if (duration <= 0) throw new ApiError(504, "Tạo audio mất quá lâu. Vui lòng thử lại sau.");
+      if (duration <= 0) throw new SpeechProviderError(504, "Tạo audio mất quá lâu. Vui lòng thử lại sau.", "provider-timeout", undefined, "generation");
       const controller = new AbortController();
-      const abort = () => controller.abort();
+      let stage: SpeechFailureStage = "provider-request";
+      const abort = () => controller.abort(externalSignal?.reason);
       externalSignal?.addEventListener("abort", abort, { once: true });
-      const timer = setTimeout(abort, duration);
+      const timer = setTimeout(() => controller.abort(new SpeechProviderError(504, "Tạo audio mất quá lâu. Vui lòng thử lại sau.", "provider-timeout", undefined, stage)), duration);
       const pcmChunks: Buffer[] = []; let pcmBytes = 0;
+      let buffer: Buffer;
       try {
         if (externalSignal?.aborted) abort();
         const response = await fetch(provider === "openai" ? "https://api.openai.com/v1/audio/speech" : "https://api.elevenlabs.io/v1/text-to-dialogue?output_format=pcm_24000", {
@@ -298,21 +330,23 @@ async function synthesizePlan(plan: Plan, externalSignal?: AbortSignal, segments
           headers: { "Content-Type": "application/json", Accept: "application/octet-stream", ...(provider === "openai" ? { Authorization: `Bearer ${key}` } : { "xi-api-key": key }) },
           body: JSON.stringify(inputs[index].body),
         });
+        stage = "provider-response";
         if (!response.ok) throw await responseError(provider, response, controller.signal);
         await appendResampledPcm(response, controller.signal, chunk => {
           if (reservedBytes + chunk.length + 44 > MAX_AUDIO_BYTES) throw providerError(provider);
           pcmChunks.push(chunk); pcmBytes += chunk.length; reservedBytes += chunk.length;
         }, () => MAX_AUDIO_BYTES - 44 - reservedBytes, provider);
-        const buffer = Buffer.concat([wavHeader(pcmBytes), ...pcmChunks], pcmBytes + 44);
+        buffer = Buffer.concat([wavHeader(pcmBytes), ...pcmChunks], pcmBytes + 44);
         if (!validWav(buffer)) throw providerError(provider);
-        await segments?.write(segmentPlan, { buffer, mimetype: "audio/wav", provider, voiceCount: voiceIds.length });
-        return buffer.subarray(44);
       } catch (error) {
-        if (externalSignal?.aborted) throw new ApiError(503, "Tạo audio bị gián đoạn. Vui lòng thử lại sau.");
-        if (controller.signal.aborted) throw new ApiError(504, "Tạo audio mất quá lâu. Vui lòng thử lại sau.");
+        if (externalSignal?.aborted) throw interrupted(externalSignal);
+        if (controller.signal.aborted && controller.signal.reason instanceof SpeechProviderError) throw controller.signal.reason;
         if (error instanceof ApiError) throw error;
-        throw providerError(provider, 502);
+        throw providerError(provider, 502, false, undefined, stage);
       } finally { clearTimeout(timer); externalSignal?.removeEventListener("abort", abort); }
+      // Storage has its own deadline and category, independent of transport.
+      await segments?.write(segmentPlan, { buffer, mimetype: "audio/wav", provider, voiceCount: voiceIds.length });
+      return buffer.subarray(44);
     };
     // Background generation runs at most two bounded provider turns at once.
     // Await siblings even after an error so completed paid turns are persisted.
@@ -372,7 +406,7 @@ export class SpeechAudioCache {
   private async initialize(): Promise<void> {
     if (!this.initialization) {
       this.initialization = (async () => {
-        await this.files.createIndex({ "metadata.fingerprint": 1 }, { unique: true, partialFilterExpression: { "metadata.fingerprint": { $type: "string" } } });
+        await speechStorageOperation("cache-initialize", () => this.files.createIndex({ "metadata.fingerprint": 1 }, { unique: true, partialFilterExpression: { "metadata.fingerprint": { $type: "string" } }, timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
       })().catch(error => { this.initialization = undefined; throw error; });
     }
     await this.initialization;
@@ -383,7 +417,7 @@ export class SpeechAudioCache {
     const plans = makePlans(sections), results: CachedResult[] = [];
     let bytes = 44;
     for (const plan of plans) {
-      if (signal?.aborted) throw new ApiError(503, "Tạo audio bị gián đoạn. Vui lòng thử lại sau.");
+      if (signal?.aborted) throw interrupted(signal);
       const result = await this.getSection(plan, signal);
       bytes += result.buffer.length - 44 + (results.length ? TURN_GAP_BYTES : 0);
       if (bytes > MAX_AUDIO_BYTES) throw new ApiError(400, "Audio vượt giới hạn dung lượng.");
@@ -441,7 +475,7 @@ export class SpeechAudioCache {
       return { configured: true, ready, state: ready ? "ready" : "pending", notice: ready ? "" : PREPARATION_NOTICE, readyCount, totalCount: plans.length };
     } catch (error) {
       if (error instanceof ApiError) throw error;
-      throw new ApiError(503, "Không thể kiểm tra audio lúc này. Vui lòng thử lại sau.");
+      throw new SpeechCacheError("storage", "cache-metadata");
     }
   }
 
@@ -464,7 +498,7 @@ export class SpeechAudioCache {
       return this.combine(plans, results);
     } catch (error) {
       if (error instanceof ApiError) throw error;
-      throw new ApiError(503, "Không thể tải audio lúc này. Vui lòng thử lại sau.");
+      throw new SpeechCacheError("storage", "cache-read");
     }
   }
 
@@ -479,9 +513,9 @@ export class SpeechAudioCache {
     };
   }
 
-  private async readFile(file: GridFSFile, plan: Plan, kind: "section" | "turn" = "section", timeoutMS?: number): Promise<CachedResult | null> {
+  private async readFile(file: GridFSFile, plan: Plan, kind: "section" | "turn" = "section", timeoutMS = WORKER_STREAM_TIMEOUT_MS): Promise<CachedResult | null> {
     if (!this.validMetadata(file, plan, kind)) return null;
-    const buffer = Buffer.allocUnsafe(file.length), stream = this.bucket!.openDownloadStream(file._id, timeoutMS === undefined ? undefined : { timeoutMS });
+    const buffer = Buffer.allocUnsafe(file.length), stream = this.bucket!.openDownloadStream(file._id, { timeoutMS });
     let offset = 0;
     try {
       for await (const value of stream) {
@@ -492,7 +526,7 @@ export class SpeechAudioCache {
     } catch (error) {
       stream.destroy();
       if (error instanceof MongoGridFSChunkError || (typeof error === "object" && error && "code" in error && error.code === "ENOENT")) return null;
-      throw new ApiError(503, "Không thể tải audio lúc này. Vui lòng thử lại sau.");
+      throw new SpeechCacheError("storage", "cache-read");
     }
     if (offset !== buffer.length || !validWav(buffer) || createHash("sha256").update(buffer).digest("hex") !== file.metadata?.sha256) return null;
     return { buffer, mimetype: "audio/wav", provider: plan.configuration.provider, voiceCount: plan.voiceCount, cached: true };
@@ -502,33 +536,33 @@ export class SpeechAudioCache {
     await this.initialize();
     const deadline = Date.now() + GENERATION_TIMEOUT_MS + LEASE_MS;
     while (Date.now() < deadline) {
-      if (signal?.aborted) throw new ApiError(503, "Tạo audio bị gián đoạn. Vui lòng thử lại sau.");
-      const file = await this.files!.findOne({ "metadata.fingerprint": plan.fingerprint });
+      if (signal?.aborted) throw interrupted(signal, "claim-wait");
+      const file = await speechStorageOperation("cache-metadata", () => this.files.findOne({ "metadata.fingerprint": plan.fingerprint }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
       const result = file ? await this.readFile(file, plan) : null;
-      const job = await this.jobs!.findOne({ _id: plan.fingerprint });
+      const job = await speechStorageOperation("cache-metadata", () => this.jobs.findOne({ _id: plan.fingerprint }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
       if (result && job?.state === "ready" && job.fileId?.equals(file!._id)) return result;
       if (job?.state === "ready") {
         // Publishing may have completed after the initial lookup. Check again
         // before reclaiming a job, or a second worker would pay to recreate it.
-        const published = await this.files!.findOne({ "metadata.fingerprint": plan.fingerprint });
+        const published = await speechStorageOperation("cache-metadata", () => this.files.findOne({ "metadata.fingerprint": plan.fingerprint }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
         if (published && job.fileId?.equals(published._id)) { const result = await this.readFile(published, plan); if (result) return result; }
-        await this.jobs!.updateOne({ _id: plan.fingerprint, state: "ready", fileId: job.fileId }, { $set: { state: "failed", leaseExpiresAt: new Date(0) }, $unset: { fileId: "" } });
+        await speechStorageOperation("cache-metadata", () => this.jobs.updateOne({ _id: plan.fingerprint, state: "ready", fileId: job.fileId }, { $set: { state: "failed", leaseExpiresAt: new Date(0) }, $unset: { fileId: "" } }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
       }
       const owner = randomUUID(), now = new Date(), leaseExpiresAt = new Date(now.getTime() + LEASE_MS);
       let acquired = false;
       if (!job) {
-        try { await this.jobs!.insertOne({ _id: plan.fingerprint, state: "generating", owner, leaseExpiresAt, createdAt: now }); acquired = true; }
-        catch (error) { if (!(typeof error === "object" && error && "code" in error && error.code === 11000)) throw error; }
+        try { await this.jobs.insertOne({ _id: plan.fingerprint, state: "generating", owner, leaseExpiresAt, createdAt: now }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }); acquired = true; }
+        catch (error) { if (!(typeof error === "object" && error && "code" in error && error.code === 11000)) throw new SpeechCacheError("storage", "cache-metadata"); }
       }
-      if (!acquired) acquired = Boolean(await this.jobs!.findOneAndUpdate({ _id: plan.fingerprint, state: { $ne: "ready" }, $or: [{ leaseExpiresAt: { $lte: now } }, { leaseExpiresAt: { $exists: false } }] }, { $set: { state: "generating", owner, leaseExpiresAt } }, { returnDocument: "after" }));
+      if (!acquired) acquired = Boolean(await speechStorageOperation("cache-metadata", () => this.jobs.findOneAndUpdate({ _id: plan.fingerprint, state: { $ne: "ready" }, $or: [{ leaseExpiresAt: { $lte: now } }, { leaseExpiresAt: { $exists: false } }] }, { $set: { state: "generating", owner, leaseExpiresAt } }, { returnDocument: "after", timeoutMS: WORKER_METADATA_TIMEOUT_MS })));
       if (acquired) return this.generateClaimed(plan, owner, signal);
       await new Promise<void>(resolve => setTimeout(resolve, POLL_MS));
     }
-    throw new ApiError(504, "Audio đang được tạo. Vui lòng thử lại sau.");
+    throw new SpeechCacheError("claim-timeout", "claim-wait");
   }
 
   private async upload(plan: Plan, result: SpeechAudioResult, kind: "section" | "turn"): Promise<ObjectId> {
-    const upload = this.bucket.openUploadStream(`${plan.fingerprint}.wav`, { metadata: {
+    const upload = this.bucket.openUploadStream(`${plan.fingerprint}.wav`, { timeoutMS: WORKER_STREAM_TIMEOUT_MS, metadata: {
       fingerprint: plan.fingerprint, kind, version: AUDIO_VERSION, provider: result.provider,
       voiceCount: result.voiceCount, voiceIds: plan.voiceIds, mimetype: result.mimetype,
       sha256: createHash("sha256").update(result.buffer).digest("hex"),
@@ -536,50 +570,53 @@ export class SpeechAudioCache {
     try {
       await new Promise<void>((resolve, reject) => { upload.once("finish", resolve); upload.once("error", reject); upload.end(result.buffer); });
       return upload.id;
-    } catch (error) { await upload.abort().catch(() => undefined); throw error; }
+    } catch { await upload.abort().catch(() => undefined); throw new SpeechCacheError("storage", "cache-write"); }
   }
 
   private async generateClaimed(plan: Plan, owner: string, signal?: AbortSignal): Promise<CachedResult> {
     const controller = new AbortController();
-    const abort = () => controller.abort();
+    const abort = () => controller.abort(interrupted(signal));
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();
     let heartbeatRunning = false;
     const heartbeat = setInterval(() => {
       if (heartbeatRunning) return;
       heartbeatRunning = true;
-      void this.jobs!.updateOne({ _id: plan.fingerprint, owner, state: "generating" }, { $set: { leaseExpiresAt: new Date(Date.now() + LEASE_MS) } })
-        .then(result => { if (!result.matchedCount) controller.abort(); }, () => controller.abort())
+      const now = new Date();
+      void speechStorageOperation("lease-heartbeat", () => this.jobs.updateOne({ _id: plan.fingerprint, owner, state: "generating", leaseExpiresAt: { $gt: now } }, { $set: { leaseExpiresAt: new Date(now.getTime() + LEASE_MS) } }, { timeoutMS: HEARTBEAT_TIMEOUT_MS }))
+        .then(result => { if (!result.matchedCount) controller.abort(new SpeechCacheError("lease-lost", "lease-heartbeat")); }, error => controller.abort(error))
         .finally(() => { heartbeatRunning = false; });
     }, LEASE_MS / 3);
     heartbeat.unref();
     let uploadedId: ObjectId | undefined;
     const renew = async () => {
-      const renewed = await this.jobs.updateOne({ _id: plan.fingerprint, owner, state: "generating", leaseExpiresAt: { $gt: new Date() } }, { $set: { leaseExpiresAt: new Date(Date.now() + LEASE_MS) } });
-      if (!renewed.matchedCount || controller.signal.aborted) throw new ApiError(503, "Tạo audio bị gián đoạn. Vui lòng thử lại sau.");
+      if (controller.signal.aborted) throw interrupted(controller.signal, "lease-renew");
+      const renewed = await speechStorageOperation("lease-renew", () => this.jobs.updateOne({ _id: plan.fingerprint, owner, state: "generating", leaseExpiresAt: { $gt: new Date() } }, { $set: { leaseExpiresAt: new Date(Date.now() + LEASE_MS) } }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
+      if (controller.signal.aborted) throw interrupted(controller.signal, "lease-renew");
+      if (!renewed.matchedCount) throw new SpeechCacheError("lease-lost", "lease-renew");
     };
     try {
       // A completed upload can survive a worker crash before its job update.
       // Recover it under the claim rather than synthesizing the same text again.
-      const existing = await this.files!.findOne({ "metadata.fingerprint": plan.fingerprint });
+      const existing = await speechStorageOperation("cache-metadata", () => this.files.findOne({ "metadata.fingerprint": plan.fingerprint }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
       if (existing) {
         const recovered = await this.readFile(existing, plan);
         if (recovered) {
           await renew();
-          const saved = await this.jobs!.updateOne({ _id: plan.fingerprint, owner, state: "generating" }, { $set: { state: "ready", fileId: existing._id, completedAt: new Date() }, $unset: { owner: "", leaseExpiresAt: "" } });
-          if (!saved.matchedCount) throw new ApiError(503, "Tạo audio bị gián đoạn. Vui lòng thử lại sau.");
+          const saved = await speechStorageOperation("cache-publish", () => this.jobs.updateOne({ _id: plan.fingerprint, owner, state: "generating" }, { $set: { state: "ready", fileId: existing._id, completedAt: new Date() }, $unset: { owner: "", leaseExpiresAt: "" } }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
+          if (!saved.matchedCount) throw new SpeechCacheError("lease-lost", "cache-publish");
           return recovered;
         }
-        await this.bucket!.delete(existing._id);
+        await speechStorageOperation("cache-write", () => this.bucket.delete(existing._id, { timeoutMS: WORKER_STREAM_TIMEOUT_MS }));
       }
       const result = await synthesizePlan(plan, controller.signal, {
         read: async segment => {
-          const file = await this.files.findOne({ "metadata.fingerprint": segment.fingerprint });
+          const file = await speechStorageOperation("cache-metadata", () => this.files.findOne({ "metadata.fingerprint": segment.fingerprint }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
           if (!file) return null;
           const ready = await this.readFile(file, segment, "turn");
           if (ready) return ready;
           await renew();
-          await this.bucket.delete(file._id);
+          await speechStorageOperation("cache-write", () => this.bucket.delete(file._id, { timeoutMS: WORKER_STREAM_TIMEOUT_MS }));
           return null;
         },
         write: async (segment, result) => {
@@ -590,14 +627,15 @@ export class SpeechAudioCache {
       await renew();
       uploadedId = await this.upload(plan, result, "section");
       await renew();
-      const saved = await this.jobs!.updateOne({ _id: plan.fingerprint, owner, state: "generating" }, { $set: { state: "ready", fileId: uploadedId, completedAt: new Date() }, $unset: { owner: "", leaseExpiresAt: "" } });
-      if (!saved.matchedCount) throw new ApiError(503, "Tạo audio bị gián đoạn. Vui lòng thử lại sau.");
+      const saved = await speechStorageOperation("cache-publish", () => this.jobs.updateOne({ _id: plan.fingerprint, owner, state: "generating" }, { $set: { state: "ready", fileId: uploadedId, completedAt: new Date() }, $unset: { owner: "", leaseExpiresAt: "" } }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }));
+      if (!saved.matchedCount) throw new SpeechCacheError("lease-lost", "cache-publish");
       return { ...result, cached: false };
     } catch (error) {
-      if (uploadedId) await this.bucket!.delete(uploadedId).catch(() => undefined);
-      await this.jobs!.updateOne({ _id: plan.fingerprint, owner, state: "generating" }, { $set: { state: "failed", leaseExpiresAt: new Date(0) }, $unset: { owner: "", fileId: "" } }).catch(() => undefined);
+      // A successful upload survives an ambiguous publication response. A new
+      // owner can validate and publish it without purchasing the script again.
+      await this.jobs.updateOne({ _id: plan.fingerprint, owner, state: "generating" }, { $set: { state: "failed", leaseExpiresAt: new Date(0) }, $unset: { owner: "", fileId: "" } }, { timeoutMS: WORKER_METADATA_TIMEOUT_MS }).catch(() => undefined);
       if (error instanceof ApiError) throw error;
-      throw new ApiError(503, "Không thể lưu audio lúc này. Vui lòng thử lại sau.");
+      throw new SpeechCacheError("storage", "cache-write");
     } finally { clearInterval(heartbeat); signal?.removeEventListener("abort", abort); }
   }
 }

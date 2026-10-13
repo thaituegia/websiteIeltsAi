@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { MongoClient, type Db } from "mongodb";
+import { MongoClient, MongoOperationTimeoutError, type Db, type Document, type Filter, type FindOptions } from "mongodb";
 import { parseSpeechPrewarmArguments } from "../server/speech-prewarm-cli";
 import { inspectSpeechBank, readSpeechPrewarmStatus, runSpeechBankPrewarm } from "../server/speech-prewarm";
+import { SpeechAudioCache, speechSectionFingerprint } from "../server/speech-audio";
 import type { ContentSection } from "../shared/types";
 
 const ownedDatabasePattern = /^ielts_prewarm_test_\d+_[a-f0-9]{32}$/;
@@ -211,6 +212,208 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       assert.equal(inspected.failed, 1); assert.equal(inspected.ready, result.ready);
       assert.equal((await runSpeechBankPrewarm(otherDb, { expectedDatabase, maxClips: 1, resume: true })).failed, 1);
       assert.deepEqual(calls.slice(before), [validText]);
+    });
+
+    await t.test("a bank publication failure preserves successful audio without retrying or double-counting it", async () => {
+      const scene = section("synthetic-publish-fault", "Synthetic audio stays ready when its progress publication fails.");
+      const baseline = await readSpeechPrewarmStatus(db), providerCalls = calls.length;
+      await db.collection("content").insertOne({ id: scene.id, skill: "listening", sections: [scene] });
+      const bank = db.collection<{ _id: string; state?: string; ready?: number; attempts?: number; lastErrorCode?: string }>("speech_bank_prewarm"), originalCollection = db.collection.bind(db);
+      const originalUpdate = bank.updateOne.bind(bank);
+      let publicationFailures = 0;
+      bank.updateOne = (async (filter, update, options) => {
+        const changes = Array.isArray(update) ? undefined : update.$set;
+        if (filter._id === "bank" && changes?.state === "running" && changes?.ready === baseline.ready + 1 && !publicationFailures) {
+          publicationFailures++;
+          throw new MongoOperationTimeoutError(`Synthetic private publication response ${syntheticKey}`);
+        }
+        return originalUpdate(filter, update, options);
+      }) as typeof bank.updateOne;
+      db.collection = ((collectionName, options) => collectionName === "speech_bank_prewarm" ? bank : originalCollection(collectionName, options)) as typeof db.collection;
+      respond = () => pcmResponse();
+      try {
+        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 1 });
+        assert.equal(publicationFailures, 1);
+        assert.equal(result.ready, baseline.ready + 1); assert.equal(result.failed, baseline.failed);
+        assert.equal(result.total, baseline.total + 1); assert.ok(result.ready + result.failed <= result.total);
+        assert.equal(result.lastErrorCode, "storage"); assert.equal(result.lastErrorStage, "bank-publish");
+        assertCalls(calls.slice(providerCalls), [scene.text]);
+        const clip = await bank.findOne({ _id: `clip:${speechSectionFingerprint(scene)}` as any });
+        assert.equal(clip?.state, "ready"); assert.equal(clip?.attempts, 1);
+        assert.equal(clip?.lastErrorCode, undefined);
+        assert.equal((await db.collection("speech_audio_jobs").findOne({ _id: speechSectionFingerprint(scene) as any }))?.state, "ready");
+        const saved = await readSpeechPrewarmStatus(db);
+        assert.equal(saved.ready, result.ready); assert.equal(saved.failed, baseline.failed); assert.equal(saved.total, result.total);
+      } finally { db.collection = originalCollection; bank.updateOne = originalUpdate; }
+    });
+
+    await t.test("an interrupted initial scan keeps the last complete bank totals", async () => {
+      const baseline = await readSpeechPrewarmStatus(db), providerCalls = calls.length;
+      const controller = new AbortController(), originalReadiness = SpeechAudioCache.prototype.readiness;
+      let inspected = 0;
+      SpeechAudioCache.prototype.readiness = async function (sections) {
+        const result = await originalReadiness.call(this, sections);
+        if (++inspected === 1) controller.abort();
+        return result;
+      };
+      try {
+        const result = await runSpeechBankPrewarm(db, { expectedDatabase, signal: controller.signal });
+        assert.equal(inspected, 1); assert.equal(result.state, "pending");
+        assert.equal(result.lastErrorCode, "interrupted"); assert.equal(result.lastErrorStage, "bank-scan");
+        for (const key of ["total", "ready", "failed", "pending"] as const) assert.equal(result[key], baseline[key]);
+        const saved = await readSpeechPrewarmStatus(db);
+        for (const key of ["total", "ready", "failed", "pending"] as const) assert.equal(saved[key], baseline[key]);
+        assert.equal(calls.length, providerCalls);
+      } finally { SpeechAudioCache.prototype.readiness = originalReadiness; }
+    });
+
+    await t.test("a provider response timeout is distinct from storage and retains only a safe stage", async () => {
+      const scene = section("synthetic-body-timeout", "Synthetic provider PCM response never finishes.");
+      await db.collection("content").insertOne({ id: scene.id, skill: "listening", sections: [scene] });
+      const pacingTimer = globalThis.setTimeout, providerCalls = calls.length;
+      globalThis.setTimeout = ((callback: (...args: unknown[]) => void, milliseconds?: number, ...args: unknown[]) => milliseconds === 120_000
+        ? previousTimer(callback, 20, ...args) : pacingTimer(callback, milliseconds, ...args)) as typeof setTimeout;
+      respond = () => new Response(new ReadableStream<Uint8Array>(), { headers: { "content-type": "audio/pcm" } });
+      try {
+        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 0 });
+        assert.equal(result.lastErrorCode, "provider-timeout"); assert.equal(result.lastErrorStage, "provider-response");
+        assertCalls(calls.slice(providerCalls), [scene.text]);
+        const clip = await db.collection("speech_bank_prewarm").findOne({ _id: `clip:${speechSectionFingerprint(scene)}` as any });
+        assert.equal(clip?.state, "failed"); assert.equal(clip?.lastErrorCode, "provider-timeout");
+        assert.equal(clip?.lastErrorStage, "provider-response"); assert.equal(clip?.retryable, true);
+      } finally { globalThis.setTimeout = pacingTimer; respond = () => pcmResponse(); }
+    });
+
+    await t.test("an internal lease loss stays distinct from caller shutdown and storage", async () => {
+      const scene = section("synthetic-internal-lease-loss", "Synthetic lease is replaced before provider PCM can be saved.");
+      await db.collection("content").insertOne({ id: scene.id, skill: "listening", sections: [scene] });
+      const providerCalls = calls.length;
+      respond = async text => {
+        assert.equal(text, scene.text);
+        await db.collection("speech_audio_jobs").updateOne({ _id: speechSectionFingerprint(scene) as any, state: "generating" }, {
+          $set: { owner: "synthetic-replacement-worker" },
+        });
+        return pcmResponse();
+      };
+      try {
+        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 0 });
+        assert.equal(result.lastErrorCode, "lease-lost"); assert.equal(result.lastErrorStage, "lease-renew");
+        assertCalls(calls.slice(providerCalls), [scene.text]);
+        const clip = await db.collection("speech_bank_prewarm").findOne({ _id: `clip:${speechSectionFingerprint(scene)}` as any });
+        assert.equal(clip?.state, "failed"); assert.equal(clip?.lastErrorCode, "lease-lost");
+        assert.equal(clip?.lastErrorStage, "lease-renew");
+        assert.equal(await db.collection("speech_audio.files").countDocuments({ "metadata.fingerprint": speechSectionFingerprint(scene) }), 0);
+      } finally { respond = () => pcmResponse(); }
+    });
+
+    await t.test("a cache metadata transport failure retains a safe storage origin without provider work", async () => {
+      const scene = section("synthetic-storage-origin", "Synthetic metadata failure must never enter a paid provider request.");
+      await db.collection("content").insertOne({ id: scene.id, skill: "listening", sections: [scene] });
+      const files = db.collection("speech_audio.files"), originalCollection = db.collection.bind(db);
+      const originalFind = files.findOne.bind(files), providerCalls = calls.length;
+      let intercepted = 0;
+      files.findOne = (async (filter: Filter<Document> = {}, options: FindOptions = {}) => {
+        if (filter?.["metadata.fingerprint"] === speechSectionFingerprint(scene)) {
+          intercepted++;
+          throw new MongoOperationTimeoutError(`Synthetic private storage response ${syntheticKey}`);
+        }
+        return originalFind(filter, options);
+      }) as typeof files.findOne;
+      db.collection = ((collectionName, options) => collectionName === "speech_audio.files" ? files : originalCollection(collectionName, options)) as typeof db.collection;
+      try {
+        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 0 });
+        assert.equal(intercepted, 1); assert.equal(result.lastErrorCode, "storage"); assert.equal(result.lastErrorStage, "cache-metadata");
+        assert.equal(calls.length, providerCalls);
+        const clip = await db.collection("speech_bank_prewarm").findOne({ _id: `clip:${speechSectionFingerprint(scene)}` as any });
+        assert.equal(clip?.state, "failed"); assert.equal(clip?.lastErrorCode, "storage");
+        assert.equal(clip?.lastErrorStage, "cache-metadata"); assert.equal(clip?.retryable, true);
+        assert.doesNotMatch(JSON.stringify(await db.collection("speech_bank_prewarm").find().toArray()), /sk-synthetic|Synthetic private publication|Synthetic private storage/u);
+      } finally { db.collection = originalCollection; files.findOne = originalFind; }
+    });
+
+    await t.test("a failed clip stays counted when its transition to running cannot be stored", async () => {
+      const scene = section("synthetic-failed-transition", "Synthetic failed clip must stay counted if its retry cannot start.");
+      const baseline = await readSpeechPrewarmStatus(db), providerCalls = calls.length;
+      const inserted = await db.collection("content").insertOne({ id: scene.id, skill: "listening", sections: [scene] });
+      const clipId = `clip:${speechSectionFingerprint(scene)}`;
+      const bank = db.collection<{ _id: string; state?: string; attempts?: number; retryable?: boolean; nextAttemptAt?: Date; updatedAt?: Date }>("speech_bank_prewarm");
+      await bank.insertOne({ _id: clipId, state: "failed", attempts: 0, retryable: true, nextAttemptAt: new Date(0), updatedAt: new Date() });
+      const originalCollection = db.collection.bind(db), originalUpdate = bank.updateOne.bind(bank);
+      let transitionFailures = 0;
+      bank.updateOne = (async (filter, update, options) => {
+        const changes = Array.isArray(update) ? undefined : update.$set;
+        if (filter._id === clipId && changes?.state === "running" && !transitionFailures) {
+          transitionFailures++;
+          throw new MongoOperationTimeoutError(`Synthetic private transition response ${syntheticKey}`);
+        }
+        return originalUpdate(filter, update, options);
+      }) as typeof bank.updateOne;
+      db.collection = ((collectionName, options) => collectionName === "speech_bank_prewarm" ? bank : originalCollection(collectionName, options)) as typeof db.collection;
+      try {
+        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 0 });
+        assert.equal(transitionFailures, 1); assert.equal(calls.length, providerCalls);
+        assert.equal(result.total, baseline.total + 1); assert.equal(result.ready, baseline.ready);
+        assert.equal(result.failed, baseline.failed + 1); assert.equal(result.pending, baseline.pending);
+        assert.equal(result.lastErrorCode, "storage"); assert.equal(result.lastErrorStage, "bank-metadata");
+        const clip = await bank.findOne({ _id: clipId });
+        assert.equal(clip?.state, "failed"); assert.equal(clip?.attempts, 0);
+        const saved = await readSpeechPrewarmStatus(db);
+        assert.equal(saved.failed, result.failed); assert.equal(saved.total, result.total);
+      } finally {
+        db.collection = originalCollection; bank.updateOne = originalUpdate;
+        await db.collection("content").deleteOne({ _id: inserted.insertedId });
+        await bank.deleteOne({ _id: clipId });
+      }
+    });
+
+    await t.test("a bank owner replacement during publication reports the lost lease without retrying successful audio", async () => {
+      const scene = section("synthetic-bank-owner-loss", "Synthetic ready audio survives losing its bank publication lease.");
+      const baseline = await readSpeechPrewarmStatus(db), providerCalls = calls.length;
+      await db.collection("content").insertOne({ id: scene.id, skill: "listening", sections: [scene] });
+      const bank = db.collection<{ _id: string; state?: string; ready?: number; owner?: string; attempts?: number }>("speech_bank_prewarm");
+      const originalCollection = db.collection.bind(db), originalUpdate = bank.updateOne.bind(bank);
+      let replacements = 0;
+      bank.updateOne = (async (filter, update, options) => {
+        const changes = Array.isArray(update) ? undefined : update.$set;
+        if (filter._id === "bank" && changes?.state === "running" && changes?.ready === baseline.ready + 1 && !replacements) {
+          replacements++;
+          await originalUpdate({ _id: "bank" }, { $set: { owner: "synthetic-bank-replacement" } });
+        }
+        return originalUpdate(filter, update, options);
+      }) as typeof bank.updateOne;
+      db.collection = ((collectionName, options) => collectionName === "speech_bank_prewarm" ? bank : originalCollection(collectionName, options)) as typeof db.collection;
+      try {
+        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 1 });
+        assert.equal(replacements, 1); assert.equal(result.state, "pending");
+        assert.equal(result.lastErrorCode, "lease-lost"); assert.equal(result.lastErrorStage, "bank-publish");
+        assert.equal(result.ready, baseline.ready + 1); assertCalls(calls.slice(providerCalls), [scene.text]);
+        const clip = await bank.findOne({ _id: `clip:${speechSectionFingerprint(scene)}` });
+        assert.equal(clip?.state, "ready"); assert.equal(clip?.attempts, 1);
+        assert.equal((await bank.findOne({ _id: "bank" }))?.owner, "synthetic-bank-replacement");
+      } finally {
+        db.collection = originalCollection; bank.updateOne = originalUpdate;
+        await bank.updateOne({ _id: "bank", owner: "synthetic-bank-replacement" }, { $unset: { owner: "", leaseExpiresAt: "" } });
+      }
+    });
+
+    await t.test("a provider timeout defers its retry so the next authored clip can become ready", async () => {
+      const stalled = section("synthetic-deferred-timeout", "Synthetic slow provider scene should be deferred after one timeout.");
+      const next = section("synthetic-after-timeout", "Synthetic next scene can become ready without waiting for another timeout.");
+      await db.collection("content").insertMany([stalled, next].map(scene => ({ id: scene.id, skill: "listening", sections: [scene] })));
+      const pacingTimer = globalThis.setTimeout, providerCalls = calls.length;
+      globalThis.setTimeout = ((callback: (...args: unknown[]) => void, milliseconds?: number, ...args: unknown[]) => milliseconds === 120_000
+        ? previousTimer(callback, 20, ...args) : pacingTimer(callback, milliseconds, ...args)) as typeof setTimeout;
+      respond = text => text === stalled.text
+        ? new Response(new ReadableStream<Uint8Array>(), { headers: { "content-type": "audio/pcm" } }) : pcmResponse();
+      try {
+        await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 2, maxRetries: 3 });
+        assertCalls(calls.slice(providerCalls), [stalled.text, next.text]);
+        const stalledClip = await db.collection("speech_bank_prewarm").findOne({ _id: `clip:${speechSectionFingerprint(stalled)}` as any });
+        assert.equal(stalledClip?.attempts, 1); assert.equal(stalledClip?.lastErrorCode, "provider-timeout");
+        assert.equal(stalledClip?.retryable, true); assert.ok(stalledClip?.nextAttemptAt instanceof Date);
+        const nextClip = await db.collection("speech_bank_prewarm").findOne({ _id: `clip:${speechSectionFingerprint(next)}` as any });
+        assert.equal(nextClip?.state, "ready"); assert.equal(nextClip?.attempts, 1);
+      } finally { globalThis.setTimeout = pacingTimer; respond = () => pcmResponse(); }
     });
 
     await t.test("generic metadata contains only progress and hashes; every original/private document is preserved", async () => {

@@ -10,6 +10,7 @@ import http.client
 import json
 import os
 import pathlib
+import pwd
 import re
 import socket
 import ssl
@@ -21,6 +22,12 @@ import time
 LIVE_DIR = pathlib.Path('/opt/websiteIeltsAi-20261007T172235Z-7D7gnc')
 DOMAIN = 'sutonghanyu.vn'
 MAX_OUTPUT = 1024 * 1024
+GATEWAY_LOG_BYTES = 65536
+GATEWAY_ROUTES = {'content-list': r'^/api/content(?:\?|$)',
+                  'content-readiness': r'^/api/content/[^/?]+/listening-audio/readiness(?:\?|$)',
+                  'attempt-audio': r'^/api/attempts/[^/?]+/listening-audio(?:\?|$)',
+                  'placement-readiness': r'^/api/placement/audio/readiness(?:\?|$)',
+                  'placement-audio': r'^/api/placement/[^/?]+/audio(?:\?|$)'}
 INSPECT_FORMAT = ('{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Image}},'
                   '"Labels":{{json .Config.Labels}},"State":{{json .State}},'
                   '"RestartCount":{{json .RestartCount}},"Memory":{{json .HostConfig.Memory}},'
@@ -32,6 +39,10 @@ INSPECT_FORMAT = ('{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Imag
 
 class Refusal(RuntimeError):
     pass
+
+
+class GatewayUnavailable(Refusal):
+    """Only fixed reason codes are exposed; never include filesystem exceptions."""
 
 
 def command(args, optional=False, include_stderr=False, timeout=20):
@@ -53,7 +64,7 @@ def command(args, optional=False, include_stderr=False, timeout=20):
 def owned(path, directory=False, private=False):
     try:
         metadata = path.lstat()
-        if path.resolve(strict=True) != path or metadata.st_uid != 0:
+        if stat.S_ISLNK(metadata.st_mode) or path.resolve(strict=True) != path or metadata.st_uid != 0:
             raise Refusal('Deployment path is redirected or not root owned.')
         if not (stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode)):
             raise Refusal('Deployment path has an unexpected type.')
@@ -179,7 +190,7 @@ def usage(rows):
             if len(matches) != 1:
                 raise ValueError()
             values = {}
-            for key in ('CPUPerc', 'MemUsage', 'MemPerc', 'PIDs'):
+            for key in ('CPUPerc', 'MemUsage', 'MemPerc', 'PIDs', 'BlockIO'):
                 value = item.get(key, '')
                 if isinstance(value, str) and re.fullmatch(r'[0-9.% /A-Za-z]{1,64}', value):
                     values[key] = value
@@ -242,18 +253,41 @@ def classifications(text, gateway=False):
 
 def gateway_requests(text):
     # Report only route classes; URLs can include private attempt identifiers.
-    groups = {'content-list': r'^/api/content(?:\?|$)',
-              'content-readiness': r'^/api/content/[^/?]+/listening-audio/readiness(?:\?|$)',
-              'attempt-audio': r'^/api/attempts/[^/?]+/listening-audio(?:\?|$)',
-              'placement-readiness': r'^/api/placement/audio/readiness(?:\?|$)',
-              'placement-audio': r'^/api/placement/[^/?]+/audio(?:\?|$)'}
-    result = {name: 0 for name in groups}
+    result = {name: 0 for name in GATEWAY_ROUTES}
     result['other'] = 0
     for url in re.findall(r'request: "(?:GET|POST|HEAD) (\S+) HTTP/', text):
-        group = next((name for name, pattern in groups.items() if re.match(pattern, url)), 'other')
-        result[group] += 1
+        result[gateway_route(url)] += 1
     dates = re.findall(r'(?m)^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) ', text)
     return {'counts': result, 'lastErrorAtServerTime': dates[-1] if dates else None}
+
+
+def gateway_route(url):
+    return next((name for name, pattern in GATEWAY_ROUTES.items() if re.match(pattern, url)), 'other')
+
+
+def gateway_access(text):
+    # Only parse the owned site's default combined log format. Ignore malformed
+    # lines, and never emit client addresses, URLs, users, referrers or headers.
+    pattern = (r'^[^\s]+ [^\s]+ [^\s]+ \['
+               r'(\d{2}/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/\d{4}:'
+               r'\d{2}:\d{2}:\d{2} [+-]\d{4})\] '
+               r'"[A-Z]{1,16} ([^"\s]+) HTTP/[0-9.]+" ([1-5]\d{2}) (?:\d+|-)(?: |$)')
+    statuses = {code: 0 for code in ('502', '503', '504')}
+    routes = {name: 0 for name in GATEWAY_ROUTES}
+    routes['other'] = 0
+    parsed, last = 0, None
+    for line in text.splitlines():
+        match = re.match(pattern, line)
+        if not match:
+            continue
+        parsed += 1
+        date, url, status = match.groups()
+        if status in statuses:
+            statuses[status] += 1
+            routes[gateway_route(url)] += 1
+            last = date
+    return {'parsedRequests': parsed, 'statusCounts': statuses, 'counts': routes,
+            'lastGatewayFailureAtServerTime': last}
 
 
 def log_summary(rows):
@@ -281,14 +315,105 @@ def worker_progress(text):
             last = {key: row[key] for key in ('state', 'total', 'ready', 'pending', 'failed')}
             if type(row.get('configured')) is bool:
                 last['configured'] = row['configured']
-            if row.get('lastErrorCode') in ('auth', 'quota', 'rate-limit', 'unavailable', 'invalid', 'storage', 'interrupted'):
+            if row.get('lastErrorCode') in ('auth', 'quota', 'rate-limit', 'unavailable', 'invalid', 'storage', 'interrupted',
+                                          'provider-timeout', 'lease-lost', 'claim-timeout'):
                 last['lastErrorCode'] = row['lastErrorCode']
+            if row.get('lastErrorStage') in ('provider-request', 'provider-response', 'generation', 'claim-wait',
+                                           'cache-initialize', 'cache-metadata', 'cache-read', 'cache-write', 'cache-publish',
+                                           'lease-renew', 'lease-heartbeat', 'bank-scan', 'bank-metadata', 'bank-publish'):
+                last['lastErrorStage'] = row['lastErrorStage']
         except (TypeError, ValueError):
             continue
     return last
 
 
-def file_metadata():
+def path_metadata(path):
+    # All callers supply fixed deployment paths; resolved destinations are never
+    # printed because an unsafe link could name a private file elsewhere.
+    result = {'expectedPath': str(path), 'exists': False, 'resolvedExact': False}
+    try:
+        metadata = path.lstat()
+        result.update(exists=True, uid=metadata.st_uid, gid=metadata.st_gid,
+                      mode=oct(stat.S_IMODE(metadata.st_mode)), bytes=metadata.st_size,
+                      type='directory' if stat.S_ISDIR(metadata.st_mode) else
+                      'regular-file' if stat.S_ISREG(metadata.st_mode) else
+                      'symlink' if stat.S_ISLNK(metadata.st_mode) else 'other')
+        if not stat.S_ISLNK(metadata.st_mode):
+            result['resolvedExact'] = path.resolve(strict=True) == path
+    except FileNotFoundError:
+        result['reason'] = 'missing-path'
+    except OSError:
+        result['reason'] = 'metadata-unavailable'
+    return result
+
+
+def nginx_log_uids():
+    result = {0}
+    for name in ('www-data', 'nginx'):
+        try:
+            uid = pwd.getpwnam(name).pw_uid
+            if type(uid) is int and uid > 0:
+                result.add(uid)
+        except KeyError:
+            pass
+    return result
+
+
+def read_regular(path, allowed_uids, maximum, tail=False):
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode) or path.resolve(strict=True) != path:
+            raise GatewayUnavailable('redirected-file')
+        if not stat.S_ISREG(before.st_mode):
+            raise GatewayUnavailable('non-regular-file')
+        if before.st_uid not in allowed_uids:
+            raise GatewayUnavailable('unexpected-file-owner')
+        if before.st_mode & 0o022:
+            raise GatewayUnavailable('writable-by-group-or-other')
+        # O_NONBLOCK prevents a raced replacement with a FIFO from hanging;
+        # fstat confirms the same regular inode before reading any bytes.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as source:
+            current = os.fstat(source.fileno())
+            if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+                raise GatewayUnavailable('file-changed-during-check')
+            if not stat.S_ISREG(current.st_mode) or current.st_uid not in allowed_uids or current.st_mode & 0o022:
+                raise GatewayUnavailable('unsafe-opened-file')
+            if tail:
+                source.seek(max(0, current.st_size - maximum))
+            elif current.st_size > maximum:
+                raise GatewayUnavailable('file-exceeds-bound')
+            data = source.read(maximum if tail else maximum + 1)
+            if len(data) > maximum:
+                raise GatewayUnavailable('file-exceeds-bound')
+            return data.decode('utf8', errors='replace')
+    except FileNotFoundError:
+        raise GatewayUnavailable('missing-file') from None
+    except OSError:
+        raise GatewayUnavailable('read-unavailable') from None
+
+
+def gateway_scope(domain_dir, project):
+    try:
+        for parent in (LIVE_DIR, LIVE_DIR / '.local'):
+            if owned(parent, directory=True).st_mode & 0o022:
+                raise Refusal('Deployment parent is writable by group/other.')
+        for parent in (LIVE_DIR / '.local/deploy', domain_dir):
+            if stat.S_IMODE(owned(parent, directory=True, private=True).st_mode) != 0o700:
+                raise Refusal('Gateway state directory is not private 0700.')
+    except (Refusal, OSError):
+        raise GatewayUnavailable('unsafe-domain-scope') from None
+    owner = domain_dir / 'owner'
+    try:
+        owned(owner, private=True)
+        text = read_regular(owner, {0}, 4096)
+    except (Refusal, OSError):
+        raise GatewayUnavailable('unsafe-domain-owner-file') from None
+    if text.splitlines() != [DOMAIN, str(LIVE_DIR), project]:
+        raise GatewayUnavailable('domain-owner-mismatch')
+
+
+def file_metadata(project):
     private = LIVE_DIR / '.local/deploy'
     result = {}
     for name in ('deploy.env', 'app.env', 'domain.compose.yaml', 'release.compose.yaml'):
@@ -299,17 +424,44 @@ def file_metadata():
         except (Refusal, OSError):
             result[name] = {'ownedPrivateRegularFile': False}
     domain_dir = private / ('domain-' + hashlib.sha256(DOMAIN.encode()).hexdigest()[:12])
+    result['domainDirectory'] = path_metadata(domain_dir)
+    result['domainOwner'] = path_metadata(domain_dir / 'owner')
+    for name in ('https.error.log', 'https.access.log'):
+        result[name] = path_metadata(domain_dir / name)
     try:
-        owned(domain_dir, directory=True, private=True)
-        path = domain_dir / 'https.error.log'
-        owned(path)
-        with path.open('rb') as source:
-            source.seek(max(0, path.stat().st_size - 65536))
-            text = source.read(65536).decode('utf8', errors='replace')
-        result['gatewayErrorsLast64KiB'] = classifications(text, gateway=True)
-        result['gatewayRequestsLast64KiB'] = gateway_requests(text)
-    except (Refusal, OSError):
-        result['gatewayErrorsLast64KiB'] = {'available': False}
+        gateway_scope(domain_dir, project)
+    except GatewayUnavailable as error:
+        for name in ('gatewayErrorsLast64KiB', 'gatewayRequestsLast64KiB', 'gatewayAccessLast64KiB'):
+            result[name] = {'available': False, 'reason': str(error)}
+        return result
+    uids = nginx_log_uids()
+    for filename, summary in (('https.error.log', 'gatewayErrorsLast64KiB'),
+                              ('https.access.log', 'gatewayAccessLast64KiB')):
+        try:
+            text = read_regular(domain_dir / filename, uids, GATEWAY_LOG_BYTES, tail=True)
+            details = classifications(text, gateway=True) if filename == 'https.error.log' else gateway_access(text)
+            result[summary] = {'available': True, **details}
+            if filename == 'https.error.log':
+                result['gatewayRequestsLast64KiB'] = {'available': True, **gateway_requests(text)}
+        except GatewayUnavailable as error:
+            result[summary] = {'available': False, 'reason': str(error)}
+            if filename == 'https.error.log':
+                result['gatewayRequestsLast64KiB'] = dict(result[summary])
+    return result
+
+
+def disk_resources():
+    result = {}
+    for name, path in (('root', pathlib.Path('/')), ('tmp', pathlib.Path('/tmp')), ('deployment', LIVE_DIR)):
+        try:
+            usage = os.statvfs(path)
+            result[name] = {'totalBytes': usage.f_blocks * usage.f_frsize,
+                            'freeBytes': usage.f_bfree * usage.f_frsize,
+                            'availableBytes': usage.f_bavail * usage.f_frsize,
+                            'totalInodes': usage.f_files, 'freeInodes': usage.f_ffree,
+                            'availableInodes': usage.f_favail}
+        except OSError:
+            result[name] = {'available': False}
     return result
 
 
@@ -325,6 +477,7 @@ def host_resources():
         result['loadAverage'] = list(os.getloadavg())
     except OSError:
         result['available'] = False
+    result['disk'] = disk_resources()
     return result
 
 
@@ -333,7 +486,7 @@ def diagnose(pause_worker=False):
     rows = containers(project)
     report = {'mode': 'pause-worker' if pause_worker else 'read-only',
               'containers': {kind: safe_state(row) for kind, row in rows.items()},
-              'usage': usage(rows), 'host': host_resources(), 'files': file_metadata(),
+              'usage': usage(rows), 'host': host_resources(), 'files': file_metadata(project),
               'logs': log_summary(rows),
               'health': {'directApp': health(), 'localDomainTLS': health(tls=True)}}
     if pause_worker:

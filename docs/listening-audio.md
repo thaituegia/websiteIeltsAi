@@ -16,6 +16,8 @@ Các script giống nhau dùng lại cache; thay lời thoại, accent, model, g
 
 Mỗi tiến trình chỉ tổng hợp một phần cùng lúc, tối đa hai yêu cầu OpenAI đồng thời. Một script giới hạn 40.000 ký tự và 240 lượt thoại, kết quả tối đa 64 MiB; timeout mỗi yêu cầu 120 giây, một tác vụ 15 phút sau khi đến lượt chạy. Worker retry có backoff khi dịch vụ tạm lỗi/rate-limit, giữ các lượt đã xong, và dừng gửi yêu cầu khi lỗi quyền/hết hạn mức. Chuẩn bị toàn bộ kho mất thời gian; việc này chạy trước bài học bằng key API server, có chi phí nhà cung cấp.
 
+Worker phân biệt `provider-timeout`, `lease-lost`, `claim-timeout` và `storage`, kèm giai đoạn lỗi đã lọc. Mã `storage` ở bản trước từng gộp cả timeout nên không chứng minh MongoDB hoặc ổ đĩa bị lỗi. Timeout nhà cung cấp được lên lịch thử lại ở lượt quét sau để các đoạn khác tiếp tục; không giữ cả kho chờ bốn lần timeout của một đoạn. Đồng hồ yêu cầu nhà cung cấp kết thúc trước khi lưu GridFS. Metadata worker có giới hạn 20 giây, các stream GridFS 30 giây, heartbeat 10 giây; giới hạn đọc của người học vẫn là 5/20 giây như dưới đây. Lỗi cập nhật tiến độ không tạo lại audio đã hoàn tất hoặc đếm một đoạn hai lần. File hoàn chỉnh được giữ khi kết quả ghi trạng thái chưa rõ, để lượt sau xác minh và dùng lại. Lượt quét bị ngắt không thay tổng ngân hàng bằng số đã quét một phần.
+
 Chạy `--inspect` chỉ đọc trạng thái; `--once --max-clips 32` chuẩn bị một lượt; `--watch --max-clips 32 --max-retries 3 --interval-seconds 60` tiếp tục quét. Chỉ dùng `--resume` sau khi xử lý lỗi quyền/hạn mức. CLI yêu cầu đúng origin production và cấu hình hai tài khoản riêng để mở key đã mã hóa; không seed hoặc ghi vào dữ liệu người học.
 
 ## Quyền truy cập và lượt nghe
@@ -32,7 +34,11 @@ Response có `X-Speech-Provider`, `X-Speech-Voices` (số giọng thực tế d�
 
 `deploy/run-speech-update.py` nhận commit và SHA256 archive đã ghim, gọi updater giữ dữ liệu hiện tại rồi tạo container worker riêng từ cùng image app. Worker có 384 MiB RAM, không thêm swap, 0,25 CPU, filesystem chỉ đọc, không capabilities, không mở cổng và log có giới hạn. Chỉ worker tham gia cả mạng dữ liệu riêng và mạng web để gọi nhà cung cấp. Cấu hình/key nằm trong file riêng hoặc được mở trong bộ nhớ; không đưa key vào lệnh hoặc frontend. Không reset band/tài khoản/tiến độ. Lệnh không khẳng định cả kho đã hoàn tất ngay: theo dõi log/count, bài nào đủ audio sẽ mở, toàn bộ kho tiếp tục được chuẩn bị.
 
+Updater xác minh worker cũ cùng image/mạng/chủ sở hữu với app rồi dừng đúng ID bất biến, in báo cáo chỉ đọc trước và sau, kiểm tra lại health trực tiếp/HTTPS sau khi worker mới chạy. Nếu bước cập nhật app thất bại, chỉ khởi động lại worker cũ khi app và worker cũ vẫn giữ đúng ID/image/mạng và app healthy. Không tự reset dữ liệu hoặc bật lại worker bị dừng do hạn mức.
+
 Nếu website báo 502, chạy `python3 deploy/diagnose-listening.py` bằng root trên VPS sau khi lấy đúng phiên bản script. Lệnh mặc định chỉ đọc, xác minh đúng project và báo trạng thái/OOM/restart/tài nguyên của app, MongoDB, proxy, worker; kiểm tra health trực tiếp và HTTPS qua Nginx; thống kê nhóm lỗi/route từ log riêng. Không in key, cookie, URL chứa ID bài làm hay log nguyên văn. Health 200 không chứng minh route mở bài hoạt động hoặc không có lỗi gián đoạn trước đó. Thiếu audio có trạng thái pending/409, không tự gây 502. Chỉ dùng `--pause-worker` khi cần kiểm tra ảnh hưởng tài nguyên: dừng đúng worker đã xác minh, giữ container/cache/tài khoản/tiến độ và các project khác.
+
+Chẩn đoán log xác minh thư mục domain và tệp owner riêng của đúng project; chấp nhận UID root hoặc tài khoản Nginx chuẩn cho hai tệp log cố định. Log có thể đổi chủ sở hữu khi Nginx mở lại. Đường dẫn bị chuyển hướng, quyền ghi không an toàn hoặc tệp không đúng loại vẫn bị từ chối và báo lý do. Báo cáo chỉ thống kê tối đa 64 KiB mỗi log, gồm nhóm route/lỗi, số 502/503/504 và dung lượng/inode; không in request hoặc địa chỉ người dùng.
 
 ## Kiểm tra
 

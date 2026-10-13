@@ -8,7 +8,7 @@ const script = fileURLToPath(new URL("../deploy/diagnose-listening.py", import.m
 // The production module gets only a synthetic filesystem and mocked HTTP checks;
 // these tests cannot contact a deployment, database, provider or learner account.
 const fixture = String.raw`
-import copy, hashlib, importlib.util, json, os, pathlib, stat, subprocess, sys, tempfile
+import copy, hashlib, importlib.util, json, os, pathlib, stat, subprocess, sys, tempfile, types
 sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location('listening_diagnostic',sys.argv[1])
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -18,15 +18,21 @@ with tempfile.TemporaryDirectory(prefix='ielts-listening-diagnostic-test-') as f
  project='website-ielts-ai-synthetic-diagnostic'
  cfg=private/'deploy.env';cfg.write_text('IELTS_COMPOSE_PROJECT='+project+'\nOPENAI_API_KEY='+secret+'\n');cfg.chmod(0o600)
  appenv=private/'app.env';appenv.write_text(secret);appenv.chmod(0o600)
- # Preserve the real filesystem/type/symlink/private-mode checks. Only ownership
- # is simulated because the test process is deliberately not production root.
- def owned(path,directory=False,private=False):
-  try:info=path.lstat()
-  except OSError:raise m.Refusal('Synthetic path unavailable') from None
-  if path.resolve(strict=True)!=path or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)) or private and info.st_mode&0o077:
-   raise m.Refusal('Synthetic path guard')
+ # Run the actual ownership guards. Only filesystem UIDs are simulated because
+ # the fixture process is deliberately not production root; per-path overrides
+ # exercise non-root Nginx logs and reject foreign owners without real chown.
+ uids={};actual_lstat=pathlib.Path.lstat;actual_fstat=os.fstat
+ def synthetic_stat(path,info):
+  if path.is_relative_to(root):
+   fields=list(info);fields[4]=uids.get(path,0);return os.stat_result(fields)
   return info
- m.owned=owned
+ def synthetic_lstat(path,*args,**kwargs):return synthetic_stat(path,actual_lstat(path,*args,**kwargs))
+ def synthetic_fstat(fd):return synthetic_stat(pathlib.Path(os.readlink('/proc/self/fd/'+str(fd))),actual_fstat(fd))
+ pathlib.Path.lstat=synthetic_lstat;m.os.fstat=synthetic_fstat
+ def passwd(name):
+  assert name in ('www-data','nginx')
+  return types.SimpleNamespace(pw_uid={'www-data':33,'nginx':101}[name])
+ m.pwd.getpwnam=passwd
  actual_health=m.health
  m.health=lambda tls=False:{'ok':True,'httpStatus':200,'elapsedMs':1}
  m.host_resources=lambda:{'MemAvailableKiB':1048576}
@@ -59,7 +65,7 @@ elif args[0]=='inspect':
  print(json.dumps(value))
 elif args[0]=='stats':
  for x in rows.values():
-  print(json.dumps({'ID':x['Id'][:12],'CPUPerc':'0.25%','MemUsage':'100MiB / 384MiB','MemPerc':'26.04%','PIDs':'7','Name':os.environ['IELTS_SYNTHETIC_SECRET']}))
+  print(json.dumps({'ID':x['Id'][:12],'CPUPerc':'0.25%','MemUsage':'100MiB / 384MiB','MemPerc':'26.04%','PIDs':'7','BlockIO':'12.3MB / 4.5MB','Name':os.environ['IELTS_SYNTHETIC_SECRET']}))
 elif args[0]=='logs':
  print('API failure: TypeError '+os.environ['IELTS_SYNTHETIC_SECRET'],file=sys.stderr)
  if args[-1]==rows['worker']['Id']:
@@ -72,12 +78,33 @@ else:raise AssertionError('Unexpected command '+args[0])
  binary.chmod(0o700)
  os.environ.update(PATH=str(root)+os.pathsep+os.environ['PATH'],IELTS_SYNTHETIC_STATE=str(statepath),IELTS_SYNTHETIC_CALLS=str(calls),IELTS_SYNTHETIC_SECRET=secret)
  scenario=sys.argv[2]
+ if scenario.startswith('gateway-') and scenario!='gateway-missing-directory':
+  domain=private/('domain-'+hashlib.sha256(m.DOMAIN.encode()).hexdigest()[:12]);domain.mkdir(mode=0o700)
+  owner=domain/'owner';owner.write_text('\n'.join([m.DOMAIN,str(m.LIVE_DIR),project])+'\n');owner.chmod(0o600)
+  error=domain/'https.error.log';access=domain/'https.access.log'
+  error.write_text('2026/10/13 18:01:01 [error] connect() failed (111: Connection refused) while connecting to upstream '+secret+', request: "GET /api/content?private='+secret+' HTTP/1.1"\n'
+   '2026/10/13 18:01:02 [error] upstream prematurely closed connection, request: "GET /api/attempts/'+secret+'/listening-audio HTTP/1.1"\n'
+   '2026/10/13 18:01:03 [error] upstream timed out, request: "GET /api/content/'+secret+'/listening-audio/readiness HTTP/1.1"\n')
+  def access_line(url,status,second):return '198.51.100.77 - '+secret+' [13/Oct/2026:18:01:'+second+' +0000] "GET '+url+' HTTP/1.1" '+str(status)+' 123 "'+secret+'" "'+secret+'"\n'
+  access.write_text(access_line('/api/attempts/'+secret+'/listening-audio',502,'04')+
+   access_line('/api/content?private='+secret,503,'05')+access_line('/api/placement/'+secret+'/audio',504,'06')+
+   access_line('/api/content',200,'07')+secret+' malformed 502\n')
+  opened=[];real_open=m.os.open
+  def checked_open(path,*args,**kwargs):
+   opened.append(pathlib.Path(path))
+   if pathlib.Path(path)==error:
+    if scenario=='gateway-raced-inode':error.rename(root/'old-error');error.write_text(secret+'\n')
+    elif scenario=='gateway-raced-owner':uids[error]=1002
+    elif scenario=='gateway-raced-mode':error.chmod(0o666)
+   return real_open(path,*args,**kwargs)
+  m.os.open=checked_open
  if scenario=='default':
   report=m.diagnose();assert report['containers']['app']['oomKilled'] is True
   assert report['containers']['app']['restarts']==2 and report['usage']['app']['PIDs']=='7'
   assert report['logs']['app']['type-error']==1 and report['logs']['app']['api-failure']==1
   assert report['logs']['workerProgress']=={'configured':True,'state':'paused','total':432,'ready':7,'pending':424,'failed':1,'lastErrorCode':'quota'}
   assert report['health']['localDomainTLS']['ok'] is True
+  assert report['usage']['mongo']['BlockIO']=='12.3MB / 4.5MB'
   assert secret not in json.dumps(report)
   assert all(json.loads(x)[0] in ('ps','inspect','stats','logs') for x in calls.read_text().splitlines())
   assert json.loads(statepath.read_text())==state
@@ -120,12 +147,85 @@ else:raise AssertionError('Unexpected command '+args[0])
   del state['worker'];statepath.write_text(json.dumps(state));report=m.diagnose(True)
   assert report['workerPause']['nothingChanged'] is True
   assert all(json.loads(x)[0] in ('ps','inspect','stats','logs') for x in calls.read_text().splitlines())
- elif scenario=='gateway-log':
-  domain=private/('domain-'+hashlib.sha256(m.DOMAIN.encode()).hexdigest()[:12]);domain.mkdir(mode=0o700)
-  (domain/'https.error.log').write_text('connect() failed (111: Connection refused) while connecting to upstream '+secret+'\nupstream prematurely closed connection\nupstream timed out\n')
+ elif scenario in ('gateway-log','gateway-www-data','gateway-nginx','gateway-bounded-tail'):
+  if scenario in ('gateway-www-data','gateway-nginx'):
+   uid=33 if scenario=='gateway-www-data' else 101;uids[error]=uid;uids[access]=uid
+  if scenario=='gateway-bounded-tail':
+   error.write_text('connect() failed (111: Connection refused) '+secret+'\n'+' '*65536+'\n2026/10/13 18:01:03 [error] upstream timed out\n')
+   access.write_text(access_line('/api/content',502,'01')+' '*65536+'\n'+access_line('/api/content',504,'09'))
   report=m.diagnose();errors=report['files']['gatewayErrorsLast64KiB']
-  assert errors['connection-refused']==1 and errors['upstream-closed']==1 and errors['upstream-timeout']==1
+  files=report['files'];assert errors['available'] is True
+  assert files['domainDirectory']['expectedPath'].endswith('/domain-1241e521adef')
+  assert files['domainDirectory']['uid']==0 and files['domainDirectory']['mode']=='0o700'
+  assert files['https.error.log']['uid']==uids.get(error,0) and files['https.error.log']['resolvedExact'] is True
+  if scenario=='gateway-bounded-tail':
+   assert errors['connection-refused']==0 and errors['upstream-closed']==0 and errors['upstream-timeout']==1
+   assert files['gatewayAccessLast64KiB']['statusCounts']=={'502':0,'503':0,'504':1}
+  else:
+   assert errors['connection-refused']==1 and errors['upstream-closed']==1 and errors['upstream-timeout']==1
+   requests=files['gatewayRequestsLast64KiB'];assert requests['counts']['attempt-audio']==1
+   assert requests['lastErrorAtServerTime']=='2026/10/13 18:01:03'
+   summary=files['gatewayAccessLast64KiB'];assert summary['parsedRequests']==4
+   assert summary['statusCounts']=={'502':1,'503':1,'504':1}
+   assert summary['counts']['attempt-audio']==1 and summary['counts']['content-list']==1 and summary['counts']['placement-audio']==1
+   assert summary['lastGatewayFailureAtServerTime']=='13/Oct/2026:18:01:06 +0000'
   assert secret not in json.dumps(report)
+  assert '198.51.100.77' not in json.dumps(report) and '/api/attempts/' not in json.dumps(report)
+  assert all(json.loads(x)[0] in ('ps','inspect','stats','logs') for x in calls.read_text().splitlines())
+ elif scenario in ('gateway-log-symlink','gateway-log-loop','gateway-parent-link','gateway-parent-loop','gateway-unowned-parent',
+                   'gateway-parent-mode','gateway-parent-file','gateway-unowned-owner-file','gateway-owner-loop',
+                   'gateway-wrong-owner','gateway-unknown-log-owner','gateway-writable-log','gateway-nonregular-log',
+                   'gateway-missing-log','gateway-raced-inode','gateway-raced-owner','gateway-raced-mode'):
+  expected='unsafe-domain-scope';scope_failure=False
+  if scenario=='gateway-log-symlink':
+   target=root/('private-target-'+secret);target.write_text(error.read_text());error.unlink();error.symlink_to(target);expected='redirected-file'
+  elif scenario=='gateway-log-loop':error.unlink();error.symlink_to(error);expected='redirected-file'
+  elif scenario=='gateway-parent-link':
+   target=root/('private-target-'+secret);domain.rename(target);domain.symlink_to(target);scope_failure=True
+  elif scenario=='gateway-parent-loop':domain.rename(root/'old-domain');domain.symlink_to(domain);scope_failure=True
+  elif scenario=='gateway-parent-file':domain.rename(root/'old-domain');domain.write_text(secret);scope_failure=True
+  elif scenario=='gateway-parent-mode':domain.chmod(0o755);scope_failure=True
+  elif scenario=='gateway-unowned-parent':uids[domain]=1002;scope_failure=True
+  elif scenario=='gateway-unowned-owner-file':uids[owner]=1002;expected='unsafe-domain-owner-file';scope_failure=True
+  elif scenario=='gateway-owner-loop':owner.unlink();owner.symlink_to(owner);expected='unsafe-domain-owner-file';scope_failure=True
+  elif scenario=='gateway-wrong-owner':owner.write_text('\n'.join([m.DOMAIN,str(m.LIVE_DIR),secret])+'\n');expected='domain-owner-mismatch';scope_failure=True
+  elif scenario=='gateway-unknown-log-owner':uids[error]=1002;expected='unexpected-file-owner'
+  elif scenario=='gateway-writable-log':error.chmod(0o666);expected='writable-by-group-or-other'
+  elif scenario=='gateway-nonregular-log':error.unlink();os.mkfifo(error);expected='non-regular-file'
+  elif scenario=='gateway-missing-log':error.unlink();expected='missing-file'
+  elif scenario=='gateway-raced-inode':expected='file-changed-during-check'
+  elif scenario in ('gateway-raced-owner','gateway-raced-mode'):expected='unsafe-opened-file'
+  report=m.diagnose();files=report['files'];assert files['gatewayErrorsLast64KiB']=={'available':False,'reason':expected}
+  if scope_failure:assert error not in opened and access not in opened
+  elif scenario.startswith('gateway-raced-'):assert error in opened
+  else:assert error not in opened
+  assert files['gatewayAccessLast64KiB']['available'] is (not scope_failure)
+  if scenario=='gateway-log-symlink':assert files['https.error.log']['type']=='symlink' and files['https.error.log']['resolvedExact'] is False
+  if scenario=='gateway-unowned-parent':assert files['domainDirectory']['uid']==1002
+  if scenario=='gateway-unknown-log-owner':assert files['https.error.log']['uid']==1002
+  assert secret not in json.dumps(report) and '198.51.100.77' not in json.dumps(report)
+ elif scenario=='gateway-missing-directory':
+  report=m.diagnose();files=report['files'];assert files['domainDirectory']['exists'] is False
+  assert files['domainDirectory']['reason']=='missing-path'
+  assert files['gatewayErrorsLast64KiB']=={'available':False,'reason':'unsafe-domain-scope'}
+ elif scenario=='worker-error-stages':
+  base={'state':'running','total':4324,'ready':12,'pending':4312,'failed':0,'private':secret}
+  for code,stage in [('provider-timeout','provider-response'),('lease-lost','lease-renew'),('claim-timeout','claim-wait'),('storage','bank-publish')]:
+   value=m.worker_progress(json.dumps({**base,'lastErrorCode':code,'lastErrorStage':stage}))
+   assert value['lastErrorCode']==code and value['lastErrorStage']==stage and secret not in json.dumps(value)
+  value=m.worker_progress(json.dumps({**base,'lastErrorCode':secret,'lastErrorStage':secret}))
+  assert 'lastErrorCode' not in value and 'lastErrorStage' not in value and secret not in json.dumps(value)
+ elif scenario=='disk-resources':
+  paths=[]
+  def statvfs(path):
+   paths.append(path)
+   if path==pathlib.Path('/tmp'):raise OSError(secret)
+   return types.SimpleNamespace(f_blocks=100,f_frsize=4096,f_bfree=30,f_bavail=20,f_files=90,f_ffree=60,f_favail=50)
+  m.os.statvfs=statvfs;value=m.disk_resources()
+  assert paths==[pathlib.Path('/'),pathlib.Path('/tmp'),m.LIVE_DIR]
+  assert value['root']=={'totalBytes':409600,'freeBytes':122880,'availableBytes':81920,'totalInodes':90,'freeInodes':60,'availableInodes':50}
+  assert value['deployment']==value['root'] and value['tmp']=={'available':False}
+  assert all(type(x) is int for x in value['root'].values()) and secret not in json.dumps(value)
  elif scenario=='verified-local-tls':
   connection=m.LocalTLS(m.DOMAIN,timeout=5)
   assert connection._context.check_hostname is True and connection._context.verify_mode==m.ssl.CERT_REQUIRED
@@ -151,7 +251,19 @@ else:raise AssertionError('Unexpected command '+args[0])
  print('synthetic fixture passed')
 `;
 
-for (const scenario of ["default", "pause", "exited-oom-app", "foreign-worker", "foreign-app", "wrong-port", "wrong-configured-port", "exited-wrong-configured-port", "worker-port", "worker-image", "duplicate-selector", "missing-worker", "gateway-log", "verified-local-tls"]) {
+const scenarios = [
+  "default", "pause", "exited-oom-app", "foreign-worker", "foreign-app", "wrong-port",
+  "wrong-configured-port", "exited-wrong-configured-port", "worker-port", "worker-image",
+  "duplicate-selector", "missing-worker", "gateway-log", "gateway-www-data", "gateway-nginx",
+  "gateway-bounded-tail", "gateway-log-symlink", "gateway-log-loop", "gateway-parent-link",
+  "gateway-parent-loop", "gateway-parent-mode", "gateway-parent-file", "gateway-unowned-parent",
+  "gateway-unowned-owner-file", "gateway-owner-loop", "gateway-wrong-owner", "gateway-unknown-log-owner",
+  "gateway-writable-log", "gateway-nonregular-log", "gateway-missing-log", "gateway-raced-inode",
+  "gateway-raced-owner", "gateway-raced-mode", "gateway-missing-directory", "worker-error-stages",
+  "disk-resources", "verified-local-tls",
+];
+
+for (const scenario of scenarios) {
   test(`Listening diagnostic ${scenario} confines inspection and mutations to its owned installation`, () => {
     const result = spawnSync("python3", ["-c", fixture, script, scenario], { encoding: "utf8", timeout: 20_000 });
     assert.equal(result.status, 0, result.stderr);
