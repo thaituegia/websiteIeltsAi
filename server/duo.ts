@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Express, NextFunction, Request, Response } from "express";
 import { MongoServerError, type Collection } from "mongodb";
 import { z } from "zod";
-import type { ContentKind } from "../shared/types";
+import type { ContentKind, StoredContent } from "../shared/types";
 import type {
   DuoAssessmentPart,
   DuoAssessmentView,
@@ -178,6 +178,8 @@ export interface DuoConfig {
   now?: () => number;
   /** Server-owned curriculum only. Request bodies cannot change curriculum or thresholds. */
   lessonKinds?: (ContentKind | "vocabulary")[];
+  /** Read-only cache guard before starting any assessment clock or Ready countdown. */
+  ensureAudioReady?: (contents: StoredContent[]) => Promise<void>;
 }
 export interface DuoAttemptInput {
   contentId: string;
@@ -233,6 +235,7 @@ export class DuoService {
         "speaking",
         "grammar",
       ],
+      ensureAudioReady: config.ensureAudioReady ?? (async () => undefined),
     };
     if (
       ![5, 10].includes(this.config.gateInterval) ||
@@ -1001,6 +1004,7 @@ export class DuoService {
       .toArray();
     if (contents.length !== contentIds.length)
       throw new ApiError(409, "Học liệu của bài đánh giá chưa đầy đủ.");
+    await this.config.ensureAudioReady(contents);
     let sectionStart = room ? millis(room.startsAt) : this.now();
     const parts = contentIds.map((contentId): DuoAssessmentPart => {
       const content = contents.find((item) => item.id === contentId)!;
@@ -1879,6 +1883,8 @@ export class DuoService {
       active: true,
     });
     if (existing) return this.reconcileRoom(existing);
+    const contents = await this.database.content.find({ _id: { $in: band.promotionContentIds } }).toArray();
+    await this.config.ensureAudioReady(contents);
     const presence = (role: DuoRole): RoomPresence => ({
       userId: members[role].id,
       joinedAt: null,
@@ -1959,6 +1965,7 @@ export class DuoService {
       (sum, content) => sum + content.durationMinutes,
       0,
     );
+    if (action === "ready" && input.ready) await this.config.ensureAudioReady(contents);
     const updated = await this.changeRoom(room._id, (latest) => {
       const presence = latest.members[member.duoRole];
       if (latest.status === "completed" || latest.status === "cancelled" || latest.status === "invalidated")

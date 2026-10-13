@@ -416,6 +416,14 @@ export interface PlacementSummary {
   startedAt: string;
   result: Feedback | null;
 }
+export interface ListeningAudioReadiness {
+  configured: boolean;
+  ready: boolean;
+  state: "ready" | "pending" | "disabled";
+  notice: string;
+  readyCount: number;
+  totalCount: number;
+}
 export interface Health {
   examIntegrityEnabled?: boolean;
   status: "ok";

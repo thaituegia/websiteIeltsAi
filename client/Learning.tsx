@@ -43,6 +43,7 @@ import type {
   Feedback,
   Health,
   LibraryResult,
+  ListeningAudioReadiness,
   PlacementState,
   Question,
   QuestionBlock,
@@ -159,6 +160,9 @@ function ContentLibrary({ exam }: { exam: boolean }) {
     [generator, setGenerator] = useState(false),
     [page, setPage] = useState(1);
   const [startContentId, setStartContentId] = useState("");
+  const [audioReadiness, setAudioReadiness] = useState<Record<string, ListeningAudioReadiness>>({});
+  const [audioReadinessContentId, setAudioReadinessContentId] = useState("");
+  const [audioReadinessRetryId, setAudioReadinessRetryId] = useState("");
   useEffect(() => setPage(1), [skill, topic, band, cefr, testType, search]);
   const queryString = new URLSearchParams({
     page: String(page),
@@ -177,14 +181,42 @@ function ContentLibrary({ exam }: { exam: boolean }) {
   const progress = useApi<{ attempts: AttemptSummary[] }>(
     "/attempts?status=in-progress",
   );
-  async function begin(contentId: string, accepted = false) {
-    if (exam && health?.examIntegrityEnabled !== false && !accepted) {
-      setStartContentId(contentId);
-      return;
+  async function checkAudioReadiness(contentId: string) {
+    try {
+      const { audio } = await api<{ audio: ListeningAudioReadiness }>(
+        `/content/${encodeURIComponent(contentId)}/listening-audio/readiness?mode=${exam ? "exam" : "practice"}`,
+      );
+      setAudioReadiness(current => ({ ...current, [contentId]: audio }));
+      setAudioReadinessContentId(contentId);
+      return audio.ready;
+    } catch (cause) {
+      setAudioReadinessRetryId(contentId);
+      throw cause;
     }
+  }
+  async function refreshAudioReadiness(contentId: string) {
+    if (busy) return;
+    setBusy(contentId); setActionError(""); setAudioReadinessRetryId("");
+    try { await checkAudioReadiness(contentId); }
+    catch (cause) { setActionError(errorMessage(cause)); }
+    finally { setBusy(""); }
+  }
+  async function begin(contentId: string, accepted = false, contentSkill?: ContentKind) {
+    if (busy && busy !== "generate") return;
     setBusy(contentId);
     setActionError("");
+    setAudioReadinessRetryId("");
     try {
+      const listening = (contentSkill || data?.items.find(item => item.id === contentId)?.skill) === "listening"
+        || !!audioReadiness[contentId];
+      if (hasAiSpeech(health) && listening && !await checkAudioReadiness(contentId)) {
+        setStartContentId("");
+        return;
+      }
+      if (exam && health?.examIntegrityEnabled !== false && !accepted) {
+        setStartContentId(contentId);
+        return;
+      }
       const result = await api<{ attempt: Attempt }>("/attempts", {
         method: "POST",
         body: json({ contentId, mode: exam ? "exam" : "practice" }),
@@ -192,6 +224,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
       navigate(`/learn/${result.attempt.id}`);
       setStartContentId("");
     } catch (cause) {
+      setStartContentId("");
       setActionError(errorMessage(cause));
     } finally {
       setBusy("");
@@ -201,6 +234,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
     event.preventDefault();
     setBusy("generate");
     setActionError("");
+    setAudioReadinessRetryId("");
     const form = new FormData(event.currentTarget);
     try {
       const result = await api<{ content: ContentItem }>("/content/generate", {
@@ -213,7 +247,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         }),
       });
       setGenerator(false);
-      await begin(result.content.id);
+      await begin(result.content.id, false, result.content.skill);
     } catch (cause) {
       setActionError(errorMessage(cause));
     } finally {
@@ -390,7 +424,26 @@ function ContentLibrary({ exam }: { exam: boolean }) {
           Tìm
         </Button>
       </form>
-      {actionError && <ErrorNotice message={actionError} />}
+      {actionError && <ErrorNotice message={actionError} retry={audioReadinessRetryId
+        ? () => void refreshAudioReadiness(audioReadinessRetryId) : undefined} />}
+      {hasAiSpeech(health) && audioReadiness[audioReadinessContentId]
+        && !data?.items.some(item => item.id === audioReadinessContentId) && (
+        <div className="notice" role="status">
+          <Headphones size={18} />
+          <span>{audioReadiness[audioReadinessContentId].notice}</span>
+          {audioReadiness[audioReadinessContentId].ready ? (
+            <Button className="secondary small" disabled={!!busy}
+              onClick={() => void begin(audioReadinessContentId, false, "listening")}>
+              {exam ? "Bắt đầu thi thử" : "Bắt đầu luyện"} <ArrowRight size={14} />
+            </Button>
+          ) : (
+            <Button className="secondary small" disabled={!!busy}
+              onClick={() => void refreshAudioReadiness(audioReadinessContentId)}>
+              <RotateCcw size={14} /> Kiểm tra lại âm thanh
+            </Button>
+          )}
+        </div>
+      )}
       {loading ? (
         <Loading />
       ) : error ? (
@@ -446,7 +499,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
                     </div>
                     <Button
                       className="secondary"
-                      disabled={!!busy}
+                      disabled={!!busy || (hasAiSpeech(health) && audioReadiness[item.id]?.ready === false)}
                       onClick={() => void begin(item.id)}
                     >
                       {busy === item.id
@@ -456,6 +509,17 @@ function ContentLibrary({ exam }: { exam: boolean }) {
                           : "Bắt đầu luyện"}
                       <ArrowRight size={16} />
                     </Button>
+                    {hasAiSpeech(health) && audioReadiness[item.id] && (
+                      <div className="stack">
+                        <small className="muted" role="status">{audioReadiness[item.id].notice}</small>
+                        {!audioReadiness[item.id].ready && (
+                          <Button className="secondary small" disabled={!!busy}
+                            onClick={() => void refreshAudioReadiness(item.id)}>
+                            <RotateCcw size={14} /> Kiểm tra lại âm thanh
+                          </Button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </article>
               );
@@ -571,6 +635,8 @@ export function PlacementPage() {
     [listenPreparing, setListenPreparing] = useState(false),
     [listenNotice, setListenNotice] = useState("");
   const [startMode, setStartMode] = useState<"quick" | "deep" | null>(null);
+  const [audioReadiness, setAudioReadiness] = useState<ListeningAudioReadiness | null>(null);
+  const [audioReadinessError, setAudioReadinessError] = useState(false);
   const integrityEnabled = health?.examIntegrityEnabled !== false;
   const integrity = useExamIntegrity("placement", placement?.id,
     integrityEnabled && !reviewId && !!placement?.question && !isExamInvalidated(placement), undefined,
@@ -644,11 +710,34 @@ export function PlacementPage() {
     placementMounted.current = true;
     return () => { placementMounted.current = false; clearPlacementListening(); };
   }, [clearPlacementListening]);
+  async function checkAudioReadiness() {
+    try {
+      const { audio } = await api<{ audio: ListeningAudioReadiness }>("/placement/audio/readiness");
+      setAudioReadiness(audio);
+      return audio.ready;
+    } catch (cause) {
+      setAudioReadinessError(true);
+      throw cause;
+    }
+  }
+  async function refreshAudioReadiness() {
+    if (busy) return;
+    setBusy(true); setError(""); setAudioReadinessError(false);
+    try { await checkAudioReadiness(); }
+    catch (cause) { setError(errorMessage(cause)); }
+    finally { setBusy(false); }
+  }
   async function start(mode: "quick" | "deep", accepted = false) {
-    if (integrityEnabled && !accepted) { setStartMode(mode); return; }
+    if (busy) return;
     setBusy(true);
     setError("");
+    setAudioReadinessError(false);
     try {
+      if (hasAiSpeech(health) && !await checkAudioReadiness()) {
+        setStartMode(null);
+        return;
+      }
+      if (integrityEnabled && !accepted) { setStartMode(mode); return; }
       setPlacement(
         (
           await api<{ placement: PlacementState }>("/placement/start", {
@@ -660,6 +749,7 @@ export function PlacementPage() {
       setAnswer("");
       setStartMode(null);
     } catch (cause) {
+      setStartMode(null);
       setError(errorMessage(cause));
     } finally {
       setBusy(false);
@@ -722,7 +812,7 @@ export function PlacementPage() {
     try {
       if (hasAiSpeech(health)) {
         setListenPreparing(true);
-        setListenNotice("Đang chuẩn bị âm thanh; lần đầu cần thời gian tạo giọng AI.");
+        setListenNotice("Đang tải bản nghe đã chuẩn bị sẵn…");
         const controller = new AbortController(); placementAudioRequest.current = controller;
         const result = await fetchListeningAudio(`/api/placement/${encodeURIComponent(placement.id)}/audio`,
           controller.signal, { questionId: placement.question.id });
@@ -766,7 +856,8 @@ export function PlacementPage() {
         description={reviewId ? "Đối chiếu từng câu đã làm với đáp án, giải thích và nội dung gốc." : "Một bài đánh giá thích ứng giúp bạn tìm điểm bắt đầu phù hợp, với khoảng bất định được trình bày rõ ràng."}
       />
       <DuoPlacementStatus />
-      {error && <ErrorNotice message={error} />}
+      {error && <ErrorNotice message={error} retry={audioReadinessError
+        ? () => void refreshAudioReadiness() : undefined} />}
       {active.error && (
         <ErrorNotice
           message={active.error}
@@ -812,6 +903,17 @@ export function PlacementPage() {
               </div>
             </div>
           </section>
+          {hasAiSpeech(health) && audioReadiness && (
+            <div className="notice" role="status">
+              <Headphones size={18} />
+              <span>{audioReadiness.notice}</span>
+              {!audioReadiness.ready && (
+                <Button className="secondary small" disabled={busy} onClick={() => void refreshAudioReadiness()}>
+                  <RotateCcw size={14} /> Kiểm tra lại âm thanh
+                </Button>
+              )}
+            </div>
+          )}
           <div className="grid-2 placement-options">
             <Card>
               <Badge>KHỞI ĐỘNG NHANH</Badge>
@@ -824,7 +926,7 @@ export function PlacementPage() {
                 <li>Câu hỏi từ A2 đến C1</li>
                 <li>20 phút · tự lưu lựa chọn và kết thúc khi hết giờ</li>
               </ul>
-              <Button disabled={busy} onClick={() => void start("quick")}>
+              <Button disabled={busy || (hasAiSpeech(health) && audioReadiness?.ready === false)} onClick={() => void start("quick")}>
                 Bắt đầu kiểm tra nhanh
                 <ArrowRight size={17} />
               </Button>
@@ -844,7 +946,7 @@ export function PlacementPage() {
               </ul>
               <Button
                 className="secondary"
-                disabled={busy}
+                disabled={busy || (hasAiSpeech(health) && audioReadiness?.ready === false)}
                 onClick={() => void start("deep")}
               >
                 Bắt đầu đánh giá chuyên sâu
@@ -905,7 +1007,7 @@ export function PlacementPage() {
                 disabled={listening || busy || remainingSeconds === 0 || !integrity.ready}
               >
                 <Volume2 size={17} />
-                {listenPreparing ? "Đang chuẩn bị âm thanh…" : listening ? "Đang phát…" : "Nghe đoạn văn"}
+                {listenPreparing ? "Đang tải bản nghe đã chuẩn bị sẵn…" : listening ? "Đang phát…" : "Nghe đoạn văn"}
               </Button>
               <small>{listenNotice || (hasAiSpeech(health) ? "Giọng AI theo nhân vật" : "Giọng máy của trình duyệt · accent chưa kiểm định")}</small>
             </div>
@@ -1471,7 +1573,7 @@ export function LearningPage() {
     setError(""); setPlaying(false); setPaused(false);
     try {
       if (hasAiSpeech(health)) {
-        setListenNotice("Đang chuẩn bị âm thanh; lần đầu cần thời gian tạo giọng AI.");
+        setListenNotice("Đang tải bản nghe đã chuẩn bị sẵn…");
         const controller = new AbortController(); listenRequest.current = controller;
         const result = await fetchListeningAudio(`/api/attempts/${encodeURIComponent(attempt.id)}/listening-audio`, controller.signal);
         if (!isCurrent()) return;
@@ -1757,7 +1859,7 @@ export function LearningPage() {
                 onClick={() => void listen()}
               >
                 <Play size={16} />
-                {listenBusy ? "Đang chuẩn bị âm thanh…" : "Phát bản nghe"}
+                {listenBusy ? "Đang tải bản nghe đã chuẩn bị sẵn…" : "Phát bản nghe"}
               </Button>
             )}
           </div>

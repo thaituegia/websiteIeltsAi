@@ -447,8 +447,24 @@ test("Listening has four parts, Practice transcript and pause controls, and one 
   // Headless Chromium has no installed speech voices. Stub this browser device
   // only; the content, play-claim API, timer, and MongoDB remain real.
   await page.addInitScript(() => {
+    // A nonempty English catalog models a playable device. Native utterance
+    // voice setters require branded browser voices, so control the utterance
+    // as well; keep playback active until the pause/stop controls are used.
+    class ControlledUtterance {
+      voice: SpeechSynthesisVoice | null = null;
+      lang = "";
+      rate = 1;
+      pitch = 1;
+      onend: ((event: SpeechSynthesisEvent) => void) | null = null;
+      onerror: ((event: SpeechSynthesisErrorEvent) => void) | null = null;
+      constructor(readonly text: string) {}
+    }
+    window.SpeechSynthesisUtterance = ControlledUtterance as unknown as typeof SpeechSynthesisUtterance;
+    const voices = ["Synthetic Zoe", "Synthetic Ada", "Synthetic Ben"].map(name => ({
+      name, lang: "en-GB", voiceURI: `synthetic:${name}`, default: false, localService: true,
+    }));
     const synthesis = window.speechSynthesis;
-    Object.defineProperty(synthesis, "getVoices", { value: () => [] });
+    Object.defineProperty(synthesis, "getVoices", { value: () => voices });
     Object.defineProperty(synthesis, "speak", {
       value: (_utterance: SpeechSynthesisUtterance) => undefined,
     });

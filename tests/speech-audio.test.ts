@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { GridFSBucket, MongoClient, type Collection } from "mongodb";
-import { SpeechAudioCache, speechCapabilities, synthesizeSpeechAudio } from "../server/speech-audio";
+import { Binary, GridFSBucket, MongoClient, type Collection } from "mongodb";
+import { SpeechAudioCache, SpeechProviderError, speechCapabilities, synthesizeSpeechAudio } from "../server/speech-audio";
 import type { Database } from "../server/storage";
 import type { ContentSection } from "../shared/types";
 
@@ -71,7 +71,7 @@ test("Listening synthesis preserves the authored cast and bounds provider transp
     await t.test("casting is stable and varied across lessons, with neutral role delivery", async () => {
       requests = [];
       for (let index = 0; index < 16; index++)
-        await synthesizeSpeechAudio([{ ...sections[0], id: `synthetic-varied-lesson-${index}` }]);
+        await synthesizeSpeechAudio([{ ...sections[0], dialogue: sections[0].dialogue!.map((line, turn) => turn === 0 ? { ...line, text: `${line.text} Lesson ${index}.` } : line) }]);
       const firstVoices = requests.filter((_, index) => index % 3 === 0).map(request => request.body.voice);
       assert.ok(new Set(firstVoices).size > 3);
       assert.ok(requests.filter((_, index) => index % 3 === 0).every(request => /professional and encouraging/u.test(request.body.instructions)));
@@ -79,7 +79,7 @@ test("Listening synthesis preserves the authored cast and bounds provider transp
       assert.ok(requests.every(request => !/\b(male|female|Teacher|Student)\b/u.test(request.body.instructions)));
       const first = requests.slice(0, 3).map(request => request.body.voice);
       requests = [];
-      await synthesizeSpeechAudio([{ ...sections[0], id: 'synthetic-varied-lesson-0' }]);
+      await synthesizeSpeechAudio([{ ...sections[0], dialogue: sections[0].dialogue!.map((line, turn) => turn === 0 ? { ...line, text: `${line.text} Lesson 0.` } : line) }]);
       assert.deepEqual(requests.map(request => request.body.voice), first);
     });
     await t.test("flat Placement roles are omitted from input", async () => {
@@ -130,6 +130,23 @@ test("Listening synthesis preserves the authored cast and bounds provider transp
       globalThis.fetch = async () => response();
       await assert.rejects(synthesizeSpeechAudio(sections), error => error instanceof Error && !error.message.includes(syntheticKey) && !error.message.includes("Private body"));
     });
+    await t.test("provider failures expose only safe retry categories and bound retry-after", async () => {
+      for (const [status, code, expectedKind, retry, expectedDelay] of [
+        [401, "private-code", "auth", undefined, undefined],
+        [402, "private-code", "quota", undefined, undefined],
+        [429, "insufficient_quota", "quota", undefined, undefined],
+        [429, "rate_limit_exceeded", "rate-limit", "2", 2000],
+        [429, "rate_limit_exceeded", "rate-limit", "999999", 300000],
+        [500, "private-code", "unavailable", undefined, undefined],
+      ] as const) {
+        globalThis.fetch = async () => Response.json({ error: { code, message: `Private body ${syntheticKey}` } }, { status, headers: retry ? { "retry-after": retry } : {} });
+        await assert.rejects(synthesizeSpeechAudio(sections), error => error instanceof SpeechProviderError
+          && error.kind === expectedKind && error.retryAfterMs === expectedDelay
+          && !JSON.stringify(error).includes(syntheticKey) && !error.message.includes("Private body"));
+      }
+      globalThis.fetch = async () => Response.json({ error: { message: "insufficient_quota" } }, { status: 429 });
+      await assert.rejects(synthesizeSpeechAudio(sections), error => error instanceof SpeechProviderError && error.kind === "rate-limit");
+    });
     await t.test("a stalled response body is cancelled and reported as a timeout", async () => {
       const previousTimer = globalThis.setTimeout; let cancelled = false;
       globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => previousTimer(callback, (delay ?? 0) >= 120000 ? 1 : delay, ...args)) as typeof setTimeout;
@@ -152,14 +169,32 @@ test("Listening synthesis preserves the authored cast and bounds provider transp
 
 // Always use a local, random owned database; never inherit the app Mongo URI.
 const ownedDatabasePattern = /^ielts_speech_test_\d+_[a-f0-9]{32}$/;
-test("on-demand GridFS cache coalesces claims, survives restart, and preserves private collections", async t => {
+const mutationCommands = new Set(["insert", "update", "delete", "findAndModify", "create", "createIndexes", "drop", "dropIndexes"]);
+function changedSections(label: string): ContentSection[] {
+  return [{ ...sections[0], dialogue: sections[0].dialogue!.map(line => ({ ...line, text: `${line.text} ${label}.` })) }];
+}
+function hasStatus(status: number) {
+  return (error: unknown) => error instanceof Error && "status" in error && error.status === status;
+}
+
+test("section GridFS cache keeps learner reads free and resumes durable provider work", async t => {
   const restore = controlledEnvironment(), previousFetch = globalThis.fetch;
   const name = `ielts_speech_test_${process.pid}_${randomBytes(16).toString("hex")}`;
   assert.match(name, ownedDatabasePattern);
-  const client = new MongoClient("mongodb://127.0.0.1:27017", { serverSelectionTimeoutMS: 5000, maxPoolSize: 3 });
+  const client = new MongoClient("mongodb://127.0.0.1:27017", { serverSelectionTimeoutMS: 5000, maxPoolSize: 3, monitorCommands: true });
   const secondClient = new MongoClient("mongodb://127.0.0.1:27017", { serverSelectionTimeoutMS: 5000, maxPoolSize: 3 });
+  const commands: { name: string; collection?: string }[] = [];
+  client.on("commandStarted", event => {
+    if (event.databaseName === name) commands.push({ name: event.commandName, collection: typeof event.command[event.commandName] === "string" ? event.command[event.commandName] : undefined });
+  });
   let calls = 0;
-  globalThis.fetch = async (url) => { assert.equal(String(url), "https://api.openai.com/v1/audio/speech"); calls++; await new Promise(resolve => setTimeout(resolve, 10)); return pcmResponse(); };
+  const requestVoices: string[] = [];
+  const providerFetch: typeof fetch = async (url, init) => {
+    assert.equal(String(url), "https://api.openai.com/v1/audio/speech");
+    requestVoices.push(JSON.parse(String(init?.body)).voice);
+    calls++; await new Promise(resolve => setTimeout(resolve, 10)); return pcmResponse();
+  };
+  globalThis.fetch = providerFetch;
   try {
     await client.connect(); await secondClient.connect();
     const db = client.db(name), secondDb = secondClient.db(name);
@@ -168,23 +203,82 @@ test("on-demand GridFS cache coalesces claims, survives restart, and preserves p
     await db.collection("recordings.files").insertOne({ marker: "synthetic-private-recording" });
     const privateBefore = { users: await db.collection("users").find().toArray(), recordings: await db.collection("recordings.files").find().toArray() };
     const cache = new SpeechAudioCache(database), otherCache = new SpeechAudioCache(secondDatabase);
-    await t.test("constructing the cache and reading capabilities create nothing", async () => {
+    let canonicalFingerprint = "";
+    await t.test("constructing, readiness and missing learner reads create no collections or indexes", async () => {
+      commands.length = 0;
       speechCapabilities();
+      const pending = await cache.readiness(sections);
+      assert.equal(pending.configured, true); assert.equal(pending.ready, false); assert.equal(pending.state, "pending");
+      assert.equal(pending.readyCount, 0); assert.equal(pending.totalCount, 1); assert.ok(pending.notice);
+      const started = performance.now();
+      await assert.rejects(cache.getReady(sections), hasStatus(409));
+      assert.ok(performance.now() - started < 1000, "missing learner audio must not wait for a generation lease");
+      assert.equal(calls, 0); assert.ok(commands.every(command => !mutationCommands.has(command.name)));
       assert.deepEqual((await db.listCollections().toArray()).map(collection => collection.name).sort(), ["recordings.files", "users"]);
+      delete process.env.IELTS_OPENAI_API_KEY;
+      commands.length = 0;
+      try {
+        const disabled = await cache.readiness(sections);
+        assert.deepEqual(disabled, { configured: false, ready: true, state: "disabled", notice: "", readyCount: 1, totalCount: 1 });
+        assert.equal(commands.length, 0);
+      } finally { process.env.IELTS_OPENAI_API_KEY = syntheticKey; }
     });
-    await t.test("same-instance requests coalesce, then a new instance and Mongo connection reuse durable audio", async () => {
+    await t.test("same-instance requests coalesce and a fresh Mongo connection reuses section and turn files", async () => {
       const [first, second] = await Promise.all([cache.get(sections), cache.get(sections)]);
       assert.equal(first.cached, false); assert.equal(second.cached, true); assert.equal(calls, 3); assert.deepEqual(first.buffer, second.buffer);
       const third = await otherCache.get(sections); assert.equal(third.cached, true); assert.equal(calls, 3); assert.deepEqual(first.buffer, third.buffer);
-      assert.equal(await db.collection("speech_audio.files").countDocuments(), 1); assert.equal(await db.collection("speech_audio_jobs").countDocuments({ state: "ready" }), 1);
+      assert.equal(await db.collection("speech_audio.files").countDocuments({ "metadata.kind": "section" }), 1);
+      assert.equal(await db.collection("speech_audio.files").countDocuments({ "metadata.kind": "turn" }), 3);
+      assert.equal(await db.collection("speech_audio_jobs").countDocuments({ state: "ready" }), 1);
+      canonicalFingerprint = (await db.collection("speech_audio.files").findOne({ "metadata.kind": "section" }))!.metadata.fingerprint;
+      commands.length = 0;
+      const ready = await cache.getReady(sections);
+      assert.equal(ready.cached, true); assert.deepEqual(ready.buffer, first.buffer); assert.equal(calls, 3);
+      assert.ok(commands.every(command => !mutationCommands.has(command.name)));
     });
-    await t.test("separate Mongo clients atomically claim the same uncached script", async () => {
-      const changed = [{ ...sections[0], id: "synthetic-cross-process-source" }]; const before = calls;
+    await t.test("readiness batches metadata and job lookups without downloading audio", async () => {
+      const internals = cache as unknown as { bucket: GridFSBucket };
+      const original = internals.bucket.openDownloadStream.bind(internals.bucket);
+      internals.bucket.openDownloadStream = (() => { throw new Error("readiness must use metadata only"); }) as typeof internals.bucket.openDownloadStream;
+      commands.length = 0;
+      try {
+        const ready = await cache.readiness([sections[0], { ...sections[0], id: "synthetic-duplicate-source" }]);
+        assert.deepEqual(ready, { configured: true, ready: true, state: "ready", notice: "", readyCount: 2, totalCount: 2 });
+        const pending = await cache.readiness([sections[0], changedSections("Unprepared section")[0]]);
+        assert.equal(pending.state, "pending"); assert.equal(pending.readyCount, 1); assert.equal(pending.totalCount, 2);
+        assert.ok(pending.notice); assert.equal(calls, 3);
+      } finally { internals.bucket.openDownloadStream = original; }
+      assert.equal(commands.filter(command => command.name === "find" && command.collection === "speech_audio.files").length, 2);
+      assert.equal(commands.filter(command => command.name === "find" && command.collection === "speech_audio_jobs").length, 2);
+      assert.ok(commands.every(command => !mutationCommands.has(command.name) && command.collection !== "speech_audio.chunks"));
+    });
+    await t.test("source IDs, titles, duplicate transcript fields and normalized role labels reuse a canonical section", async () => {
+      const before = calls;
+      const equivalent = [{ ...sections[0], id: "synthetic-new-source", title: "Other heading", text: "Other duplicate transcript", dialogue: sections[0].dialogue!.map(line => ({ ...line, speaker: `  ${line.speaker.toUpperCase()}  `, text: `${line.speaker.toUpperCase()}: ${line.text}` })) }];
+      assert.equal((await cache.get(equivalent)).cached, true);
+      assert.equal((await otherCache.getReady(equivalent)).cached, true); assert.equal(calls, before);
+      assert.equal(await db.collection("speech_audio.files").countDocuments({ "metadata.kind": "section" }), 1);
+    });
+    await t.test("multiple sections reuse local casting and assemble in requested order with a 200 ms gap", async () => {
+      const alternate = changedSections("Second authored scene"), before = calls;
+      const first = await cache.getReady(sections), second = await cache.get(alternate);
+      assert.equal(calls - before, 3);
+      const combined = await otherCache.getReady([alternate[0], sections[0]]);
+      assert.equal(combined.cached, true); assert.equal(calls - before, 3);
+      assert.equal(combined.voiceCount, new Set([...requestVoices.slice(0, 3), ...requestVoices.slice(before)]).size);
+      const payload = Buffer.concat([second.buffer.subarray(44), Buffer.alloc(6400), first.buffer.subarray(44)]);
+      assert.deepEqual(combined.buffer.subarray(44), payload); assert.equal(combined.buffer.readUInt32LE(40), payload.length);
+      const repeated = await cache.get([sections[0], { ...sections[0], id: "synthetic-global-index-copy" }]);
+      assert.equal(repeated.cached, true); assert.equal(repeated.voiceCount, first.voiceCount);
+      assert.deepEqual(repeated.buffer.subarray(44), Buffer.concat([first.buffer.subarray(44), Buffer.alloc(6400), first.buffer.subarray(44)]));
+    });
+    await t.test("separate Mongo clients atomically claim the same uncached section", async () => {
+      const changed = changedSections("Cross process scene"), before = calls;
       const [first, second] = await Promise.all([cache.get(changed), otherCache.get(changed)]);
       assert.equal(calls - before, 3); assert.equal([first, second].filter(result => result.cached).length, 1); assert.deepEqual(first.buffer, second.buffer);
     });
-    await t.test("a worker publishing between the file and claim lookups never triggers duplicate paid synthesis", async () => {
-      const changed = [{ ...sections[0], id: "synthetic-publication-race" }], before = calls;
+    await t.test("publishing between the file and claim lookups never triggers duplicate paid synthesis", async () => {
+      const changed = changedSections("Publication race"), before = calls;
       const racingCache = new SpeechAudioCache(secondDatabase);
       const internals = racingCache as unknown as { initialize(): Promise<void>; files: Collection };
       await internals.initialize();
@@ -197,49 +291,127 @@ test("on-demand GridFS cache coalesces claims, survives restart, and preserves p
       try { assert.equal((await racingCache.get(changed)).cached, true); assert.equal(calls - before, 3); }
       finally { internals.files.findOne = original; }
     });
-    await t.test("a transient GridFS read failure preserves valid audio and never triggers paid regeneration", async () => {
+    await t.test("transient GridFS failures preserve valid audio and never trigger regeneration", async () => {
       const readCache = new SpeechAudioCache(secondDatabase);
       const internals = readCache as unknown as { initialize(): Promise<void>; bucket: GridFSBucket };
       await internals.initialize();
       const original = internals.bucket.openDownloadStream.bind(internals.bucket), before = calls;
       const fileIds = (await db.collection("speech_audio.files").find().toArray()).map(file => file._id);
       internals.bucket.openDownloadStream = (() => Readable.from((async function* () { throw new Error("synthetic storage transport failure"); })())) as unknown as typeof internals.bucket.openDownloadStream;
-      try { await assert.rejects(readCache.get(sections), error => error instanceof Error && "status" in error && error.status === 503); }
-      finally { internals.bucket.openDownloadStream = original; }
+      try {
+        await assert.rejects(readCache.getReady(sections), hasStatus(503));
+        await assert.rejects(readCache.get(sections), hasStatus(503));
+      } finally { internals.bucket.openDownloadStream = original; }
       assert.equal(calls, before); assert.deepEqual((await db.collection("speech_audio.files").find().toArray()).map(file => file._id), fileIds);
-      assert.equal((await readCache.get(sections)).cached, true);
+      assert.equal((await readCache.getReady(sections)).cached, true);
     });
-    await t.test("text, authored accent and source changes invalidate the cache; key rotation does not", async () => {
+    await t.test("text and authored accents invalidate a section; key rotation does not", async () => {
       const before = calls;
       process.env.IELTS_OPENAI_API_KEY = "sk-synthetic-rotated-key";
-      assert.equal((await otherCache.get(sections)).cached, true); assert.equal(calls, before);
+      assert.equal((await otherCache.getReady(sections)).cached, true); assert.equal(calls, before);
       const changedText = [{ ...sections[0], dialogue: sections[0].dialogue!.map((line, index) => index === 1 ? { ...line, text: "It opens at eight." } : line) }];
       assert.equal((await cache.get(changedText)).cached, false);
       const changedAccent = [{ ...sections[0], dialogue: sections[0].dialogue!.map(line => ({ ...line, accent: "american" as const })) }];
       assert.equal((await cache.get(changedAccent)).cached, false);
-      assert.equal((await cache.get([{ ...sections[0], id: "synthetic-new-source" }])).cached, false);
-      assert.equal(calls - before, 9);
+      assert.ok(calls > before); assert.equal((await cache.get([{ ...sections[0], id: "synthetic-new-source" }])).cached, true);
     });
-    await t.test("expired generation claims recover without keeping invalid cache files", async () => {
-      const file = await db.collection("speech_audio.files").findOne({}); assert.ok(file);
+    await t.test("learner reads reject pending or mismatched jobs immediately without repairing them", async () => {
+      const file = await db.collection("speech_audio.files").findOne({ "metadata.kind": "section", "metadata.fingerprint": canonicalFingerprint }); assert.ok(file);
+      const job = await db.collection("speech_audio_jobs").findOne({ _id: file.metadata.fingerprint }); assert.ok(job);
+      const before = calls;
+      for (const update of [{ state: "generating", owner: "synthetic-current-worker", leaseExpiresAt: new Date(Date.now() + 45000) }, { state: "ready", fileId: null }]) {
+        await db.collection("speech_audio_jobs").updateOne({ _id: job._id }, { $set: update });
+        const pendingBefore: unknown = await db.collection("speech_audio_jobs").findOne({ _id: job._id });
+        commands.length = 0;
+        const started = performance.now();
+        assert.equal((await cache.readiness(sections)).state, "pending");
+        await assert.rejects(cache.getReady(sections), hasStatus(409));
+        assert.ok(performance.now() - started < 1000); assert.equal(calls, before);
+        assert.ok(commands.every(command => !mutationCommands.has(command.name)));
+        assert.deepEqual(await db.collection("speech_audio_jobs").findOne({ _id: job._id }), pendingBefore);
+      }
+      await db.collection("speech_audio_jobs").replaceOne({ _id: job._id }, job);
+      await db.collection("speech_audio_jobs").deleteOne({ _id: job._id });
+      assert.equal((await cache.readiness(sections)).state, "pending");
+      assert.equal((await cache.get(sections)).cached, true); assert.equal(calls, before);
+      assert.equal((await cache.readiness(sections)).state, "ready");
+      assert.equal((await cache.getReady(sections)).cached, true);
+      await db.collection("speech_audio_jobs").updateOne({ _id: job._id }, { $set: { state: "failed", leaseExpiresAt: new Date(0) }, $unset: { fileId: "" } });
+      assert.equal((await cache.get(sections)).cached, true); assert.equal(calls, before);
+      assert.equal((await cache.readiness(sections)).state, "ready");
+    });
+    await t.test("generation repairs expired section claims using persistent turns without new provider calls", async () => {
+      const file = await db.collection("speech_audio.files").findOne({ "metadata.kind": "section", "metadata.fingerprint": canonicalFingerprint }); assert.ok(file);
       await new GridFSBucket(db, { bucketName: "speech_audio" }).delete(file._id);
       await db.collection("speech_audio_jobs").updateOne({ _id: file.metadata.fingerprint }, { $set: { state: "generating", owner: "synthetic-dead-worker", leaseExpiresAt: new Date(0) } });
-      const before = calls; assert.equal((await cache.get(sections)).cached, false); assert.equal(calls - before, 3);
-      const repaired = await db.collection("speech_audio.files").findOne({ "metadata.fingerprint": file.metadata.fingerprint }); assert.ok(repaired);
-      await db.collection("speech_audio.files").updateOne({ _id: repaired._id }, { $set: { "metadata.mimetype": "application/json" } });
-      assert.equal((await cache.get(sections)).cached, false);
-      assert.equal(await db.collection("speech_audio.files").countDocuments({ "metadata.fingerprint": file.metadata.fingerprint }), 1);
+      const before = calls; assert.equal((await cache.get(sections)).cached, false); assert.equal(calls, before);
+      assert.equal((await cache.getReady(sections)).cached, true);
     });
-    await t.test("failed audio is never stored, and a retry succeeds", async () => {
-      const changed = [{ ...sections[0], id: "synthetic-failed-source" }], filesBefore = await db.collection("speech_audio.files").countDocuments();
+    await t.test("invalid metadata and corrupt GridFS content stay untouched on reads and are repaired only by generation", async () => {
+      for (const corruption of ["metadata", "bytes", "missing-chunks"] as const) {
+        const file = await db.collection("speech_audio.files").findOne({ "metadata.kind": "section", "metadata.fingerprint": canonicalFingerprint });
+        assert.ok(file);
+        if (corruption === "metadata") await db.collection("speech_audio.files").updateOne({ _id: file._id }, { $set: { "metadata.mimetype": "application/json" } });
+        else if (corruption === "bytes") {
+          const chunk = await db.collection("speech_audio.chunks").findOne({ files_id: file._id }); assert.ok(chunk);
+          const invalid = Buffer.from(chunk.data.buffer); invalid[0] = 0;
+          await db.collection("speech_audio.chunks").updateOne({ _id: chunk._id }, { $set: { data: new Binary(invalid) } });
+        } else await db.collection("speech_audio.chunks").deleteMany({ files_id: file._id });
+        const filesBefore = await db.collection("speech_audio.files").find().toArray(), chunksBefore = await db.collection("speech_audio.chunks").find().toArray();
+        const before = calls;
+        commands.length = 0;
+        const readiness = await cache.readiness(sections);
+        assert.equal(readiness.state, corruption === "metadata" ? "pending" : "ready");
+        await assert.rejects(cache.getReady(sections), hasStatus(409));
+        assert.equal(calls, before); assert.ok(commands.every(command => !mutationCommands.has(command.name)));
+        assert.deepEqual(await db.collection("speech_audio.files").find().toArray(), filesBefore);
+        assert.deepEqual(await db.collection("speech_audio.chunks").find().toArray(), chunksBefore);
+        assert.equal((await cache.get(sections)).cached, false); assert.equal(calls, before);
+        assert.equal((await cache.getReady(sections)).cached, true);
+        assert.equal(await db.collection("speech_audio.files").countDocuments({ "metadata.fingerprint": file.metadata.fingerprint }), 1);
+      }
+    });
+    await t.test("failed provider audio is never stored and a retry succeeds", async () => {
+      const changed = changedSections("Failed provider scene"), filesBefore = await db.collection("speech_audio.files").countDocuments();
       globalThis.fetch = async () => Response.json({ error: { message: syntheticKey } }, { status: 500 });
       await assert.rejects(cache.get(changed), /audio hợp lệ/u);
       assert.equal(await db.collection("speech_audio.files").countDocuments(), filesBefore);
-      globalThis.fetch = async () => { calls++; return pcmResponse(); };
+      globalThis.fetch = providerFetch;
       assert.equal((await cache.get(changed)).cached, false);
     });
+    for (const failure of ["quota", "network"] as const) await t.test(`persistent completed turns resume after a ${failure} failure in a fresh worker`, async () => {
+      const dialogue = Array.from({ length: 5 }, (_, index) => ({ speaker: index % 2 ? "Student" : "Teacher", accent: "british" as const, text: `Synthetic ${failure} resume turn ${index}.` }));
+      const changed = [{ ...sections[0], dialogue }];
+      const completed = new Set<string>(), firstInputs: string[] = [];
+      let active = 0, maximum = 0;
+      globalThis.fetch = async (url, init) => {
+        assert.equal(String(url), "https://api.openai.com/v1/audio/speech");
+        const input = JSON.parse(String(init?.body)).input as string;
+        firstInputs.push(input); active++; maximum = Math.max(maximum, active);
+        try {
+          await new Promise(resolve => setTimeout(resolve, input === dialogue[2].text ? 25 : 5));
+          if (input === dialogue[2].text) {
+            if (failure === "network") throw new Error(`synthetic private network body ${syntheticKey}`);
+            return Response.json({ error: { code: "insufficient_quota", type: "insufficient_quota", message: `synthetic private body ${syntheticKey}` } }, { status: 429 });
+          }
+          completed.add(input); return pcmResponse();
+        } finally { active--; }
+      };
+      await assert.rejects(cache.get(changed), error => error instanceof Error && !error.message.includes(syntheticKey) && !error.message.includes("private"));
+      assert.equal(maximum, 2); assert.equal(active, 0);
+      assert.ok(completed.has(dialogue[0].text) && completed.has(dialogue[1].text));
+      assert.equal(firstInputs.filter(input => input === dialogue[0].text).length, 1);
+      assert.equal((await cache.readiness(changed)).state, "pending");
+      const retryInputs: string[] = [];
+      globalThis.fetch = async (url, init) => { assert.equal(String(url), "https://api.openai.com/v1/audio/speech"); retryInputs.push(JSON.parse(String(init?.body)).input); return pcmResponse(); };
+      assert.equal((await new SpeechAudioCache(secondDatabase).get(changed)).cached, false);
+      assert.ok(retryInputs.includes(dialogue[2].text));
+      for (const input of completed) assert.ok(!retryInputs.includes(input), "completed PCM must not be purchased again");
+      assert.equal((await otherCache.getReady(changed)).cached, true);
+      globalThis.fetch = providerFetch;
+    });
     await t.test("losing a generation lease cancels provider work without publishing audio", async () => {
-      const changed = [{ ...sections[0], id: "synthetic-lost-lease" }], filesBefore = await db.collection("speech_audio.files").countDocuments();
+      const changed = changedSections("Lost lease scene"), filesBefore = await db.collection("speech_audio.files").countDocuments();
       const previousInterval = globalThis.setInterval, mockFetch = globalThis.fetch;
       globalThis.setInterval = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => previousInterval(callback, (delay ?? 0) >= 15000 ? 1 : delay, ...args)) as typeof setInterval;
       globalThis.fetch = async (_url, init) => {
@@ -250,12 +422,12 @@ test("on-demand GridFS cache coalesces claims, survives restart, and preserves p
         });
         throw new Error("Synthetic provider must abort.");
       };
-      try { await assert.rejects(cache.get(changed), error => error instanceof Error && "status" in error && error.status === 503); }
+      try { await assert.rejects(cache.get(changed), hasStatus(503)); }
       finally { globalThis.setInterval = previousInterval; globalThis.fetch = mockFetch; }
       assert.equal(await db.collection("speech_audio.files").countDocuments(), filesBefore);
       assert.equal(await db.collection("speech_audio_jobs").countDocuments({ owner: "synthetic-replacement-worker", state: "generating" }), 1);
     });
-    await t.test("ElevenLabs model and configured voice changes invalidate durable audio", async () => {
+    await t.test("ElevenLabs model and configured voice changes invalidate durable sections", async () => {
       delete process.env.IELTS_OPENAI_API_KEY;
       process.env.ELEVENLABS_API_KEY = "synthetic-eleven-key";
       process.env.ELEVENLABS_VOICE_BRITISH = "synthetic-british"; process.env.ELEVENLABS_VOICE_AMERICAN = "synthetic-american"; process.env.ELEVENLABS_VOICE_AUSTRALIAN = "synthetic-australian";
@@ -264,15 +436,15 @@ test("on-demand GridFS cache coalesces claims, survives restart, and preserves p
       const mockFetch = globalThis.fetch;
       globalThis.fetch = async url => { assert.match(String(url), /api\.elevenlabs\.io/u); elevenCalls++; return pcmResponse(); };
       try {
-        assert.equal((await cache.get(sections)).cached, false); assert.equal((await otherCache.get(sections)).cached, true);
+        assert.equal((await cache.get(sections)).cached, false); assert.equal((await otherCache.getReady(sections)).cached, true);
         process.env.ELEVENLABS_MODEL = "synthetic-model-two"; assert.equal((await cache.get(sections)).cached, false);
         process.env.ELEVENLABS_VOICE_BRITISH = "synthetic-british-updated"; assert.equal((await cache.get(sections)).cached, false);
         assert.equal(elevenCalls, 3);
       } finally { process.env.IELTS_OPENAI_API_KEY = syntheticKey; globalThis.fetch = mockFetch; }
     });
-    await t.test("cache metadata excludes keys, scripts and learner data, and private collections remain byte-equivalent", async () => {
+    await t.test("metadata excludes keys, raw scripts and learner data, and private collections remain byte-equivalent", async () => {
       const metadata = JSON.stringify((await db.collection("speech_audio.files").find().toArray()).map(file => file.metadata));
-      assert.doesNotMatch(metadata, /sk-synthetic|private-answer|synthetic-private-user|What time|Teacher|Student/u);
+      assert.doesNotMatch(metadata, /sk-synthetic|private-answer|synthetic-private-user|What time|Teacher|Student|Synthetic quota|Synthetic network/u);
       assert.deepEqual(await db.collection("users").find().toArray(), privateBefore.users);
       assert.deepEqual(await db.collection("recordings.files").find().toArray(), privateBefore.recordings);
       assert.ok((await db.listCollections().toArray()).every(collection => ["users", "recordings.files", "speech_audio.files", "speech_audio.chunks", "speech_audio_jobs"].includes(collection.name)));

@@ -15,7 +15,8 @@ import { resolve } from "node:path";
 import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
 import { ApiError } from "./errors";
-import { SpeechAudioCache, type SpeechAudioResult } from "./speech-audio";
+import { SpeechAudioCache, speechCapabilities, type SpeechAudioResult } from "./speech-audio";
+import { readSpeechPrewarmStatus } from "./speech-prewarm";
 import { placementDurationSeconds, suggestedPlacementSeconds } from "./placement-timing";
 import { ExamGuard, requireExamTab, type ExamTarget, type ExamResetResult } from "./exam-guard";
 import { createExamReplacement, examReplacementSourceIds, ExamReplacementUnavailableError } from "./exam-variants";
@@ -227,7 +228,20 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   const duoEnabled = config.duoEnabled ?? (production || process.env.DUO_ENABLED !== "false");
   const duoCredentials = duoEnabled ? config.duoCredentials ?? loadDuoCredentials() : undefined;
   const authOptions = duoCredentials ? { duo: duoCredentials } : {};
-  const duoService = duoEnabled ? createDuoService(database, config.duo) : null;
+  const speechAudio = new SpeechAudioCache(database);
+  async function requireReadyListening(contents: StoredContent[]): Promise<void> {
+    if (!speechCapabilities().configured) return;
+    const sections = contents.filter(content => content.skill === "listening").flatMap(content => content.sections);
+    if (!sections.length) return;
+    const readiness = await speechAudio.readiness(sections);
+    if (!readiness.ready) throw new ApiError(409, readiness.notice);
+  }
+  async function placementAudioReadiness() {
+    if (!speechCapabilities().configured) return speechAudio.readiness([]);
+    const items = await database.placementItems.find({ skill: "listening" }, { projection: { id: 1, text: 1 } }).toArray();
+    return speechAudio.readiness(items.map(item => ({ id: item.id, title: "", text: item.text })));
+  }
+  const duoService = duoEnabled ? createDuoService(database, { ...config.duo, ensureAudioReady: requireReadyListening }) : null;
   const demoEnabled = !duoEnabled &&
     (config.demoEnabled ?? (process.env.DEMO_ENABLED !== "false" && !production));
   const maxLearners =
@@ -235,7 +249,6 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   if (!Number.isInteger(maxLearners) || maxLearners < 1 || maxLearners > 100)
     throw new Error("MAX_LEARNERS must be between 1 and 100.");
   const app = express();
-  const speechAudio = new SpeechAudioCache(database);
   function sendSpeechAudio(response: Response, audio: SpeechAudioResult & { cached: boolean }): void {
     response.set({
       "Cache-Control": "private, no-store",
@@ -1002,6 +1015,27 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       response.status(201).json({ content: sanitizeContent(generated) });
     }),
   );
+  app.get(
+    "/api/content/:id/listening-audio/readiness",
+    asyncRoute(async (request, response) => {
+      const mode = z.enum(["practice", "exam"]).parse(request.query.mode || "practice");
+      let content = await contentOf(idOf(request));
+      const previous = await database.attempts.findOne({
+        userId: learnerOf(request).id, mode, status: "invalidated",
+        $or: [{ rootContentId: content.id }, { contentId: content.id }],
+      }, { sort: { startedAt: -1 } });
+      if (previous?.replacementContentId) content = await contentOf(previous.replacementContentId);
+      const audio = await speechAudio.readiness(content.skill === "listening" ? content.sections : []);
+      response.set("Cache-Control", "private, no-store").json({ audio });
+    }),
+  );
+  app.get(
+    "/api/listening-audio/status",
+    asyncRoute(async (request, response) => {
+      learnerOf(request);
+      response.set("Cache-Control", "private, no-store").json({ audio: await readSpeechPrewarmStatus(database.db) });
+    }),
+  );
   app.post(
     "/api/content/:id/audio",
     asyncRoute(async (request, response) => {
@@ -1021,7 +1055,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           "Exam chỉ phát bản nghe một lần. Chọn Practice để nghe lại.",
         );
       if (exam) await assertExamRequest(request, "attempt", exam.id);
-      const result = await speechAudio.get(content.sections);
+      const result = await speechAudio.getReady(content.sections);
       if (response.destroyed || response.writableEnded) return;
       if (exam) {
         await assertExamRequest(request, "attempt", exam.id);
@@ -1077,6 +1111,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         }
       }
       if (input.duoAssessmentId && !duoService) throw new ApiError(403, "Lộ trình Duo chưa được bật.");
+      await requireReadyListening([content]);
       const protectedContext = duoService ? await duoService.beforeAttempt(user, input) : {};
       if (protectedContext.existingAttemptId) {
         const bound = await database.attempts.findOne({ _id: protectedContext.existingAttemptId, userId: user.id, duoAssessmentId: input.duoAssessmentId, contentId: content.id });
@@ -1299,7 +1334,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       if (record.mode === "exam" && record.listeningPlayed)
         throw new ApiError(409, "Exam chỉ phát bản nghe một lần. Chọn Practice để nghe lại.");
       const content = await contentOf(record.contentId);
-      const audio = await speechAudio.get(content.sections);
+      const audio = await speechAudio.getReady(content.sections);
       if (response.destroyed || response.writableEnded) return;
       // A slow generator may finish after a tab violation, deadline or submit.
       // Cache generic authored audio, but never revive or mutate that sitting.
@@ -1985,6 +2020,13 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       response.json({ placement: record ? await placementView(record) : null });
     }),
   );
+  app.get(
+    "/api/placement/audio/readiness",
+    asyncRoute(async (request, response) => {
+      learnerOf(request);
+      response.set("Cache-Control", "private, no-store").json({ audio: await placementAudioReadiness() });
+    }),
+  );
   app.post(
     "/api/placement/:id/audio",
     asyncRoute(async (request, response) => {
@@ -1998,7 +2040,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         throw new ApiError(409, "Câu nghe này không còn là câu hiện tại.");
       const item = await database.placementItems.findOne({ _id: questionId });
       if (!item || item.skill !== "listening") throw new ApiError(400, "Câu hiện tại không phải bài nghe.");
-      const audio = await speechAudio.get([{ id: item.id, title: "", text: item.text }]);
+      const audio = await speechAudio.getReady([{ id: item.id, title: "", text: item.text }]);
       if (response.destroyed || response.writableEnded) return;
       await assertExamRequest(request, "placement", id);
       const latest = await database.placements.findOne({ _id: id, userId });
@@ -2016,6 +2058,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       const { mode } = z
         .object({ mode: z.enum(["quick", "deep"]).default("quick") })
         .parse(request.body);
+      const audioReadiness = await placementAudioReadiness();
+      if (!audioReadiness.ready) throw new ApiError(409, audioReadiness.notice);
       const userId = learnerOf(request).id;
       const existing = await database.placements.findOne(
         { userId, mode, currentQuestionId: { $ne: null } },

@@ -102,7 +102,7 @@ export interface BrowserSpeechOptions {
   onNotice?: (message: string) => void;
 }
 
-/** Fetches authenticated, exam-scoped audio without exposing provider credentials. */
+/** Fetches prepared, authenticated exam-scoped audio without exposing provider credentials. */
 export async function fetchListeningAudio(
   path: string,
   signal: AbortSignal,
@@ -123,9 +123,9 @@ export async function fetchListeningAudio(
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => null) as { error?: string } | null;
-    const message = payload?.error || "Không tạo được bản nghe AI.";
+    const message = payload?.error || "Không tải được bản nghe AI đã chuẩn bị.";
     throw new Error(response.status >= 500 || response.status === 429
-      ? `${message} Hãy thử lại khi dịch vụ sẵn sàng.` : message);
+      ? `${message} Hãy kiểm tra lại trạng thái âm thanh.` : message);
   }
   const blob = await response.blob();
   if (!blob.size) throw new Error("Bản nghe AI chưa có âm thanh. Hãy thử lại.");
