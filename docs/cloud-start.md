@@ -14,6 +14,8 @@ Bộ seed hiện tại **fresh-20261011-v3** gồm **810 lessons, 156 mocks, 648
 
 Bản cập nhật tăng ngân hàng lên ba lần bộ v2 và giữ mẫu sau nộp cho mọi Writing/Speaking Task/Part, giữ toàn bộ học liệu/tài khoản/tiến độ của bộ fresh đã dùng. [exam-upgrade.md](exam-upgrade.md) mô tả seed và công cụ cập nhật giữ dữ liệu. Không lặp lại reset của phiên trước khi startup.
 
+Sổ từ trong bài làm dùng collection thẻ từ hiện có, không cần migration/reset. Chọn từ trước nộp chỉ lưu từ và câu gốc; bài hoàn thành mở dịch theo ngữ cảnh bằng ngân hàng khớp câu hoặc khóa OpenAI riêng đang cấu hình. Lịch FSRS cũ được giữ; từ chờ nghĩa chưa vào lượt ôn. Xem [word-notebook.md](word-notebook.md).
+
 Mỗi task cloud đã chạy trong môi trường tách riêng. Làm trực tiếp trong checkout được chọn; chỉ tạo worktree nếu người dùng yêu cầu.
 
 Docker/Compose cần có nếu dùng local helper; nếu không, cấu hình MongoDB thật bên ngoài qua `MONGODB_URI`. Không thay bằng SQLite, JSON hoặc in-memory DB. Image chính thức ghim digest trong `compose.yaml`; không tắt TLS/checksums để tải dependencies.

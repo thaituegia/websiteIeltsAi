@@ -72,6 +72,7 @@ import {
   type RecordingSession,
 } from "./audio";
 import { SectionVisuals } from "./ContentVisual";
+import { WordNotebook, WordText } from "./WordNotebook";
 import "./learning.css";
 import { DuoPlacementStatus, DuoAttemptContext } from "./Duo";
 import {
@@ -950,7 +951,11 @@ export function PlacementPage() {
   }
   if (active.loading) return <Loading />;
   return (
-    <div className="stack page-stack placement-page">
+    <WordNotebook className="stack page-stack placement-page"
+      resource={{ kind: "placement", id: placement?.id || "" }}
+      review={!!placement?.result && !invalidated}
+      scopeKey={placement?.question?.id || "review"}
+      disabled={invalidated || (!placement?.result && (busy || !integrity.ready || remainingSeconds === 0))}>
       <PageHeader
         eyebrow="BẮT ĐẦU TỪ CHÍNH BẠN"
         title={reviewId ? "Xem lại bài kiểm tra đầu vào" : "Khám phá trình độ hiện tại"}
@@ -1115,11 +1120,11 @@ export function PlacementPage() {
           ) : (
             <div className="reading-passage placement-passage">
               {placement.question.text.split("\n").map((paragraph, index) => (
-                <p key={index}>{paragraph}</p>
+                <p key={index}><WordText text={paragraph} questionId={placement.question!.id} /></p>
               ))}
             </div>
           )}
-          <h2>{placement.question.question}</h2>
+          <h2><WordText text={placement.question.question} questionId={placement.question.id} /></h2>
           <div className="answer-options">
             {placement.question.options.map((option, index) => (
               <label
@@ -1137,7 +1142,7 @@ export function PlacementPage() {
                 <span className="option-letter">
                   {String.fromCharCode(65 + index)}
                 </span>
-                <span>{option}</span>
+                <span><WordText text={option} questionId={placement.question!.id} /></span>
               </label>
             ))}
           </div>
@@ -1198,11 +1203,11 @@ export function PlacementPage() {
               </Link>
             </div>
           </Card>
-          <FeedbackView feedback={placement.result} />
+          <FeedbackView feedback={placement.result} placementWords />
         </>
       )}
       {startMode && <ExamStartDialog busy={busy} onClose={() => !busy && setStartMode(null)} onStart={() => void start(startMode, true)} />}
-    </div>
+    </WordNotebook>
   );
 }
 
@@ -1391,7 +1396,7 @@ export function LearningPage() {
     return () => URL.revokeObjectURL(url);
   }, [audioBlob]);
   useEffect(() => {
-    if (!attempt?.content.vocabularyIds.length) return;
+    if (attempt?.status !== "submitted" || !attempt.content.vocabularyIds.length) return;
     let cancelled = false;
     const ids = attempt.content.vocabularyIds;
     async function loadWords() {
@@ -1430,7 +1435,7 @@ export function LearningPage() {
     return () => {
       cancelled = true;
     };
-  }, [attempt?.contentId]);
+  }, [attempt?.contentId, attempt?.status]);
   const submitted = attempt?.status === "submitted";
   const saveDraft = useCallback(async () => {
     if (!attempt || attempt.status !== "in-progress" || !canWrite.current) return;
@@ -1796,7 +1801,9 @@ export function LearningPage() {
   }
   const locked = submitted || busy || grading || remaining === 0 || (protectedExam && !integrity.ready);
   return (
-    <div className="stack page-stack learning-page">
+    <WordNotebook className="stack page-stack learning-page"
+      resource={{ kind: "attempt", id: attempt.id }} review={submitted}
+      scopeKey={section} disabled={!submitted && locked}>
       <DuoAttemptContext attempt={attempt} />
       {(roomIntegrity.requiresPresence || (protectedExam && !submitted && !grading)) && <ExamRules compact />}
       {grading && <div className="notice" role="status"><Clock3 size={20} /><span>Đã gửi bài, đang chờ máy chủ chấm. Câu trả lời đã được khóa; kết quả sẽ tự cập nhật khi chấm xong.</span></div>}
@@ -1974,7 +1981,7 @@ export function LearningPage() {
         >
           <Card className="passage-card">
             <div className="section-heading compact">
-              <h2>{activeSection?.title}</h2>
+              <h2><WordText text={activeSection?.title} sectionIndex={section} /></h2>
               <Badge>
                 {attempt.skill === "listening" ? "Transcript" : "Bài đọc"}
               </Badge>
@@ -1994,20 +2001,20 @@ export function LearningPage() {
             ) : (
               <>
                 <p className="passage-instructions">
-                  {activeSection?.instructions}
+                  <WordText text={activeSection?.instructions} sectionIndex={section} />
                 </p>
                 <div className="reading-passage">
                   {activeSection?.dialogue?.length
                     ? activeSection.dialogue.map((line, index) => (
                         <p key={index}>
-                          <strong>{line.speaker}:</strong> {line.text}
+                          <strong>{line.speaker}:</strong> <WordText text={line.text} sectionIndex={section} />
                         </p>
                       ))
                     : activeSection?.text
                         .split("\n")
                         .filter(Boolean)
                         .map((paragraph, index) => (
-                          <p key={index}>{paragraph}</p>
+                          <p key={index}><WordText text={paragraph} sectionIndex={section} /></p>
                         ))}
                 </div>
               </>
@@ -2038,7 +2045,7 @@ export function LearningPage() {
             <div className="section-heading compact">
               <div>
                 <Badge>Task {activeSection.task || section + 1}</Badge>
-                <h2>{activeSection.title}</h2>
+                <h2><WordText text={activeSection.title} sectionIndex={section} /></h2>
               </div>
               <span className="muted tiny">
                 {activeSection.task === 1
@@ -2048,11 +2055,11 @@ export function LearningPage() {
             </div>
             <div className="reading-passage">
               {activeSection.text.split("\n").map((paragraph, index) => (
-                <p key={index}>{paragraph}</p>
+                <p key={index}><WordText text={paragraph} sectionIndex={section} /></p>
               ))}
             </div>
             <SectionVisuals section={activeSection} />
-            <p className="prompt-instructions">{activeSection.instructions}</p>
+            <p className="prompt-instructions"><WordText text={activeSection.instructions} sectionIndex={section} /></p>
             {content.sections.length > 1 && (
               <p className="muted tiny">
                 Task 2 có trọng số gấp đôi Task 1 trong điểm Writing ước lượng.
@@ -2117,20 +2124,20 @@ export function LearningPage() {
         <div className="speaking-workspace">
           <Card className="speaking-prompt">
             <Badge>Part {section + 1}</Badge>
-            <h2>{activeSection?.title}</h2>
+            <h2><WordText text={activeSection?.title} sectionIndex={section} /></h2>
             <div className="reading-passage">
               {activeSection?.text.split("\n").map((paragraph, index) => (
-                <p key={index}>{paragraph}</p>
+                <p key={index}><WordText text={paragraph} sectionIndex={section} /></p>
               ))}
             </div>
             {activeSection?.cuePoints?.length && (
               <ul className="cue-points">
                 {activeSection.cuePoints.map((point) => (
-                  <li key={point}>{point}</li>
+                  <li key={point}><WordText text={point} sectionIndex={section} /></li>
                 ))}
               </ul>
             )}
-            <p className="prompt-instructions">{activeSection?.instructions}</p>
+            <p className="prompt-instructions"><WordText text={activeSection?.instructions} sectionIndex={section} /></p>
             <div className="notice">
               <Mic size={17} />
               <span>
@@ -2250,7 +2257,7 @@ export function LearningPage() {
         </div>
       )}
       {submitted && attempt.feedback && <FeedbackView feedback={attempt.feedback} />}
-      {!!vocabulary.length && (attempt.mode !== "exam" || submitted) && (
+      {!!vocabulary.length && submitted && (
         <Card className="lesson-vocabulary">
           <div className="section-heading compact">
             <h2>Từ vựng trong bài</h2>
@@ -2321,7 +2328,7 @@ export function LearningPage() {
           </div>
         </Modal>
       )}
-    </div>
+    </WordNotebook>
   );
 }
 
@@ -2365,8 +2372,8 @@ function MultipleChoiceGroup({ questions, value, onChange, disabled, feedback }:
   const question = questions[0], count = question.selectionGroup?.count || 1;
   const selected = parseSelections(value), complete = selected.length === count;
   return <fieldset className={`practice-question multiple-choice-group ${feedback.length ? (feedback.every(answer => answer.correct) ? "correct" : "incorrect") : ""}`}>
-    <legend><span className="question-number">{questions.map(item => item.number).join("–")}</span>{question.prompt}</legend>
-    <p className="question-limit">{question.groupInstructions || `Choose ${count} answers.`} <span className={complete ? "selection-complete" : ""}>({selected.length}/{count})</span></p>
+    <legend><span className="question-number">{questions.map(item => item.number).join("–")}</span><WordText text={question.prompt} sectionIndex={question.sectionIndex} /></legend>
+    <p className="question-limit"><WordText text={question.groupInstructions} sectionIndex={question.sectionIndex} />{!question.groupInstructions && `Choose ${count} answers.`} <span className={complete ? "selection-complete" : ""}>({selected.length}/{count})</span></p>
     <div className="answer-options">{(question.options || []).map((option, index) => {
       const checked = selected.includes(option);
       return <label key={option} className={`answer-option ${checked ? "selected" : ""} ${!checked && complete ? "option-at-limit" : ""}`}>
@@ -2374,7 +2381,7 @@ function MultipleChoiceGroup({ questions, value, onChange, disabled, feedback }:
           const next = checked ? selected.filter(item => item !== option) : [...selected, option];
           onChange(next.length ? JSON.stringify(next) : "");
         }} />
-        <span className="option-letter">{String.fromCharCode(65 + index)}</span><span>{option}</span>
+        <span className="option-letter">{String.fromCharCode(65 + index)}</span><span><WordText text={option} sectionIndex={question.sectionIndex} /></span>
       </label>;
     })}</div>
     {feedback.length > 0 && <div className="question-feedback"><strong>{feedback.filter(answer => answer.correct).length}/{questions.length} điểm</strong>{feedback.map(answer => <div key={answer.questionId}><p><b>Đáp án: {answer.answer}</b> · {answer.correct ? "Đã chọn đúng" : "Chưa chọn đúng"}</p><p>{answer.explanation}</p>{answer.evidence && <blockquote>{answer.evidence}</blockquote>}</div>)}</div>}
@@ -2389,15 +2396,15 @@ function CompletionBlock({ block, questions, responses, disabled, onChange, feed
   function filledText(text: string) {
     return text.split(/(\{\{\d+\}\})/gu).map((part, index) => {
       const match = /^\{\{(\d+)\}\}$/u.exec(part);
-      if (!match) return <span key={index}>{part}</span>;
+      if (!match) return <span key={index}><WordText text={part} sectionIndex={blockQuestions[0]?.sectionIndex} /></span>;
       const question = blockQuestions.find(item => item.number === Number(match[1]));
       if (!question) return <span key={index}>{match[1]} ……</span>;
       return <label key={index} className="completion-blank"><span className="blank-number">{question.number}</span><input aria-label={`Câu ${question.number}`} value={responses[question.id] || ""} disabled={disabled} onChange={event => onChange([question.id], event.target.value)} autoComplete="off" maxLength={500} placeholder="…………" /></label>;
     });
   }
   return <section className={`completion-block completion-${block.type}`} aria-label={block.title}>
-    <div className="completion-block-heading"><span className="question-number">{block.questionNumbers.length === 1 ? block.questionNumbers[0] : `${Math.min(...block.questionNumbers)}–${Math.max(...block.questionNumbers)}`}</span><h3>{block.title}</h3></div>
-    <p className="question-limit">{block.instructions}</p>
+    <div className="completion-block-heading"><span className="question-number">{block.questionNumbers.length === 1 ? block.questionNumbers[0] : `${Math.min(...block.questionNumbers)}–${Math.max(...block.questionNumbers)}`}</span><h3><WordText text={block.title} sectionIndex={blockQuestions[0]?.sectionIndex} /></h3></div>
+    <p className="question-limit"><WordText text={block.instructions} sectionIndex={blockQuestions[0]?.sectionIndex} /></p>
     {block.text && <div className="completion-prose">{filledText(block.text)}</div>}
     {block.rows?.length && (block.type === "table" ? <div className="completion-table-scroll"><table><tbody>{block.rows.map((row, index) => <tr key={index}>{row.label && <th scope="row">{filledText(row.label)}</th>}{row.cells.map((cell, cellIndex) => <td key={cellIndex}>{filledText(cell)}</td>)}</tr>)}</tbody></table></div> : <div className={`completion-rows ${block.type === "flow-chart" ? "completion-flow" : ""}`}>{block.rows.map((row, index) => <div key={index} className="completion-row">{row.label && <strong>{filledText(row.label)}</strong>}<div>{row.cells.map((cell, cellIndex) => <span key={cellIndex}>{filledText(cell)}{cellIndex < row.cells.length - 1 ? " " : ""}</span>)}</div></div>)}</div>)}
     {blockQuestions.flatMap(question => {
@@ -2432,7 +2439,7 @@ function QuestionInput({
     >
       <legend>
         <span className="question-number">{question.number}</span>
-        {question.prompt}
+        <WordText text={question.prompt} sectionIndex={question.sectionIndex} />
       </legend>
       {question.wordLimit && (
         <p className="question-limit">
@@ -2460,7 +2467,7 @@ function QuestionInput({
                   {String.fromCharCode(65 + index)}
                 </span>
               )}
-              <span>{option}</span>
+              <span><WordText text={option} sectionIndex={question.sectionIndex} /></span>
             </label>
           ))}
         </div>
@@ -2504,7 +2511,7 @@ function readableAnswer(value: string): string {
   return value;
 }
 
-function AnswerContext({ context, id }: { context: string; id: string }) {
+function AnswerContext({ context, id, questionId }: { context: string; id: string; questionId?: string }) {
   const [expanded, setExpanded] = useState(false);
   const regionId = `answer-context-${id}`;
   return (
@@ -2512,12 +2519,12 @@ function AnswerContext({ context, id }: { context: string; id: string }) {
       <Button className="secondary small" aria-expanded={expanded} aria-controls={regionId} onClick={() => setExpanded((previous) => !previous)}>
         {expanded ? "Ẩn nội dung gốc / transcript" : "Xem nội dung gốc / transcript"}
       </Button>
-      {expanded && <div id={regionId}>{context}</div>}
+      {expanded && <div id={regionId}><WordText text={context} questionId={questionId} /></div>}
     </div>
   );
 }
 
-function ObjectiveAnswerReview({ answers }: { answers: Feedback["answers"] }) {
+function ObjectiveAnswerReview({ answers, placementWords = false }: { answers: Feedback["answers"]; placementWords?: boolean }) {
   const [filter, setFilter] = useState<"all" | "wrong" | "unanswered">("all");
   const unanswered = (answer: Feedback["answers"][number]) =>
     readableAnswer(answer.response) === "Chưa trả lời";
@@ -2560,13 +2567,13 @@ function ObjectiveAnswerReview({ answers }: { answers: Feedback["answers"] }) {
                 <Badge className={answer.correct ? "success" : "warning"}>{status}</Badge>
               </summary>
               <div className="answer-review-body">
-                {answer.sectionTitle && <p className="eyebrow">{answer.sectionTitle}</p>}
-                {answer.prompt && <h4>{answer.prompt}</h4>}
+                {answer.sectionTitle && <p className="eyebrow"><WordText text={answer.sectionTitle} questionId={placementWords ? answer.questionId : undefined} /></p>}
+                {answer.prompt && <h4><WordText text={answer.prompt} questionId={placementWords ? answer.questionId : undefined} /></h4>}
                 {answer.options?.length ? (
                   <ul className="answer-review-options" aria-label="Các phương án trả lời">
                     {answer.options.map((option, optionIndex) => (
                       <li key={`${optionIndex}-${option}`} className={correctOptions.has(option) ? "answer-option-correct" : ""}>
-                        <span aria-hidden="true">{String.fromCharCode(65 + optionIndex)}.</span> {option}
+                        <span aria-hidden="true">{String.fromCharCode(65 + optionIndex)}.</span> <WordText text={option} questionId={placementWords ? answer.questionId : undefined} />
                         {correctOptions.has(option) && <span className="sr-only"> — Đáp án đúng</span>}
                       </li>
                     ))}
@@ -2574,12 +2581,12 @@ function ObjectiveAnswerReview({ answers }: { answers: Feedback["answers"] }) {
                 ) : null}
                 <div className="answer-comparison">
                   <p><strong>Bạn trả lời:</strong> <span>{readableAnswer(answer.response)}</span></p>
-                  <p className="answer-correct-value"><strong>Đáp án đúng:</strong> <span>{readableAnswer(answer.answer)}</span></p>
+                  <p className="answer-correct-value"><strong>Đáp án đúng:</strong> <span><WordText text={readableAnswer(answer.answer)} questionId={placementWords ? answer.questionId : undefined} /></span></p>
                 </div>
                 {!!alternatives.length && <p><strong>Cũng chấp nhận:</strong> {alternatives.map(readableAnswer).join(" · ")}</p>}
-                <p><strong>Giải thích:</strong> {answer.explanation}</p>
-                {answer.evidence && <blockquote><span className="eyebrow">BẰNG CHỨNG TRONG BÀI</span><br />{answer.evidence}</blockquote>}
-                {answer.context && <AnswerContext context={answer.context} id={answer.questionId} />}
+                <p><strong>Giải thích:</strong> <WordText text={answer.explanation} questionId={placementWords ? answer.questionId : undefined} /></p>
+                {answer.evidence && <blockquote><span className="eyebrow">BẰNG CHỨNG TRONG BÀI</span><br /><WordText text={answer.evidence} questionId={placementWords ? answer.questionId : undefined} /></blockquote>}
+                {answer.context && <AnswerContext context={answer.context} id={answer.questionId} questionId={placementWords ? answer.questionId : undefined} />}
                 <p className="muted tiny">{answer.questionType?.replaceAll("-", " ") || answer.subskill.replaceAll("-", " ")}</p>
               </div>
             </details>
@@ -2602,18 +2609,18 @@ function ReferenceAnswerReview({ feedback }: { feedback: Feedback }) {
       <div className="reference-answers">
         {feedback.referenceAnswers.map((reference) => (
           <article key={reference.sectionId} className="reference-answer" aria-label={reference.title}>
-            <h4>{reference.title}</h4>
-            {reference.sampleAnswer && <div className="reference-sample" lang="en">{reference.sampleAnswer}</div>}
+            <h4><WordText text={reference.title} /></h4>
+            {reference.sampleAnswer && <div className="reference-sample" lang="en"><WordText text={reference.sampleAnswer} /></div>}
             {reference.responses?.map((response, index) => (
               <div key={`${index}-${response.prompt}`} className="reference-response">
-                <h5>{response.prompt}</h5>
-                <p className="reference-sample" lang="en">{response.sampleAnswer}</p>
-                {response.explanation && <p><strong>Gợi ý triển khai:</strong> {response.explanation}</p>}
+                <h5><WordText text={response.prompt} /></h5>
+                <p className="reference-sample" lang="en"><WordText text={response.sampleAnswer} /></p>
+                {response.explanation && <p><strong>Gợi ý triển khai:</strong> <WordText text={response.explanation} /></p>}
               </div>
             ))}
-            {reference.explanation && <p><strong>Cách tiếp cận:</strong> {reference.explanation}</p>}
+            {reference.explanation && <p><strong>Cách tiếp cận:</strong> <WordText text={reference.explanation} /></p>}
             {!!reference.keyPoints.length && (
-              <><h5>Điểm cần chú ý</h5><ul>{reference.keyPoints.map((point, index) => <li key={index}>{point}</li>)}</ul></>
+              <><h5>Điểm cần chú ý</h5><ul>{reference.keyPoints.map((point, index) => <li key={index}><WordText text={point} /></li>)}</ul></>
             )}
           </article>
         ))}
@@ -2622,7 +2629,7 @@ function ReferenceAnswerReview({ feedback }: { feedback: Feedback }) {
   );
 }
 
-function FeedbackView({ feedback }: { feedback: Feedback }) {
+function FeedbackView({ feedback, placementWords = false }: { feedback: Feedback; placementWords?: boolean }) {
   return (
     <section className="feedback-section stack">
       <div className="section-heading">
@@ -2803,7 +2810,7 @@ function FeedbackView({ feedback }: { feedback: Feedback }) {
           </p>
         </Card>
       )}
-      {!!feedback.answers.length && <ObjectiveAnswerReview answers={feedback.answers} />}
+      {!!feedback.answers.length && <ObjectiveAnswerReview answers={feedback.answers} placementWords={placementWords} />}
       <ReferenceAnswerReview feedback={feedback} />
     </section>
   );

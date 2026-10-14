@@ -17,6 +17,8 @@ import { pipeline } from "node:stream/promises";
 import { ApiError } from "./errors";
 import { SpeechAudioCache, speechCapabilities, type SpeechAudioResult } from "./speech-audio";
 import { readSpeechPrewarmStatus } from "./speech-prewarm";
+import { registerWordNotebookRoutes } from "./word-notebook";
+import type { WordTranslationOptions } from "./word-translation";
 import { placementDurationSeconds, suggestedPlacementSeconds } from "./placement-timing";
 import { ExamGuard, requireExamTab, type ExamTarget, type ExamResetResult } from "./exam-guard";
 import { createExamReplacement, examReplacementSourceIds, ExamReplacementUnavailableError } from "./exam-variants";
@@ -88,6 +90,8 @@ export interface AppConfig {
   examIntegrityEnabled?: boolean;
   duoCredentials?: DuoCredentialSettings;
   duo?: Parameters<typeof createDuoService>[1];
+  /** Isolated tests can inject a controlled dictionary transport. */
+  wordTranslation?: WordTranslationOptions;
 }
 const skills = [
   "reading",
@@ -217,7 +221,8 @@ function cardOf(card: CardRecord): VocabularyCard {
     reviewLog: _logs,
     ...view
   } = card;
-  return { ...view, ...vocabularyMetrics(card.scheduler) };
+  const metrics = vocabularyMetrics(card.scheduler);
+  return { ...view, ...metrics, ...(card.meaningStatus === "pending" ? { due: false } : {}) };
 }
 function planOf(plan: PlanRecord): StudyPlan {
   const { _id: _id, userId: _userId, ...view } = plan;
@@ -1749,6 +1754,20 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       });
     }),
   );
+  registerWordNotebookRoutes(app, database, {
+    now: clockNow,
+    inspectSource: async (request, kind, id) => {
+      if (!examIntegrityEnabled) return;
+      const user = learnerOf(request);
+      const session = await guard.inspectResource(user, kind, id);
+      // A submitted intermediate Duo part can still belong to an active
+      // monitored sitting. Completed independent reviews need no tab lease.
+      if (session?.status === "active")
+        await guard.assert(user, kind, id, requireExamTab(request.get("X-Exam-Tab")));
+    },
+    assertActiveRequest: (request, kind, id) => assertExamRequest(request, kind, id),
+    translation: config.wordTranslation,
+  });
   app.get(
     "/api/vocabulary/cards",
     asyncRoute(async (request, response) => {
@@ -1787,9 +1806,27 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       if (!word || !meaning)
         throw new ApiError(400, "Cần từ và nghĩa để tạo flashcard.");
       const userId = learnerOf(request).id;
+      const resolveExisting = async (card: CardRecord): Promise<CardRecord> => {
+        // Adding an explicit definition in the notebook can complete a word
+        // captured during a paper. Keep its scheduling and review history.
+        if (card.meaningStatus !== "pending") return card;
+        return await database.cards.findOneAndUpdate(
+          { _id: card.id, userId, meaningStatus: "pending" },
+          {
+            $set: {
+              meaning, meaningStatus: "ready",
+              ...(vocabulary ? { vocabularyId: vocabulary.id, cefr: vocabulary.cefr,
+                topic: vocabulary.topic, definition: vocabulary.definition,
+                partOfSpeech: vocabulary.partOfSpeech } : {}),
+            },
+            $unset: { translationSource: "", translationContext: "" },
+          },
+          { returnDocument: "after" },
+        ) ?? await database.cards.findOne({ _id: card.id, userId }) ?? card;
+      };
       const existing = await database.cards.findOne({ userId, word });
       if (existing) {
-        response.json({ card: cardOf(existing) });
+        response.json({ card: cardOf(await resolveExisting(existing)) });
         return;
       }
       const scheduler = newScheduler();
@@ -1816,7 +1853,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           throw error;
         const duplicate = await database.cards.findOne({ userId, word });
         if (!duplicate) throw error;
-        response.json({ card: cardOf(duplicate) });
+        response.json({ card: cardOf(await resolveExisting(duplicate)) });
         return;
       }
       response.status(201).json({ card: cardOf(card) });
@@ -1838,6 +1875,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       const userId = learnerOf(request).id;
       const card = await database.cards.findOne({ _id: idOf(request), userId });
       if (!card) throw new ApiError(404, "Không tìm thấy flashcard của bạn.");
+      if (card.meaningStatus === "pending")
+        throw new ApiError(409, "Từ này chưa có nghĩa. Hãy dịch khi xem lại bài đã nộp trước khi ôn thẻ.");
       const review = scheduleReview(card.scheduler, rating);
       const updated = await database.cards.findOneAndUpdate(
         { _id: card.id, userId, scheduler: card.scheduler },

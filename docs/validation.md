@@ -1,5 +1,15 @@
 # Kết quả kiểm tra
 
+## Sổ từ trong bài làm và nghĩa khi xem lại — 2026-10-14
+
+Thêm chọn từ trực tiếp trong bài học, thi và placement: lưu một từ/câu gốc vào sổ riêng trước nộp, chỉ mở nghĩa theo ngữ cảnh sau khi hoàn thành hợp lệ. Không mở tab mới, đổi đáp án hoặc đặt lại đồng hồ. Từ chờ nghĩa chưa được ôn FSRS; bổ sung nghĩa giữ lịch và lịch sử. Bản cập nhật không thay ngân hàng đề, rank/lộ trình hoặc khóa provider.
+
+**55/55 kiểm tra native đạt** trên MongoDB thật trong namespace tổng hợp riêng, gồm 18 kiểm tra HTTP của sổ từ và hồi quy API, placement timing, Duo/integrity. Bao phủ owner, nguồn/câu hiển thị, transcript ẩn, chống trùng và đồng thời, mock provider/cache/timeout/retry, chặn tra trước nộp, hủy trong lúc provider đang xử lý, ngữ cảnh đa nghĩa, giữ FSRS, và phần Duo đã nộp nhưng lease của cả lượt vẫn còn hoạt động/hết hạn/reset chưa hoàn tất.
+
+**6/6 kiểm tra trình duyệt tính năng mới đạt**: ba tình huống trên desktop và mobile, gồm thi có giám sát, lưu lại/ngữ cảnh mới, sổ từ sau reload, retry và bỏ phản hồi khi phần hiển thị đã đổi, nghĩa inline và cô lập hai người; placement hoàn thành thật và mở lại review. Hồi quy bài mẫu Writing/Speaking, đáp án placement/chọn nhiều và FSRS: 9/10 đạt ở lượt đầu; một tình huống Speaking mobile gặp lỗi dịch vụ tại dashboard trước khi mở bài, chạy lại riêng đạt. Không sửa hay nới assertion để bỏ qua lỗi đó.
+
+Strict TypeScript và Vite release build đạt. Các transport OpenAI đều bị mock hoặc vô hiệu hóa trong fixture; không gọi API trả phí, không thao tác tài khoản học thật. Snapshot xác nhận giữ nguyên 700 bản ghi nền và indexes trong 10 collection của database phát triển; quét mã public/frontend không có khóa hoặc danh tính riêng. Logs ở ignored `.local/word-notebook`. Đây là kiểm tra cloud; cần chạy updater trên VPS để áp dụng production.
+
 ## Chibi và lộ trình cá ngựa — 2026-10-12
 
 Toàn bộ giao diện dùng kem, san hô, mint, lilac và vàng nhẹ, với minh họa chibi mới, logo/avatar/favicon cá ngựa và font Be Vietnam Pro được phục vụ tại chỗ. Bàn cờ có hai quân khác màu, tên đầy đủ trong bảng tiến độ và nhãn truy cập; vị trí là buổi chưa hoàn thành tiếp theo hoặc mốc chờ theo dữ liệu riêng của mỗi người. Một người học xong chỉ di chuyển quân của người đó; Gate chưa đủ hai kết quả đạt vẫn giữ các buổi tiếp theo khóa. Chọn ô chỉ cuộn/focus thẻ buổi học, không ghi tiến độ.

@@ -39,6 +39,10 @@ Duo is the default and production mode. Only the two private configured phone id
 | GET vocabulary/cards | — | `{cards:VocabularyCard[],dueCount:number}`. |
 | POST vocabulary/cards | `{vocabularyId}` or `{word,meaning,example?,cefr?,topic?}` | `{card}`; idempotent owner save. |
 | POST vocabulary/cards/:id/review | `{rating:1}` through `{rating:4}` | `{card}` with real FSRS scheduling. |
+| POST attempts/:id/words | `{word,context?,sectionIndex?}` | `{saved:{cardId,word,alreadySaved}}`; owner-scoped visible single-word capture, no definition or answer material. Active exam tab checks remain enforced. |
+| POST attempts/:id/words/translate | Same body | `{translation,card?}`; only owned, valid submitted work. Contextual Vietnamese meaning inline; saved pending card enriched only for its matching context, preserving FSRS/history. |
+| POST placement/:id/words | `{word,context?,questionId?}` | Same save-only response. Active tests accept only the currently served question and exclude hidden Listening text. |
+| POST placement/:id/words/translate | Same body | Same translation response; only valid completed tests and questions actually served to the owner. |
 | GET plan | — | `{plan:StudyPlan}` for legacy/personal recommendations; never a source of Duo unlock authority. |
 | PATCH plan/tasks/:id | `{completed:boolean}` | Legacy task status only; cannot bypass Duo lesson proof, Gate or promotion. |
 | GET errors | — | `ErrorNotebook` owned by the current learner. |
@@ -46,6 +50,8 @@ Duo is the default and production mode. Only the two private configured phone id
 | DELETE account/history | `{confirm:true}` | 409 in Duo to preserve qualifying evidence and retained results. |
 
 ## Shared Duo learning path
+
+Selected words reuse the personal vocabulary collection. Pending cards have `meaningStatus:'pending'`, an empty meaning and source context, and are excluded from due-card review until enriched. Translation uses a matching bank example or the configured private OpenAI binding with a short timeout; provider failures preserve the saved word. See [word-notebook.md](word-notebook.md).
 
 All Duo endpoints require one of the configured identities. A request cannot set members, band, threshold, scores, readiness of another person or curriculum. Two completed placements create one shared path at `MIN(A,B)`, restricted to half-band steps from 3.0 to 8.0. New placement estimates do not reset the path. Default curriculum is 20 sessions/band, Gate every 5 sessions; server configuration can choose 10 or vary session count per band.
 

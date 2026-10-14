@@ -36,7 +36,7 @@ import type {
   VocabularyCard,
   VocabularyEntry,
 } from "../shared/types";
-import { api, json } from "./api";
+import { api, ApiError, json } from "./api";
 import { useApi, useSession } from "./hooks";
 import {
   Badge,
@@ -784,8 +784,28 @@ export function VocabularyPage() {
       setBusy("");
     }
   }
+  async function translateSavedWord(card: VocabularyCard) {
+    if (!card.origin || busy) return;
+    setBusy(card.id); setError(""); setNotice("");
+    const origin = card.origin;
+    try {
+      const result = await api<{ translation: { meaning: string } }>(
+        `/${origin.kind === "attempt" ? "attempts" : "placement"}/${encodeURIComponent(origin.resourceId)}/words/translate`,
+        { method: "POST", body: json({ word: card.word, context: origin.context,
+          ...(origin.questionId ? { questionId: origin.questionId } : {}),
+          ...(origin.sectionIndex !== undefined ? { sectionIndex: origin.sectionIndex } : {}),
+        }), timeoutMs: 20_000 },
+      );
+      await cards.reload();
+      setNotice(`${card.word}: ${result.translation.meaning}`);
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 409)
+        setNotice("Nghĩa của từ được mở khi xem lại bài đã nộp. Bạn có thể tiếp tục bài nguồn rồi quay lại sổ từ.");
+      else setError(errorMessage(cause));
+    } finally { setBusy(""); }
+  }
   const saved = new Set(cards.data?.cards.map((card) => card.vocabularyId));
-  const due = cards.data?.cards.filter((card) => card.due) || [];
+  const due = cards.data?.cards.filter((card) => card.due && card.meaningStatus !== "pending") || [];
   const activeCard = due[0];
   return (
     <div className="stack page-stack campaign-vocabulary">
@@ -1019,21 +1039,36 @@ export function VocabularyPage() {
                     </button>
                     <Badge>{card.cefr}</Badge>
                   </div>
-                  <p>{card.meaning}</p>
+                  <p>{card.meaningStatus === "pending" ? "Đã lưu từ · xem nghĩa sau khi nộp bài nguồn." : card.meaning}</p>
                   {card.example && (
                     <p className="muted italic">{card.example}</p>
+                  )}
+                  {card.origin && (
+                    <div className="row wrap">
+                      <Link className="text-link" to={card.origin.kind === "attempt"
+                        ? `/learn/${encodeURIComponent(card.origin.resourceId)}`
+                        : `/placement?review=${encodeURIComponent(card.origin.resourceId)}`}>
+                        <BookOpen size={14} /> Mở bài nguồn
+                      </Link>
+                      {card.meaningStatus === "pending" && (
+                        <Button className="secondary small" disabled={!!busy}
+                          onClick={() => void translateSavedWord(card)}>
+                          <Sparkles size={14} /> {busy === card.id ? "Đang dịch…" : "Dịch nghĩa"}
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
                 <div className="saved-card-schedule">
                   <Badge className={card.due ? "due" : ""}>
-                    {card.due
+                    {card.meaningStatus === "pending" ? "Chờ nghĩa sau nộp bài" : card.due
                       ? "Đến hạn ôn"
                       : `Ôn tiếp ${dateLabel(card.dueAt)}`}
                   </Badge>
-                  <small>
+                  {card.meaningStatus !== "pending" && <small>
                     {card.reps} lần ôn · Độ ổn định {card.stability.toFixed(1)}{" "}
                     ngày
-                  </small>
+                  </small>}
                 </div>
               </Card>
             ))}

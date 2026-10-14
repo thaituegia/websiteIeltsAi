@@ -235,6 +235,42 @@ export interface VocabularyCard {
   reps: number;
   due: boolean;
   savedAt: string;
+  /** Captured during a lesson/exam; its meaning is resolved after submission. */
+  meaningStatus?: "pending" | "ready";
+  origin?: WordOrigin;
+  translationSource?: WordTranslation["source"];
+  translationContext?: string;
+  definition?: string;
+  partOfSpeech?: string;
+}
+export interface WordOrigin {
+  kind: "attempt" | "placement";
+  resourceId: string;
+  questionId?: string;
+  sectionIndex?: number;
+  /** Bounded sentence taken from material visible to this learner. */
+  context: string;
+}
+export interface WordRequest {
+  word: string;
+  context?: string;
+  sectionIndex?: number;
+  questionId?: string;
+}
+export interface WordSaveResult {
+  saved: { cardId: string; word: string; alreadySaved: boolean };
+}
+export interface WordTranslation {
+  word: string;
+  meaning: string;
+  definition?: string;
+  partOfSpeech?: string;
+  source: "bank" | "openai";
+  context: string;
+}
+export interface WordTranslationResult {
+  translation: WordTranslation;
+  card?: VocabularyCard;
 }
 export interface CriterionFeedback {
   name: string;

@@ -92,6 +92,8 @@ export const test = base.extend<DuoBrowserOptions & { duoServer: DuoBrowserServe
         examIntegrityEnabled: integrityEnabled ?? false,
         demoEnabled: false,
         serveClient: true,
+        // Browser fixtures must never fall through to a developer's AI binding.
+        wordTranslation: { apiKey: () => "" },
         duo: {
           sessionsPerBand: 10,
           gateInterval: 5,
