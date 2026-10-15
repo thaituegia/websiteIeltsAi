@@ -771,17 +771,19 @@ export async function evaluateSpeaking(
   content: StoredContent,
   suppliedTranscript: string,
   audio?: AudioInput,
-  onProgress?: (event: { stage: string; transcript?: string }) => void,
+  onProgress?: (event: { stage: string; transcript?: string }) => void | Promise<void>,
 ): Promise<Feedback> {
   let transcript = suppliedTranscript.trim();
   let transcriptSource = "người học nhập";
+  let recognized = false;
   if (audio) {
     audioFormat(audio);
     if (openAIKey()) {
-      onProgress?.({ stage: "transcribing" });
+      await onProgress?.({ stage: "transcribing" });
       transcript = await transcribe(audio);
       transcriptSource = "Whisper STT";
-      onProgress?.({ stage: "transcribed", transcript });
+      recognized = true;
+      await onProgress?.({ stage: "transcribed", transcript });
     } else if (!transcript)
       throw new ApiError(
         503,
@@ -792,11 +794,12 @@ export async function evaluateSpeaking(
     throw new ApiError(400, "Hãy ghi âm hoặc nhập transcript trước khi nộp.");
   let pronunciation: Feedback["pronunciation"] = null;
   if (audio && services().azure) {
-    onProgress?.({ stage: "pronunciation" });
+    await onProgress?.({ stage: "pronunciation" });
     pronunciation = await assessPronunciation(audio);
   }
   const result = baseFeedback("speaking", openAIKey() ? "ai" : "rule-based");
   result.transcript = transcript;
+  result.transcriptSource = recognized ? "speech-recognition" : "typed";
   result.wordCount = words(transcript);
   result.pronunciation = pronunciation;
   result.fillerCount =
@@ -822,9 +825,9 @@ export async function evaluateSpeaking(
     }));
     return result;
   }
-  onProgress?.({ stage: "scoring" });
+  await onProgress?.({ stage: "scoring" });
   if (audio && !pronunciation && process.env.SPEAKING_AUDIO_MODEL?.trim() && audioFormat(audio) === "wav") {
-    onProgress?.({ stage: "audio-scoring" });
+    await onProgress?.({ stage: "audio-scoring" });
     const graded = await gradeSpeakingAudio(content, transcript, audio);
     result.criteria = graded.criteria;
     result.corrections = graded.corrections;

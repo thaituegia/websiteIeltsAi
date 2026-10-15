@@ -2489,3 +2489,116 @@
 .exam-integrity-rules.compact { padding: 14px 18px; }
 .exam-integrity-invalidated { border-color: #b6503b; background: #fff2eb; }
 .exam-integrity-invalidated > svg { color: #b6503b; }
+.listening-review-player {
+  margin-bottom: 22px;
+}
+
+.review-audio-player {
+  width: 100%;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface, #fff);
+}
+
+.review-audio-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.review-audio-heading svg {
+  flex-shrink: 0;
+}
+
+.review-audio-player audio {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin-top: 12px;
+}
+
+.review-audio-seek {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.review-audio-seek label {
+  display: grid;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.review-audio-seek input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--teal);
+}
+
+.review-audio-seek output {
+  flex-shrink: 0;
+  padding-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.review-audio-actions label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-audio-actions select {
+  width: auto;
+  min-width: 66px;
+  padding: 7px;
+}
+
+.review-audio-player .notice {
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.speaking-recording-review {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+}
+
+.speaking-recording-review h3 {
+  margin: 0 0 8px;
+}
+
+.speaking-recording-review .feedback-transcript {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.speaking-saved-prompts {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.speaking-saved-prompts summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.speaking-saved-prompts article + article {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}

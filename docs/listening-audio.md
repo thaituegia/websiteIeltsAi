@@ -30,6 +30,16 @@ Kho bài và kiểm tra audio trên giao diện có giới hạn 10 giây, hiể
 
 Response có `X-Speech-Provider`, `X-Speech-Voices` (số giọng thực tế dùng) và `X-Speech-Cache: hit`; health có `services.speech` mô tả cấu hình. Các GET `/api/content/:id/listening-audio/readiness`, `/api/placement/audio/readiness`, `/api/listening-audio/status` cần đăng nhập, chỉ đọc trạng thái/count; không lộ lời thoại/đáp án hoặc tạo audio. Nút kiểm tra lại trên giao diện chỉ gọi GET. Route `POST /api/content/:id/audio` cũ vẫn tương thích và chỉ đọc cache. Speaking ghi âm/nhận dạng/chấm điểm được giữ nguyên.
 
+## Nghe lại sau nộp và đối chiếu Speaking
+
+Khi xem kết quả Listening, mỗi phần vẫn có audio và transcript. Player có thanh tua, thời gian hiện tại/tổng, lùi/tiến 10 giây và tốc độ 0.75×–1.5×. Chuyển phần đổi đúng audio của phần đó. Bài đầu vào đã hoàn thành có thể mở lại audio của câu Listening đã được phục vụ trong chính bài đó. Trong lúc thi, quy tắc nghe một lần vẫn giữ nguyên.
+
+`GET /api/attempts/:id/listening-audio?sectionIndex=0` và `GET /api/placement/:id/audio?questionId=...` chỉ phát lại bài đã hoàn thành hợp lệ của người đăng nhập. Các route GET chỉ đọc audio đã chuẩn bị, không tạo lại giọng hoặc gọi nhà cung cấp. HTTP hỗ trợ một byte Range với `206`/`Content-Range`, từ chối range sai bằng `416` và trả `Cache-Control: private, no-store`. Cache thiếu/hỏng báo lỗi cùng nút thử lại; transcript vẫn hiển thị. POST nghe trong lượt đang thi tiếp tục dùng hợp đồng cũ và không được dùng để phát lại lượt đã hoàn thành.
+
+Speaking giữ cách luyện hiện tại: đề/câu hỏi và một bản ghi chung của người học. Với lượt mới, câu hỏi gốc được chụp tại lúc tạo lượt; lượt cũ chưa có bản chụp được ghi rõ là học liệu hiện tại. Màn hình kết quả hiển thị bản ghi server đã lưu với thanh tua và transcript bên cạnh. `GET /api/attempts/:id/audio` hỗ trợ Range và kiểm tra chủ sở hữu, trạng thái lượt, metadata GridFS và con trỏ tới đúng file. Phiên Duo còn giám sát dùng fetch với header phiên thi rồi phát blob trong trang; các bài hoàn thành khác phát trực tiếp bằng HTTP Range.
+
+Whisper hoàn tất phiên âm thì máy chủ lưu transcript gắn với đúng file trước khi gọi các bước chấm sau. Nếu chấm lỗi, bản ghi và phần phiên âm đã nhận được vẫn được giữ để thử lại; thay file mới xóa nguồn nhận dạng của file cũ. Giao diện phân biệt **Transcript AI nghe được**, **Transcript bạn đã nhập** và bài cũ chưa xác định nguồn. Chỉ có transcript nhập tay không được ghi nhãn là AI nhận dạng. Tính năng này không tạo hội thoại AI hỏi đáp mới hoặc tự chia một bản ghi chung thành các lượt nói không được ghi nhận.
+
 ## Triển khai
 
 `deploy/run-speech-update.py` nhận commit và SHA256 archive đã ghim, gọi updater giữ dữ liệu hiện tại rồi tạo container worker riêng từ cùng image app. Worker có 384 MiB RAM, không thêm swap, 0,25 CPU, filesystem chỉ đọc, không capabilities, không mở cổng và log có giới hạn. Chỉ worker tham gia cả mạng dữ liệu riêng và mạng web để gọi nhà cung cấp. Cấu hình/key nằm trong file riêng hoặc được mở trong bộ nhớ; không đưa key vào lệnh hoặc frontend. Không reset band/tài khoản/tiến độ. Lệnh không khẳng định cả kho đã hoàn tất ngay: theo dõi log/count, bài nào đủ audio sẽ mở, toàn bộ kho tiếp tục được chuẩn bị.

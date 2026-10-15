@@ -294,6 +294,7 @@ test("AI adapters: honest offline, two-stage evidence, weighting, provider error
           }),
         async () => {
           const result = await evaluateSpeaking(content("speaking"), essay);
+          assert.equal(result.transcriptSource, "typed");
           assert.equal(result.estimatedBand, null);
           assert.equal(result.pronunciation, null);
           assert.equal(
@@ -348,11 +349,12 @@ test("AI adapters: honest offline, two-stage evidence, weighting, provider error
             content("speaking"),
             "",
             { buffer: wav(), mimetype: "audio/wav" },
-            (event) => stages.push(event.stage),
+            (event) => { stages.push(event.stage); },
           );
           assert.equal(calls, 2);
           assert.deepEqual(stages, ["transcribing", "transcribed", "scoring"]);
           assert.equal(result.transcript, essay);
+          assert.equal(result.transcriptSource, "speech-recognition");
           assert.equal(result.estimatedBand, null);
           assert.match(result.summary, /Whisper STT/);
         },

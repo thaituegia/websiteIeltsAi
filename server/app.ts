@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
 import { ApiError } from "./errors";
+import { setAudioRange } from "./audio-range";
 import { SpeechAudioCache, speechCapabilities, type SpeechAudioResult } from "./speech-audio";
 import { readSpeechPrewarmStatus } from "./speech-prewarm";
 import { registerWordNotebookRoutes } from "./word-notebook";
@@ -47,6 +48,7 @@ import {
   profileOf,
   type Database,
   type AttemptRecord,
+  type AudioRecord,
   type CardRecord,
   type PlacementRecord,
   type PlanRecord,
@@ -259,14 +261,24 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   if (!Number.isInteger(maxLearners) || maxLearners < 1 || maxLearners > 100)
     throw new Error("MAX_LEARNERS must be between 1 and 100.");
   const app = express();
-  function sendSpeechAudio(response: Response, audio: SpeechAudioResult & { cached: boolean }): void {
+  function sendSpeechAudio(response: Response, audio: SpeechAudioResult & { cached: boolean }, rangeHeader?: string): void {
     response.set({
       "Cache-Control": "private, no-store",
       "X-Speech-Provider": audio.provider,
       "X-Speech-Voices": String(audio.voiceCount),
       "X-Speech-Cache": audio.cached ? "hit" : "miss",
     });
-    response.type(audio.mimetype).send(audio.buffer);
+    const range = setAudioRange(response, rangeHeader, audio.buffer.length);
+    if (range === false) return;
+    response.type(audio.mimetype).send(audio.buffer.subarray(range.start, range.end + 1));
+  }
+  async function inspectAudioSource(request: Request, kind: "attempt" | "placement", id: string): Promise<void> {
+    if (!examIntegrityEnabled) return;
+    const user = learnerOf(request), session = await guard.inspectResource(user, kind, id);
+    // Submitted Duo parts can still be attached to an active guarded sitting.
+    if (session?.status === "active")
+      await guard.assert(user, kind, id, requireExamTab(request.get("X-Exam-Tab")));
+    if (session?.status === "invalidated") throw new ApiError(409, "Lượt đã bị hủy; không thể mở âm thanh.");
   }
   app.disable("x-powered-by");
   app.set(
@@ -663,7 +675,22 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     if (!heldLeaseToken) submissionLocks.add(lockKey);
     let leaseToken: string | undefined = heldLeaseToken;
     let detectedTranscript: string | undefined;
+    // Pin provenance to the exact recording being evaluated. A later upload
+    // must never inherit recognition text from an older file.
+    let recognitionRecording: AudioRecord | null = null;
+    const retainRecognizedTranscript = async () => {
+      if (!detectedTranscript || !recognitionRecording) return;
+      const current = await database.attempts.findOne({ _id: record.id, userId: record.userId, status: "in-progress", "submissionLease.token": leaseToken,
+        "submissionLease.expiresAt": { $gt: new Date(clockNow()).toISOString() } });
+      if (!current || current.invalidatedAt) return;
+      await database.audio.updateOne({
+        _id: recognitionRecording._id, userId: record.userId, attemptId: record.id,
+        fileId: recognitionRecording.fileId,
+      }, { $set: { recognizedTranscript: detectedTranscript } });
+    };
     try {
+      recognitionRecording = record.skill === "speaking"
+        ? await database.audio.findOne({ userId: record.userId, attemptId: record.id }) : null;
       if (heldLeaseToken) {
         if ((latest as LeasedAttempt).submissionLease?.token !== heldLeaseToken)
           throw new ApiError(409, "Phiên lưu bài đã thay đổi. Hãy tải lại.");
@@ -720,8 +747,11 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
                   content,
                   transcript ?? latest.transcript,
                   audio,
-                  (event) => {
-                    if (event.transcript) detectedTranscript = event.transcript;
+                  async (event) => {
+                    if (event.transcript) {
+                      detectedTranscript = event.transcript;
+                      await retainRecognizedTranscript();
+                    }
                     onProgress?.(event);
                   },
                 )
@@ -732,6 +762,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           ? { referenceAnswers: content.referenceAnswers }
           : {}),
       };
+      await retainRecognizedTranscript();
       const updated = await database.attempts.findOneAndUpdate(
         { ...sourceFilter(latest), "submissionLease.token": leaseToken },
         {
@@ -757,6 +788,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       if (submittingUser) await guard.inspectResource(submittingUser, "attempt", updated.id);
       return updated;
     } catch (error) {
+      await retainRecognizedTranscript();
       if (detectedTranscript)
         await database.attempts.updateOne(
           { ...sourceFilter(latest), "submissionLease.token": leaseToken },
@@ -818,14 +850,12 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       integrityReason: _integrityReason,
       replacementContentId: _replacementContentId,
       rootContentId: _rootContentId,
+      speakingPromptSnapshot: _speakingPromptSnapshot,
+      speakingReview: _speakingReview,
       ...view
     } = record as LeasedAttempt;
-    const audioAvailable = Boolean(
-      await database.audio.findOne(
-        { userId: record.userId, attemptId: record.id },
-        { projection: { _id: 1 } },
-      ),
-    );
+    const recording = await database.audio.findOne({ userId: record.userId, attemptId: record.id });
+    const audioAvailable = Boolean(recording);
     const content = await contentOf(record.contentId);
     return {
       ...view,
@@ -836,6 +866,21 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         record.status === "invalidated" || record.mode === "exam" && record.status !== "submitted",
       ),
       audioAvailable,
+      ...(record.status === "submitted" && record.skill === "speaking" ? {
+        speakingReview: {
+          version: 1 as const,
+          prompts: record.speakingPromptSnapshot ?? content.sections.map(section => ({
+            sectionId: section.id, title: section.title, text: section.text,
+            ...(section.cuePoints ? { cuePoints: section.cuePoints } : {}),
+            ...(section.instructions ? { instructions: section.instructions } : {}),
+          })),
+          promptSource: record.speakingPromptSnapshot ? "saved-authored-prompt" as const : "current-authored-prompt" as const,
+          transcriptSource: recording?.recognizedTranscript ? "speech-recognition" as const : record.feedback?.transcriptSource ?? "unknown" as const,
+          transcript: recording?.recognizedTranscript ?? record.feedback?.transcript ?? record.transcript,
+          ...(recording?.recognizedTranscript ? { recognizedTranscript: recording.recognizedTranscript } : {}),
+          recordingAvailable: audioAvailable,
+        },
+      } : {}),
     };
   }
   function completedAttemptFeedback(
@@ -1172,6 +1217,11 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         responses: {},
         essays: {},
         transcript: "",
+        ...(content.skill === "speaking" ? { speakingPromptSnapshot: content.sections.map(section => ({
+          sectionId: section.id, title: section.title, text: section.text,
+          ...(section.cuePoints ? { cuePoints: section.cuePoints } : {}),
+          ...(section.instructions ? { instructions: section.instructions } : {}),
+        })) } : {}),
         feedback: null,
         ...(protectedContext.duoAssessmentId ? { duoAssessmentId: protectedContext.duoAssessmentId } : {}),
       };
@@ -1365,6 +1415,34 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       sendSpeechAudio(response, audio);
     }),
   );
+  function reviewSection(request: Request, count: number): number | undefined {
+    const supplied = request.method === "GET" ? request.query.sectionIndex : request.body?.sectionIndex;
+    if (supplied === undefined) return undefined;
+    const value = z.union([
+      z.number().int().min(0),
+      z.string().regex(/^\d{1,3}$/).transform(Number),
+    ]).parse(supplied);
+    if (value >= count) throw new ApiError(400, "Không tìm thấy phần nghe này trong bài đã nộp.");
+    return value;
+  }
+  async function sendReviewedListeningAudio(request: Request, response: Response): Promise<void> {
+    const id = idOf(request), userId = learnerOf(request).id;
+    const record = await database.attempts.findOne({ _id: id, userId });
+    if (!record) throw new ApiError(404, "Không tìm thấy lượt luyện của bạn.");
+    await inspectAudioSource(request, "attempt", id);
+    if (record.status !== "submitted" || record.invalidatedAt) throw new ApiError(409, "Chỉ nghe lại cùng transcript sau khi đã nộp bài hợp lệ.");
+    if (record.skill !== "listening") throw new ApiError(400, "Đây không phải bài Listening.");
+    const content = await contentOf(record.contentId);
+    const sectionIndex = reviewSection(request, content.sections.length);
+    // This method only reads published GridFS files. Review never queues TTS,
+    // consumes the exam's play allowance, or changes its deadline/session.
+    const audio = await speechAudio.getReady(sectionIndex === undefined ? content.sections : [content.sections[sectionIndex]]);
+    await inspectAudioSource(request, "attempt", id);
+    const latest = await database.attempts.findOne({ _id: id, userId, status: "submitted", invalidatedAt: { $exists: false } });
+    if (!latest) throw new ApiError(409, "Bài đã thay đổi; không thể mở âm thanh xem lại.");
+    if (!response.destroyed && !response.writableEnded) sendSpeechAudio(response, audio, request.get("range"));
+  }
+  app.get("/api/attempts/:id/listening-audio", asyncRoute(sendReviewedListeningAudio));
   app.post(
     "/api/attempts/:id/submit",
     asyncRoute(async (request, response) => {
@@ -1385,6 +1463,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       const record = await attemptOf(learnerOf(request).id, idOf(request), false);
       if (!duoService || !record.duoAssessmentId || record.status !== "submitted" || !["writing", "speaking"].includes(record.skill))
         throw new ApiError(400, "Chỉ chấm lại phần Viết/Nói đã nộp trong bài đánh giá Duo.");
+      await inspectAudioSource(request, "attempt", record.id);
       if (record.feedback?.source === "ai" && record.feedback.estimatedBand !== null) {
         await duoService.attemptSubmitted(record);
         response.json({ attempt: await attemptView(record) });
@@ -1397,8 +1476,10 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       try {
         const content = await contentOf(record.contentId);
         let audio: { buffer: Buffer; mimetype: string } | undefined;
+        let audioRecord: AudioRecord | null = null;
         if (record.skill === "speaking") {
           const saved = await database.audio.findOne({ userId: record.userId, attemptId: record.id });
+          audioRecord = saved;
           if (saved) {
             const owned = await database.db.collection("recordings.files").findOne({ _id: saved.fileId, "metadata.userId": record.userId, "metadata.attemptId": record.id });
             if (!owned || typeof owned.length !== "number" || owned.length > 25 * 1024 * 1024) throw new ApiError(400, "Bản ghi âm của bài chưa hợp lệ để chấm lại.");
@@ -1411,10 +1492,17 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
             audio = { buffer: Buffer.concat(chunks), mimetype: saved.mime };
           }
         }
-        const evaluated = record.skill === "writing" ? await evaluateWriting(content, record.essays) : await evaluateSpeaking(content, record.transcript, audio);
+        const evaluated = record.skill === "writing" ? await evaluateWriting(content, record.essays) : await evaluateSpeaking(content, record.transcript, audio, async event => {
+          if (!event.transcript || !audioRecord) return;
+          await inspectAudioSource(request, "attempt", record.id);
+          const stillValid = await database.attempts.findOne({ _id: record.id, userId: record.userId, status: "submitted", invalidatedAt: { $exists: false }, "feedback.id": record.feedback?.id ?? null });
+          if (!stillValid) throw new ApiError(409, "Bài đã thay đổi trong khi nhận dạng; chưa áp dụng transcript.");
+          await database.audio.updateOne({ _id: audioRecord._id, userId: record.userId, attemptId: record.id, fileId: audioRecord.fileId }, { $set: { recognizedTranscript: event.transcript } });
+        });
         const feedback: Feedback = { ...evaluated, ...(content.referenceAnswers?.length ? { referenceAnswers: content.referenceAnswers } : {}) };
+        await inspectAudioSource(request, "attempt", record.id);
         const updated = await database.attempts.findOneAndUpdate(
-          { _id: record.id, userId: record.userId, status: "submitted", "feedback.id": record.feedback?.id ?? null },
+          { _id: record.id, userId: record.userId, status: "submitted", invalidatedAt: { $exists: false }, "feedback.id": record.feedback?.id ?? null },
           { $set: { feedback, transcript: feedback.transcript ?? record.transcript } },
           { returnDocument: "after" },
         );
@@ -1538,7 +1626,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
             if (previousRecording) {
               const published = await database.audio.updateOne(
                 { _id: previousRecording._id, userId: record.userId, attemptId: record.id, fileId: previousRecording.fileId },
-                { $set: metadata },
+                { $set: metadata, $unset: { recognizedTranscript: "" } },
               );
               if (!published.matchedCount) throw new ApiError(409, "Bản ghi âm đã thay đổi ở phiên khác.");
             } else {
@@ -1560,9 +1648,14 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
             throw error;
           }
         }
+        const promptContent = record.speakingPromptSnapshot ? null : await contentOf(record.contentId);
         const saved = await database.attempts.findOneAndUpdate(
           { ...sourceFilter(record), "submissionLease.token": leaseToken },
-          { $set: { transcript } },
+          { $set: { transcript, ...(promptContent ? { speakingPromptSnapshot: promptContent.sections.map(section => ({
+            sectionId: section.id, title: section.title, text: section.text,
+            ...(section.cuePoints ? { cuePoints: section.cuePoints } : {}),
+            ...(section.instructions ? { instructions: section.instructions } : {}),
+          })) } : {}) } },
           { returnDocument: "after" },
         );
         if (!saved) throw new ApiError(409, "Bản nói đã thay đổi ở phiên khác; chưa áp dụng kết quả chấm.");
@@ -1619,13 +1712,15 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   app.get(
     "/api/attempts/:id/audio",
     asyncRoute(async (request, response) => {
-      const attempt = await attemptOf(learnerOf(request).id, idOf(request), false);
+      const userId = learnerOf(request).id, attemptId = idOf(request);
+      let attempt = await attemptOf(userId, attemptId, false);
       if (attempt.status === "invalidated") throw new ApiError(404, "Bản nói của lượt bị hủy đã được xóa.");
-      const userId = learnerOf(request).id;
-      await attemptOf(userId, idOf(request), false);
+      await inspectAudioSource(request, "attempt", attemptId);
+      attempt = await attemptOf(userId, attemptId, false);
+      if (attempt.status === "invalidated" || attempt.invalidatedAt) throw new ApiError(404, "Bản nói của lượt bị hủy đã được xóa.");
       const audio = await database.audio.findOne({
         userId,
-        attemptId: idOf(request),
+        attemptId,
       });
       if (!audio) throw new ApiError(404, "Lượt luyện chưa có bản ghi âm.");
       const storedFile = await database.db
@@ -1633,12 +1728,21 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         .findOne({
           _id: audio.fileId,
           "metadata.userId": userId,
-          "metadata.attemptId": idOf(request),
+          "metadata.attemptId": attemptId,
         });
-      if (!storedFile) throw new ApiError(404, "Bản ghi âm chưa sẵn sàng.");
+      if (!storedFile || typeof storedFile.length !== "number" || !Number.isSafeInteger(storedFile.length) || storedFile.length < 0 || storedFile.length > 25 * 1024 * 1024)
+        throw new ApiError(404, "Bản ghi âm chưa sẵn sàng.");
+      await inspectAudioSource(request, "attempt", attemptId);
+      const latest = await database.attempts.findOne({ _id: attemptId, userId });
+      const currentAudio = await database.audio.findOne({ _id: audio._id, userId, attemptId, fileId: audio.fileId });
+      if (!latest || latest.status === "invalidated" || latest.invalidatedAt || !currentAudio)
+        throw new ApiError(404, "Bản ghi âm đã thay đổi hoặc không còn sẵn sàng.");
+      const range = setAudioRange(response, request.get("range"), storedFile.length);
+      if (range === false) return;
       response.type(audio.mime);
+      if (request.method === "HEAD") { response.end(); return; }
       await pipeline(
-        database.recordings.openDownloadStream(audio.fileId),
+        database.recordings.openDownloadStream(audio.fileId, { start: range.start, end: range.end + 1, timeoutMS: 20_000 }),
         response,
       );
     }),
@@ -2026,9 +2130,10 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       // snapshot stays usable when a later bank update changes/removes its source.
       answers: record.answers.map((answer, index) => {
         const snapshot = saved.get(answer.questionId) ?? answer.review;
-        if (snapshot) return { ...snapshot, response: answer.answer, questionNumber: index + 1 };
         const item = items.find((question) => question.id === answer.questionId);
-        if (item) return placementAnswerReview(item, answer.answer, index + 1);
+        if (snapshot) return { ...snapshot, response: answer.answer, questionNumber: index + 1,
+          ...(snapshot.skill ? {} : item ? { skill: item.skill } : snapshot.sectionTitle === "Listening" ? { skill: "listening" as const } : snapshot.sectionTitle === "Reading" ? { skill: "reading" as const } : {}) };
+        if (item) return { ...placementAnswerReview(item, answer.answer, index + 1), skill: item.skill };
         return {
           questionId: answer.questionId, questionNumber: index + 1,
           response: answer.answer, answer: "", correct: answer.correct,
@@ -2093,6 +2198,35 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       if (record.currentQuestionId !== questionId || record.completedAt || record.invalidatedAt)
         throw new ApiError(409, "Câu nghe đã đổi hoặc bài đầu vào đã kết thúc.");
       sendSpeechAudio(response, audio);
+    }),
+  );
+  app.get(
+    "/api/placement/:id/audio",
+    asyncRoute(async (request, response) => {
+      const id = idOf(request), userId = learnerOf(request).id;
+      const questionId = z.string().min(1).max(200).parse(request.query.questionId);
+      let record = await database.placements.findOne({ _id: id, userId });
+      if (!record) throw new ApiError(404, "Không tìm thấy bài đầu vào của bạn.");
+      await inspectAudioSource(request, "placement", id);
+      record = await database.placements.findOne({ _id: id, userId });
+      if (!record || !placementIsComplete(record) || record.invalidatedAt || record.completionReason === "invalidated")
+        throw new ApiError(409, "Chỉ nghe lại sau khi hoàn thành bài đầu vào hợp lệ.");
+      const answer = record.answers.find(item => item.questionId === questionId);
+      if (!answer) throw new ApiError(404, "Câu nghe không thuộc bài đầu vào đã làm.");
+      const item = await database.placementItems.findOne({ _id: questionId });
+      const snapshot = record.result?.answers.find(item => item.questionId === questionId) ?? answer.review;
+      const skill = snapshot?.skill ?? (snapshot?.sectionTitle === "Listening" ? "listening" : snapshot?.sectionTitle === "Reading" ? "reading" : item?.skill);
+      if (skill !== "listening") throw new ApiError(400, "Đây không phải câu Listening.");
+      // Replay the source text captured at answer time, if available. A later
+      // bank edit must not silently substitute a different recording.
+      const text = snapshot?.context || item?.text;
+      if (!text) throw new ApiError(404, "Nguồn nghe cũ không còn để đối chiếu.");
+      const audio = await speechAudio.getReady([{ id: questionId, title: "", text }]);
+      await inspectAudioSource(request, "placement", id);
+      const latest = await database.placements.findOne({ _id: id, userId });
+      if (!latest || !placementIsComplete(latest) || latest.invalidatedAt || latest.completionReason === "invalidated" || !latest.answers.some(item => item.questionId === questionId))
+        throw new ApiError(409, "Bài đầu vào đã thay đổi; không thể mở âm thanh xem lại.");
+      if (!response.destroyed && !response.writableEnded) sendSpeechAudio(response, audio, request.get("range"));
     }),
   );
   app.post(

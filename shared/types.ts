@@ -304,12 +304,16 @@ export interface Feedback {
     acceptedAnswers?: string[];
     sectionTitle?: string;
     questionType?: IeltsQuestionType | QuestionType;
+    /** Present in completed placement review so listening audio can be replayed. */
+    skill?: ContentKind;
   }[];
   referenceAnswers?: ReferenceResponse[];
   wordCount?: number;
   fillerCount?: number;
   fillerDensity?: number;
   transcript?: string;
+  /** Omitted for legacy results whose transcript provenance cannot be proven. */
+  transcriptSource?: "speech-recognition" | "typed";
   audioAssessment?: {
     provider: "openai";
     model: string;
@@ -355,6 +359,23 @@ export interface Attempt {
   feedback: Feedback | null;
   content: ContentItem;
   audioAvailable: boolean;
+  /** Actual saved prompt/recording material, disclosed after submission only. */
+  speakingReview?: SpeakingReview;
+}
+export interface SpeakingReview {
+  version: 1;
+  prompts: {
+    sectionId: string;
+    title: string;
+    text: string;
+    cuePoints?: string[];
+    instructions?: string;
+  }[];
+  promptSource: "saved-authored-prompt" | "current-authored-prompt";
+  transcriptSource: "speech-recognition" | "typed" | "unknown";
+  transcript: string;
+  recognizedTranscript?: string;
+  recordingAvailable: boolean;
 }
 export interface AttemptSummary {
   id: string;

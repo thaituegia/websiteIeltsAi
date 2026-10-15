@@ -98,10 +98,11 @@ function sectionTexts(section: ContentSection, hideTranscript: boolean): string[
 
 function attemptTexts(content: StoredContent, record: AttemptRecord, input: WordRequest): string[] {
   if (input.questionId !== undefined) throw new ApiError(400, "Lượt luyện dùng chỉ số phần bài.");
-  if (input.sectionIndex !== undefined && !content.sections[input.sectionIndex])
+  const savedPrompts = record.status === "submitted" && content.skill === "speaking" ? record.speakingPromptSnapshot : undefined;
+  if (input.sectionIndex !== undefined && !content.sections[input.sectionIndex] && !savedPrompts?.[input.sectionIndex])
     throw new ApiError(400, "Phần bài không hợp lệ.");
   const hideTranscript = content.skill === "listening" && record.mode === "exam" && record.status !== "submitted";
-  const sections = input.sectionIndex === undefined ? content.sections : [content.sections[input.sectionIndex]];
+  const sections = input.sectionIndex === undefined ? content.sections : content.sections[input.sectionIndex] ? [content.sections[input.sectionIndex]] : [];
   const texts = [content.title, content.description, ...sections.flatMap(section => sectionTexts(section, hideTranscript))];
   for (const question of content.questions) {
     if (input.sectionIndex !== undefined && question.sectionIndex !== input.sectionIndex) continue;
@@ -110,6 +111,12 @@ function attemptTexts(content: StoredContent, record: AttemptRecord, input: Word
     texts.push(question.prompt, question.groupInstructions ?? "", ...visibleOptions);
   }
   // Submitted feedback is visible too; private answer material is excluded while active.
+  if (savedPrompts) {
+    for (const [index, prompt] of savedPrompts.entries()) {
+      if (input.sectionIndex !== undefined && input.sectionIndex !== index) continue;
+      texts.push(prompt.title, prompt.text, prompt.instructions ?? "", ...(prompt.cuePoints ?? []));
+    }
+  }
   if (record.status === "submitted" && record.feedback) {
     if (["reading", "listening", "grammar"].includes(content.skill)) {
       // The application reconstructs missing legacy answer rows from content
@@ -127,7 +134,7 @@ function attemptTexts(content: StoredContent, record: AttemptRecord, input: Word
         answer.answer, ...(answer.options ?? []));
     }
     for (const reference of record.feedback.referenceAnswers ?? content.referenceAnswers ?? []) {
-      if (input.sectionIndex !== undefined && reference.sectionId !== content.sections[input.sectionIndex].id) continue;
+      if (input.sectionIndex !== undefined && reference.sectionId !== (savedPrompts?.[input.sectionIndex]?.sectionId ?? content.sections[input.sectionIndex]?.id)) continue;
       texts.push(reference.title, reference.sampleAnswer, reference.explanation, ...reference.keyPoints);
       for (const item of reference.responses ?? []) texts.push(item.prompt, item.sampleAnswer, item.explanation ?? "");
     }
@@ -190,6 +197,10 @@ export function registerWordNotebookRoutes(app: Express, database: Database, opt
       const content = await database.content.findOne({ _id: record.contentId });
       if (!content) throw new ApiError(404, "Không tìm thấy nội dung của lượt luyện.");
       texts = attemptTexts(content, record, input);
+      if (record.status === "submitted" && content.skill === "speaking" && input.sectionIndex === undefined) {
+        const audio = await database.audio.findOne({ userId, attemptId: record.id });
+        texts.push(audio?.recognizedTranscript ?? record.feedback?.transcript ?? record.transcript);
+      }
     } else {
       if (input.sectionIndex !== undefined) throw new ApiError(400, "Bài đầu vào dùng mã câu hỏi.");
       let record = await database.placements.findOne({ _id: id, userId });

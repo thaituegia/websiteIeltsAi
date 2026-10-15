@@ -1,5 +1,19 @@
 # Kết quả kiểm tra
 
+## Audio xem lại và đáp án giờ tương đương — 2026-10-15
+
+Listening đã nộp giữ audio đúng từng phần cạnh transcript, có thanh tua, thời gian, tốc độ và lùi/tiến 10 giây. Placement phát lại đúng câu Listening từng được phục vụ. Speaking giữ cách luyện hiện tại: đề/câu hỏi gốc, bản ghi chung và transcript; phân biệt phiên âm Whisper thật, văn bản nhập tay và bài cũ chưa rõ nguồn. Phiên âm được lưu cùng đúng file trước bước chấm; lỗi chấm không làm mất phần đã nhận dạng, thay bản ghi không kế thừa transcript cũ.
+
+**124 kiểm tra native đạt**, gồm 85 kiểm tra tích hợp mới/liên quan, 35 hồi quy API/Speaking regrade/placement timing và 4 kiểm tra HTTP Duo chuyên biệt. Dùng MongoDB thật trong namespace tổng hợp riêng và transport provider kiểm soát. Bao phủ audio Range toàn phần/mở/suffix/416, cache-only và quyền sở hữu/trạng thái/câu đã làm; giữ câu trả lời, đồng hồ, lượt nghe, lịch sử, FSRS và giám sát; nhận dạng trước chấm và retry; snapshot đề cũ và sổ từ trên transcript/câu hỏi đã lưu. Duo hai phần qua HTTP thật kiểm tra thiếu/sai tab trước đọc cache, đúng tab nhận 200/206, lease hết hạn hủy lượt trước khi trả audio, không thay dữ liệu người còn lại.
+
+Grader kiểm tra mọi giờ trong 1.440 phút của ngày, các cách viết bằng chữ và AM/PM, tránh nhầm số tiền/thời lượng/phòng, giữ giới hạn từ cho câu khác. Đáp án minh họa xuất hiện sau nộp; điểm đã lưu không bị sửa khi mở review. Strict TypeScript toàn project và release Vite build đạt.
+
+**10 tình huống trình duyệt desktop/mobile đạt**: Listening tua/chuyển phần và transcript, Speaking audio GridFS thật/Range và nguồn transcript sau reload, bài cũ, placement, lỗi tải/retry, cùng transport blob có header cho phần Duo còn giám sát. Lượt đầu 8/10 đạt; hai tình huống còn lại có locator test trùng với phần tử output hiển thị thời gian, sửa locator rồi chạy lại riêng 2/2 đạt. Không thay logic sản phẩm để bỏ qua lỗi.
+
+Release build trong container Node 24.21.0 đạt sau **62,93 giây**, **512 MiB RAM, không thêm swap, CPU 0,5, network none**, peak **449,35 MiB**, exit 0, OOM/OOM-kill đều 0. Nguồn và dependency đã cài được mount chỉ đọc; 225 phiên bản khớp lockfile, snapshot 436 file giữ nguyên trong lúc build. Đây là `npm run build:release` dùng dependency có sẵn, không phải lần chạy Dockerfile/npm ci/prune có mạng. File kiểm tra Duo chuyên biệt và tài liệu cuối được bổ sung sau proof; code production không đổi.
+
+Snapshot giữ nguyên 700 bản ghi nền và indexes trong 10 collection của database phát triển. Quét mã public/frontend không có khóa hoặc danh tính riêng; không gọi provider trả phí hay thao tác tài khoản học thật. Bằng chứng ở ignored `.local/audio-review`, gồm `bounded-build/report.json`. Chưa xác nhận triển khai bản này trên VPS; updater giữ dữ liệu và giới hạn tài nguyên cũ.
+
 ## Sổ từ trong bài làm và nghĩa khi xem lại — 2026-10-14
 
 Thêm chọn từ trực tiếp trong bài học, thi và placement: lưu một từ/câu gốc vào sổ riêng trước nộp, chỉ mở nghĩa theo ngữ cảnh sau khi hoàn thành hợp lệ. Không mở tab mới, đổi đáp án hoặc đặt lại đồng hồ. Từ chờ nghĩa chưa được ôn FSRS; bổ sung nghĩa giữ lịch và lịch sử. Bản cập nhật không thay ngân hàng đề, rank/lộ trình hoặc khóa provider.

@@ -17,6 +17,7 @@ import type {
 } from "../shared/types";
 import { ApiError } from "./errors";
 import { withinAnswerLimit } from "../shared/content-visuals";
+import { matchingTimeAnswer, timeAnswerExamples } from "./time-answers";
 
 export function roundBand(value: number): number {
   return Math.round(value * 2) / 2;
@@ -147,10 +148,17 @@ export function gradeObjective(
   }
   const answers = content.questions.map((question) => {
     const response = responses[question.id] ?? "";
-    const accepted = [question.answer, ...(question.acceptedAnswers ?? [])].map(
+    const acceptedKeys = [question.answer, ...(question.acceptedAnswers ?? [])];
+    const accepted = acceptedKeys.map(
       normalized,
     );
-    const withinLimit = withinAnswerLimit(response, question.wordLimit, question.allowNumbers);
+    const matchedTime = question.type === "text"
+      ? matchingTimeAnswer(response, acceptedKeys.filter((key) =>
+        withinAnswerLimit(key, question.wordLimit, question.allowNumbers)), question.prompt) : undefined;
+    // Written clocks can use more words than their numeric keyed equivalent.
+    // Other responses still obey the original IELTS word/number limit.
+    const withinLimit = withinAnswerLimit(response, question.wordLimit, question.allowNumbers) ||
+      (matchedTime !== undefined && withinAnswerLimit(matchedTime, question.wordLimit, question.allowNumbers));
     const selected = question.selectionGroup ? selections.get(question.selectionGroup.id) : null;
     const validMultiple = question.type === "choice-multiple" && selected !== null && selected !== undefined;
     return {
@@ -160,7 +168,7 @@ export function gradeObjective(
       answer: question.answer,
       correct: question.type === "choice-multiple"
         ? validMultiple && selected!.includes(normalized(question.answer))
-        : withinLimit && accepted.includes(normalized(response)),
+        : withinLimit && (accepted.includes(normalized(response)) || matchedTime !== undefined),
       explanation: question.type === "choice-multiple" && !validMultiple
         ? `Nhóm lựa chọn không hợp lệ: chọn tối đa ${question.selectionGroup?.count ?? 0} phương án khác nhau và dùng cùng lựa chọn cho các số câu trong nhóm. ${question.explanation}`
         : withinLimit
@@ -215,7 +223,9 @@ export function objectiveAnswerContext(
     questionNumber: question.number,
     ...(options ? { options: [...options] } : {}),
     context: section?.text ?? "",
-    acceptedAnswers: [...new Set([question.answer, ...(question.acceptedAnswers ?? [])])],
+    acceptedAnswers: [...new Set([question.answer, ...(question.acceptedAnswers ?? [])].flatMap((answer) =>
+      [answer, ...(question.type === "text" ? timeAnswerExamples(answer, question.prompt) : [])],
+    ))],
     sectionTitle: section?.title ?? "",
     questionType: question.questionType ?? question.type,
   };
@@ -228,6 +238,7 @@ export function placementAnswerReview(
 ): Feedback["answers"][number] {
   return {
     questionId: item.id,
+    skill: item.skill,
     questionNumber: number,
     prompt: item.question,
     context: item.text,

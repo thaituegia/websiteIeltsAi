@@ -253,6 +253,23 @@ test("native HTTP word notebook saves privately and translates only completed, a
     const placementPartial = await placement("a", readingPlacement, "partial");
     const placementInvalidated = await placement("a", readingPlacement, "invalidated");
     const placementPeer = await placement("b", readingPlacement, "complete");
+    const changedSpeaking: StoredContent = { ...reading, id: "synthetic-speaking-changed-prompt", skill: "speaking",
+      sections: [{ id: "current-prompt", title: "Current question", text: "Describe a local library." }] };
+    await database.content.insertOne({ ...changedSpeaking, _id: changedSpeaking.id });
+    const savedSpeaking = await attempt("a", changedSpeaking, "submitted");
+    const savedSpeakingSentence = "An observant learner describes a memorable expedition.";
+    await database.attempts.updateOne({ _id: savedSpeaking.id }, { $set: { speakingPromptSnapshot: [
+      { sectionId: "old-first", title: "Old first question", text: "Describe a quiet garden." },
+      { sectionId: "old-second", title: "Original second question", text: savedSpeakingSentence },
+    ] } });
+    const recognizedSpeakingSentence = "The inquisitive visitor examined the restored building.";
+    const speakingUpload = database.recordings.openUploadStream("synthetic-speaking-recognized-recording", {
+      contentType: "audio/wav", metadata: { userId: users.a.id, attemptId: savedSpeaking.id },
+    });
+    speakingUpload.end(Buffer.from("synthetic-speech-file-context-fixture"));
+    await once(speakingUpload, "finish");
+    await database.audio.insertOne({ _id: randomUUID(), userId: users.a.id, attemptId: savedSpeaking.id, fileId: speakingUpload.id,
+      mime: "audio/wav", createdAt: "2026-10-14T12:00:00.000Z", recognizedTranscript: recognizedSpeakingSentence });
 
     const legacy = (await request("a", "POST", "/vocabulary/cards", { word: "habitats", meaning: "legacy meaning", example: "Legacy example" }, 201)).card;
     const reviewed = (await request("a", "POST", `/vocabulary/cards/${legacy.id}/review`, { rating: 4 })).card;
@@ -571,6 +588,21 @@ test("native HTTP word notebook saves privately and translates only completed, a
       await request("a", "POST", `/attempts/${submitted.id}/words/translate`, {
         word: "restore", context: "Please restore this fabricated instruction.", sectionIndex: 0 }, 400);
       assert.equal(providerCalls.length, callsBefore);
+    });
+
+    await t.test("submitted Speaking snapshot words remain selectable after authored sections change", async () => {
+      const selection = { word: "expedition", context: savedSpeakingSentence, sectionIndex: 1 };
+      await request("a", "POST", `/attempts/${savedSpeaking.id}/words`, selection, 201);
+      providerMeaning = "chuyến thám hiểm";
+      const translated = await request("a", "POST", `/attempts/${savedSpeaking.id}/words/translate`, selection);
+      assert.equal(translated.translation.context, savedSpeakingSentence);
+      assert.equal(translated.translation.meaning, providerMeaning);
+      const transcriptSelection = { word: "inquisitive", context: recognizedSpeakingSentence };
+      await request("a", "POST", `/attempts/${savedSpeaking.id}/words`, transcriptSelection, 201);
+      const recognized = await request("a", "POST", `/attempts/${savedSpeaking.id}/words/translate`, transcriptSelection);
+      assert.equal(recognized.translation.context, recognizedSpeakingSentence);
+      await request("a", "POST", `/attempts/${savedSpeaking.id}/words`, { ...selection, sectionIndex: 2 }, 400);
+      await request("b", "POST", `/attempts/${savedSpeaking.id}/words/translate`, selection, 404);
     });
 
     await t.test("accounts, all test history, draft timers, audio, bank content and reviewed FSRS remain intact", async () => {

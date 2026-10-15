@@ -73,6 +73,7 @@ import {
 } from "./audio";
 import { SectionVisuals } from "./ContentVisual";
 import { WordNotebook, WordText } from "./WordNotebook";
+import { ReviewAudioPlayer } from "./ReviewAudioPlayer";
 import "./learning.css";
 import { DuoPlacementStatus, DuoAttemptContext } from "./Duo";
 import {
@@ -1203,7 +1204,7 @@ export function PlacementPage() {
               </Link>
             </div>
           </Card>
-          <FeedbackView feedback={placement.result} placementWords />
+          <FeedbackView feedback={placement.result} placementWords placementId={placement.id} />
         </>
       )}
       {startMode && <ExamStartDialog busy={busy} onClose={() => !busy && setStartMode(null)} onStart={() => void start(startMode, true)} />}
@@ -1973,6 +1974,19 @@ export function LearningPage() {
           </div>
         </Card>
       )}
+      {attempt.skill === "listening" && submitted && (
+        <Card className="listening-review-player">
+          <h3>Nghe lại và đối chiếu transcript</h3>
+          <p className="muted">Chọn phần ở phía trên, nghe lại hoặc tua đến đoạn cần ôn. Transcript của phần đang chọn nằm ngay bên dưới.</p>
+          <ReviewAudioPlayer
+            key={`${attempt.id}-${section}`}
+            src={`/api/attempts/${encodeURIComponent(attempt.id)}/listening-audio?sectionIndex=${section}`}
+            title={`Nghe lại phần ${section + 1}: ${activeSection?.title || "Listening"}`}
+            description="Âm thanh đã chuẩn bị của đúng bài đã nộp. Có thể nghe nhiều lần, tua và đổi tốc độ khi xem lại."
+            examScoped={!!attempt.duoAssessmentId && attempt.integrity?.status !== "completed"}
+          />
+        </Card>
+      )}
       {(attempt.skill === "reading" ||
         attempt.skill === "listening" ||
         attempt.skill === "grammar") && (
@@ -2187,17 +2201,16 @@ export function LearningPage() {
                 )}
               </div>
             )}
-            {(audioUrl || attempt.audioAvailable) && (
+            {(audioUrl || attempt.audioAvailable) && !submitted && (
               <div className="recording-playback">
-                <label>Nghe lại bản ghi của bạn</label>
-                <audio
-                  controls
+                <ReviewAudioPlayer
                   src={audioUrl || `/api/attempts/${attempt.id}/audio`}
-                  preload="metadata"
+                  title="Nghe lại bản ghi của bạn"
+                  examScoped={!audioUrl && protectedExam}
                 />
               </div>
             )}
-            <label className="field transcript-field">
+            {!submitted && <label className="field transcript-field">
               Transcript của bạn
               <textarea
                 aria-label="Transcript bài nói"
@@ -2219,8 +2232,9 @@ export function LearningPage() {
                 {wordCount(transcript)} từ · Text không đủ để đo tốc độ nói,
                 ngắt nghỉ hoặc phát âm.
               </small>
-            </label>
-            {!health?.services.openai && (
+            </label>}
+            {submitted && <SpeakingRecordingReview attempt={attempt} />}
+            {!submitted && !health?.services.openai && (
               <div className="notice warning">
                 <AlertTriangle size={18} />
                 <span>
@@ -2511,7 +2525,51 @@ function readableAnswer(value: string): string {
   return value;
 }
 
-function AnswerContext({ context, id, questionId }: { context: string; id: string; questionId?: string }) {
+function SpeakingRecordingReview({ attempt }: { attempt: Attempt }) {
+  const review = attempt.speakingReview;
+  const source = review?.transcriptSource || attempt.feedback?.transcriptSource || "unknown";
+  const text = review?.transcript || attempt.feedback?.transcript || attempt.transcript;
+  const recognized = review?.recognizedTranscript || (source === "speech-recognition" ? text : "");
+  const prompts = review?.prompts || attempt.content.sections.map(item => ({
+    sectionId: item.id, title: item.title, text: item.text,
+    cuePoints: item.cuePoints, instructions: item.instructions,
+  }));
+  return <div className="speaking-recording-review">
+    {(review?.recordingAvailable ?? attempt.audioAvailable) ? (
+      <ReviewAudioPlayer
+        src={`/api/attempts/${encodeURIComponent(attempt.id)}/audio`}
+        title="Nghe lại bản ghi Speaking của bạn"
+        description="Bản ghi gốc đã lưu cùng bài nộp. Tua đến đoạn cần nghe rồi đối chiếu với transcript bên dưới."
+        examScoped={!!attempt.duoAssessmentId && attempt.integrity?.status !== "completed"}
+      />
+    ) : <p className="muted">Bài này không có bản ghi âm đã lưu.</p>}
+    <div>
+      <h3>{source === "speech-recognition" ? "Transcript AI nghe được" : source === "typed" ? "Transcript bạn đã nhập" : "Transcript đã lưu"}</h3>
+      <p className="muted tiny">{source === "speech-recognition"
+        ? "Đây là nội dung AI phiên âm từ bản ghi. Phiên âm có thể nghe nhầm; hãy so sánh với âm thanh gốc."
+        : source === "typed"
+          ? "Nội dung do bạn nhập bằng văn bản, chưa được xác nhận bằng nhận dạng giọng nói."
+          : "Bài cũ chưa lưu nguồn transcript nên chưa xác định được đây là nội dung AI phiên âm hay văn bản bạn nhập."}</p>
+      <p className="feedback-transcript">{recognized || text
+        ? <WordText text={recognized || text} />
+        : "Chưa có transcript cho bản ghi này."}</p>
+    </div>
+    <details className="speaking-saved-prompts">
+      <summary>Đối chiếu đề và câu hỏi Speaking</summary>
+      <p className="muted tiny">{review?.promptSource === "saved-authored-prompt"
+        ? "Câu hỏi gốc được lưu cùng bài nộp. Bản ghi của bạn là một bản ghi chung cho bài này."
+        : "Câu hỏi từ học liệu hiện có; bài cũ chưa lưu riêng phiên bản đề tại lúc nộp."}</p>
+      {prompts.map((item, index) => <article key={item.sectionId || index}>
+        <h4>Part {index + 1}: <WordText text={item.title} sectionIndex={index} /></h4>
+        <p className="feedback-transcript"><WordText text={item.text} sectionIndex={index} /></p>
+        {!!item.cuePoints?.length && <ul>{item.cuePoints.map(point => <li key={point}><WordText text={point} sectionIndex={index} /></li>)}</ul>}
+        {item.instructions && <p className="muted tiny"><WordText text={item.instructions} sectionIndex={index} /></p>}
+      </article>)}
+    </details>
+  </div>;
+}
+
+function AnswerContext({ context, id, questionId, audioSrc }: { context: string; id: string; questionId?: string; audioSrc?: string }) {
   const [expanded, setExpanded] = useState(false);
   const regionId = `answer-context-${id}`;
   return (
@@ -2519,12 +2577,15 @@ function AnswerContext({ context, id, questionId }: { context: string; id: strin
       <Button className="secondary small" aria-expanded={expanded} aria-controls={regionId} onClick={() => setExpanded((previous) => !previous)}>
         {expanded ? "Ẩn nội dung gốc / transcript" : "Xem nội dung gốc / transcript"}
       </Button>
-      {expanded && <div id={regionId}><WordText text={context} questionId={questionId} /></div>}
+      {expanded && <div id={regionId}>
+        {audioSrc && <ReviewAudioPlayer src={audioSrc} title="Nghe lại câu Listening đầu vào" description="Nghe lại và tua âm thanh để đối chiếu với transcript của câu này." />}
+        <WordText text={context} questionId={questionId} />
+      </div>}
     </div>
   );
 }
 
-function ObjectiveAnswerReview({ answers, placementWords = false }: { answers: Feedback["answers"]; placementWords?: boolean }) {
+function ObjectiveAnswerReview({ answers, placementWords = false, placementId }: { answers: Feedback["answers"]; placementWords?: boolean; placementId?: string }) {
   const [filter, setFilter] = useState<"all" | "wrong" | "unanswered">("all");
   const unanswered = (answer: Feedback["answers"][number]) =>
     readableAnswer(answer.response) === "Chưa trả lời";
@@ -2586,7 +2647,8 @@ function ObjectiveAnswerReview({ answers, placementWords = false }: { answers: F
                 {!!alternatives.length && <p><strong>Cũng chấp nhận:</strong> {alternatives.map(readableAnswer).join(" · ")}</p>}
                 <p><strong>Giải thích:</strong> <WordText text={answer.explanation} questionId={placementWords ? answer.questionId : undefined} /></p>
                 {answer.evidence && <blockquote><span className="eyebrow">BẰNG CHỨNG TRONG BÀI</span><br /><WordText text={answer.evidence} questionId={placementWords ? answer.questionId : undefined} /></blockquote>}
-                {answer.context && <AnswerContext context={answer.context} id={answer.questionId} questionId={placementWords ? answer.questionId : undefined} />}
+                {answer.context && <AnswerContext context={answer.context} id={answer.questionId} questionId={placementWords ? answer.questionId : undefined}
+                  audioSrc={placementId && answer.skill === "listening" ? `/api/placement/${encodeURIComponent(placementId)}/audio?questionId=${encodeURIComponent(answer.questionId)}` : undefined} />}
                 <p className="muted tiny">{answer.questionType?.replaceAll("-", " ") || answer.subskill.replaceAll("-", " ")}</p>
               </div>
             </details>
@@ -2629,7 +2691,7 @@ function ReferenceAnswerReview({ feedback }: { feedback: Feedback }) {
   );
 }
 
-function FeedbackView({ feedback, placementWords = false }: { feedback: Feedback; placementWords?: boolean }) {
+function FeedbackView({ feedback, placementWords = false, placementId }: { feedback: Feedback; placementWords?: boolean; placementId?: string }) {
   return (
     <section className="feedback-section stack">
       <div className="section-heading">
@@ -2760,7 +2822,7 @@ function FeedbackView({ feedback, placementWords = false }: { feedback: Feedback
       )}
       {feedback.transcript && (
         <Card>
-          <h3>Transcript được xử lý</h3>
+          <h3>{feedback.transcriptSource === "speech-recognition" ? "Transcript AI nghe được" : feedback.transcriptSource === "typed" ? "Transcript bạn đã nhập" : "Transcript đã lưu"}</h3>
           <p className="feedback-transcript">{feedback.transcript}</p>
           <div className="row wrap">
             {feedback.wordCount != null && (
@@ -2810,7 +2872,7 @@ function FeedbackView({ feedback, placementWords = false }: { feedback: Feedback
           </p>
         </Card>
       )}
-      {!!feedback.answers.length && <ObjectiveAnswerReview answers={feedback.answers} placementWords={placementWords} />}
+      {!!feedback.answers.length && <ObjectiveAnswerReview answers={feedback.answers} placementWords={placementWords} placementId={placementId} />}
       <ReferenceAnswerReview feedback={feedback} />
     </section>
   );

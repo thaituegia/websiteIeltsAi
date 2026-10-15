@@ -44,6 +44,8 @@ export interface AttemptRecord
   integrityReason?: string;
   replacementContentId?: string;
   rootContentId?: string;
+  /** Snapshot of the authored examiner cues actually presented for this sitting. */
+  speakingPromptSnapshot?: NonNullable<Attempt["speakingReview"]>["prompts"];
 }
 export interface CardRecord extends VocabularyCard {
   _id: string;
@@ -88,6 +90,8 @@ export interface AudioRecord {
   fileId: ObjectId;
   mime: string;
   createdAt: string;
+  /** Recognized from this exact file, never copied from an editable draft. */
+  recognizedTranscript?: string;
 }
 export interface StoredContentRecord extends StoredContent {
   _id: string;

@@ -16,6 +16,8 @@ Bản cập nhật tăng ngân hàng lên ba lần bộ v2 và giữ mẫu sau n
 
 Sổ từ trong bài làm dùng collection thẻ từ hiện có, không cần migration/reset. Chọn từ trước nộp chỉ lưu từ và câu gốc; bài hoàn thành mở dịch theo ngữ cảnh bằng ngân hàng khớp câu hoặc khóa OpenAI riêng đang cấu hình. Lịch FSRS cũ được giữ; từ chờ nghĩa chưa vào lượt ôn. Xem [word-notebook.md](word-notebook.md).
 
+Audio xem lại Listening/Speaking có thanh tua và đối chiếu transcript, dùng cache/bản ghi đã lưu; không tạo lại ngân hàng giọng khi mở review. Speaking giữ cách luyện hiện tại và phân biệt phiên âm thật với transcript nhập tay. Các lần chấm câu điền mới nhận cách viết giờ tương đương; điểm cũ không tự sửa. Không cần migration, reset hoặc thêm secret cho bản cập nhật này.
+
 Mỗi task cloud đã chạy trong môi trường tách riêng. Làm trực tiếp trong checkout được chọn; chỉ tạo worktree nếu người dùng yêu cầu.
 
 Docker/Compose cần có nếu dùng local helper; nếu không, cấu hình MongoDB thật bên ngoài qua `MONGODB_URI`. Không thay bằng SQLite, JSON hoặc in-memory DB. Image chính thức ghim digest trong `compose.yaml`; không tắt TLS/checksums để tải dependencies.
