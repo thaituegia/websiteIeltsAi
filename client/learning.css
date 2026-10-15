@@ -3,6 +3,47 @@
 .placement-page {
   min-width: 0;
 }
+.content-card.content-card-completed { border-color: #98b776; }
+.completed-exercise-result {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 13px;
+  border: 1px solid #c5d8ae;
+  border-radius: 12px;
+  background: #f0f7e6;
+  color: #214b36;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.completed-exercise-result strong { font-weight: 700; }
+.completed-exercise-result span { color: #48633d; font-size: 12px; }
+.content-card-body > .completed-exercise-result { margin: 3px 0 12px; }
+.completed-exercise-dialog { font-family: "Be Vietnam Pro", Arial, sans-serif; }
+.completed-exercise-heading { display: flex; align-items: center; gap: 13px; }
+.completed-exercise-heading > div { min-width: 0; }
+.completed-exercise-heading h3 { margin: 0 0 4px; color: #214b36; line-height: 1.6; overflow-wrap: anywhere; }
+.completed-exercise-heading p { margin: 0; font-size: 13px; color: #52694b; }
+.completed-exercise-medal {
+  flex: 0 0 58px;
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #e5b05e;
+  border-radius: 21px;
+  background: #fff0bd;
+  box-shadow: 0 3px 0 #d9a34e;
+  color: #7b5b17;
+  transform: rotate(-5deg);
+}
+.completed-exercise-draft { margin: 0; color: #73511f; font-size: 12px; line-height: 1.7; }
+.completed-exercise-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.completed-exercise-actions .button { white-space: normal; }
+@media (max-width: 600px) {
+  .completed-exercise-actions { flex-direction: column; }
+  .completed-exercise-actions .button { width: 100%; }
+}
 .learning-disclaimer {
   font-size: 12px;
   line-height: 1.8;

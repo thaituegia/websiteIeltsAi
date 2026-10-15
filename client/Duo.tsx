@@ -21,7 +21,7 @@ import {
   Trophy,
   Users,
 } from "lucide-react";
-import type { Attempt } from "../shared/types";
+import type { Attempt, ContentProgress } from "../shared/types";
 import type {
   DuoAssessmentView,
   DuoBandView,
@@ -46,6 +46,7 @@ import {
 } from "./components";
 import "./duo.css";
 import { ChibiPawn } from "./ChibiPawn";
+import { CompletedExerciseDialog } from "./CompletedExerciseDialog";
 import { ExamRules, ExamStartDialog, InvalidatedExam, isExamInvalidated, useExamIntegrity, connectSharedRoom, updateSharedRoom, useSharedRoomIntegrity } from "./ExamIntegrity";
 
 const message = (cause: unknown) =>
@@ -445,6 +446,7 @@ export function DuoPlanPage() {
     [busy, setBusy] = useState(""),
     [actionError, setError] = useState("");
   const [startGateRules, setStartGateRules] = useState<DuoGateView | null>(null);
+  const [completedLesson, setCompletedLesson] = useState<{ lesson: DuoLessonView; progress: ContentProgress } | null>(null);
   const duo = state.data?.duo;
   const previousBand = useRef<number | null>(null);
   useEffect(() => {
@@ -458,18 +460,29 @@ export function DuoPlanPage() {
     setBusy(lesson.id);
     setError("");
     try {
-      const result = await api<{ attempt: Attempt }>("/attempts", {
-        method: "POST",
-        body: json({ contentId: lesson.contentId, mode: "practice" }),
-      });
-      navigate(
-        `/learn/${result.attempt.id}${lesson.completed[duo!.role] ? "" : `?duoLesson=${encodeURIComponent(lesson.id)}`}`,
-      );
+      const { progress } = await api<{ progress: ContentProgress }>(`/content/${encodeURIComponent(lesson.contentId)}/progress?mode=practice`);
+      if (progress.latestAttempt) setCompletedLesson({ lesson, progress });
+      else await createLessonAttempt(lesson);
     } catch (cause) {
       setError(message(cause));
     } finally {
       setBusy("");
     }
+  }
+  async function createLessonAttempt(lesson: DuoLessonView) {
+    const result = await api<{ attempt: Attempt }>("/attempts", {
+      method: "POST",
+      body: json({ contentId: lesson.contentId, mode: "practice" }),
+    });
+    navigate(`/learn/${result.attempt.id}?duoLesson=${encodeURIComponent(lesson.id)}`);
+  }
+  async function retakeLesson() {
+    if (!completedLesson) return;
+    setBusy(completedLesson.lesson.id);
+    setError("");
+    try { await createLessonAttempt(completedLesson.lesson); }
+    catch (cause) { setError(message(cause)); }
+    finally { setBusy(""); }
   }
   async function startGate(gate: DuoGateView, accepted = false) {
     if (health?.examIntegrityEnabled !== false && !accepted) { setStartGateRules(gate); return; }
@@ -673,7 +686,7 @@ export function DuoPlanPage() {
                             <LockKeyhole size={14} /> Chưa mở
                           </>
                         ) : lesson.completed[duo.role] ? (
-                          "Ôn lại buổi học"
+                          "Đã hoàn thành · Xem / làm lại"
                         ) : (
                           "Bắt đầu buổi học"
                         )}
@@ -741,6 +754,18 @@ export function DuoPlanPage() {
         </>
       )}
       {startGateRules && <ExamStartDialog busy={!!busy} onClose={() => !busy && setStartGateRules(null)} onStart={() => void startGate(startGateRules, true)} />}
+      {completedLesson && <CompletedExerciseDialog
+        progress={completedLesson.progress}
+        title={completedLesson.lesson.title}
+        busy={!!busy}
+        error={actionError}
+        onClose={() => { if (!busy) { setCompletedLesson(null); setError(""); } }}
+        onReview={() => {
+          if (!busy && completedLesson.progress.latestAttempt)
+            navigate(`/learn/${completedLesson.progress.latestAttempt.id}?duoLesson=${encodeURIComponent(completedLesson.lesson.id)}`);
+        }}
+        onRetake={() => void retakeLesson()}
+      />}
     </div>
   );
 }

@@ -16,7 +16,8 @@ Duo is the default and production mode. Only the two private configured phone id
 | POST auth/demo | Any | 403 in Duo. Email login also unavailable in Duo. |
 | PATCH profile | `{name?,targetBand?,testType?,examDate?,weeklyMinutes?,dailyMinutes?,selfAssessment?}` | `{user}`; unchanged fixed name/target accepted; changing fixed identity or target away from 8 rejected. Personal timing, date/type and self-assessment up to 8 are editable. |
 | GET dashboard | — | `Dashboard`; personal learning metrics, independent of the shared-band decision. |
-| GET content | `skill?,topic?,band?,cefr?,testType?,format?,q?,page?,pageSize?` | `LibraryResult`; ordinary catalog is independently accessible, including band 7.5/8.0. |
+| GET content | `skill?,topic?,band?,cefr?,testType?,format?,q?,page?,pageSize?,mode?` | `LibraryResult`; independently accessible catalog plus owner/mode-scoped completion summaries for the current page; private, no-store. |
+| GET content/:id/progress | `mode?:practice|exam` | `{progress:ContentProgress}`: latest valid submitted summary, completion count and active draft ID; includes replacement sittings belonging to this original exercise. No answers or partner data. |
 | GET content/:id | — | `{content:ContentItem}`; public content has no answer keys. |
 | POST content/generate | `{skill,band,topic,testType}` | `{content}`; band up to 8.0, missing provider → 503. |
 | POST content/:id/audio | — | Audio from configured ElevenLabs; missing provider → 503. |

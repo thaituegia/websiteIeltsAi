@@ -1,4 +1,4 @@
-> Bản hiện hành dùng **deploy/run-exam-update.sh**: cập nhật từ fresh v2 lên v3 và giữ dữ liệu; từ chối legacy/v1, không có đường chạy reset. Xem [exam-upgrade.md](../docs/exam-upgrade.md) và [bank-reset.md](../docs/bank-reset.md). Các updater v3 bên dưới là lịch sử.
+> Với thay đổi giao diện/tính năng giữ nguyên ngân hàng bài, dùng **deploy/update-app.py**: build khi app cũ vẫn chạy, chỉ thay app và phục hồi image cũ nếu app mới không healthy. Xem [app-only-deployment.md](../docs/app-only-deployment.md). Với thay đổi ngân hàng học liệu, dùng **deploy/run-exam-update.sh**: cập nhật từ fresh v2 lên v3 và giữ dữ liệu; từ chối legacy/v1, không có đường chạy reset. Xem [exam-upgrade.md](../docs/exam-upgrade.md) và [bank-reset.md](../docs/bank-reset.md). Các updater v3 bên dưới là lịch sử.
 
 # Triển khai VPS, tách riêng các project đang chạy
 

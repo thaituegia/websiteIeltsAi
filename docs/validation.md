@@ -1,5 +1,19 @@
 # Kết quả kiểm tra
 
+## Bài đã hoàn thành, làm lại và kết quả gần nhất — 2026-10-15
+
+Kho luyện tập/thi thử và buổi học Duo có xác nhận hoàn thành, xem kết quả gần nhất hoặc làm lại. Chỉ lượt hợp lệ đã nộp thay kết quả gần nhất; điểm thấp hơn vẫn là kết quả mới nhất. Giữ mọi bài cũ, bản ghi, bản nháp, người đồng hành và thời điểm đạt mốc đầu tiên. Bài thay thế sau khi bị hủy được tính đúng về học liệu gốc. Bài thi Duo tiếp tục dùng quy trình riêng.
+
+**8 kiểm tra HTTP tiến độ và 7 kiểm tra Duo mới đạt** với MongoDB thật trong namespace riêng, bao gồm quyền sở hữu/chế độ, không lộ đáp án, bản nháp trống/resume, kết quả thấp hơn, nhóm nguồn thay thế, đồng thời/xác nhận cũ, buổi ở band trước và bảo toàn mốc. **47 kiểm tra hồi quy API/learning/Duo/integrity đạt** ở lượt kiểm tra liên quan; quy tắc dùng lần đầu làm bằng chứng kỹ năng độc lập được giữ. Strict TypeScript toàn project và release build đạt.
+
+**6/6 tình huống trình duyệt desktop/mobile đạt trong 43,5 giây**: đóng/xem không ghi dữ liệu, làm lại trống, tiếp tục bản nháp, lưu điểm mới bằng 0, chuyển route không giữ UI cũ, và làm lại/xác nhận buổi Duo giữ liên kết lộ trình, mốc đầu tiên và bằng chứng của người còn lại. Lượt đầu 2/4 đạt vì locator Đóng trùng nút X và nút cuối hộp thoại; sửa locator cho đúng nút rồi chạy bộ cuối 6/6, không nới kiểm tra sản phẩm.
+
+Release build bằng dependency đã cài khớp lockfile chạy trong Node 24, **512 MiB RAM, không thêm swap, CPU 0,5, network none**, đạt sau **64,5 giây**, peak **444,85 MiB**, exit 0, không OOM. Code production giữ nguyên trong proof; chỉ tài liệu đổi sau snapshot. Đây không phải chạy đầy đủ Dockerfile/npm ci/prune có mạng. Bằng chứng ở ignored `.local/exercise-completion`.
+
+Helper cập nhật app riêng có **16/16 kiểm tra tổng hợp đạt**: giữ app cũ khi thiếu RAM/build lỗi/ngân hàng hoặc cấu hình khác, chỉ thay app, phục hồi image cũ khi start/health lỗi, từ chối ghi đè thay đổi đồng thời và archive có link/đường dẫn vượt thư mục. Lệnh hash ngân hàng offline đã chạy với image Node 24 chỉ đọc và giới hạn tài nguyên trong cloud. Không chạy helper lên VPS trong lần kiểm tra này.
+
+Snapshot database phát triển giữ nguyên 700 bản ghi nền và indexes trong 10 collection. Quét 446 file Git/public cùng 26 file frontend không có khóa hoặc thông tin riêng. Không gọi AI trả phí hoặc thao tác tài khoản học thật. SSH từ cloud tới VPS vẫn bị từ chối; bản tính năng này cần chạy lệnh cập nhật đã ghim trên VPS trước khi xác nhận live.
+
 ## Audio xem lại và đáp án giờ tương đương — 2026-10-15
 
 Listening đã nộp giữ audio đúng từng phần cạnh transcript, có thanh tua, thời gian, tốc độ và lùi/tiến 10 giây. Placement phát lại đúng câu Listening từng được phục vụ. Speaking giữ cách luyện hiện tại: đề/câu hỏi gốc, bản ghi chung và transcript; phân biệt phiên âm Whisper thật, văn bản nhập tay và bài cũ chưa rõ nguồn. Phiên âm được lưu cùng đúng file trước bước chấm; lỗi chấm không làm mất phần đã nhận dạng, thay bản ghi không kế thừa transcript cũ.

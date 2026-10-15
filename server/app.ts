@@ -16,6 +16,7 @@ import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
 import { ApiError } from "./errors";
 import { setAudioRange } from "./audio-range";
+import { contentProgress } from "./content-progress";
 import { SpeechAudioCache, speechCapabilities, type SpeechAudioResult } from "./speech-audio";
 import { readSpeechPrewarmStatus } from "./speech-prewarm";
 import { registerWordNotebookRoutes } from "./word-notebook";
@@ -984,6 +985,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   app.get(
     "/api/content",
     asyncRoute(async (request, response) => {
+      const mode = z.enum(["practice", "exam"]).default("practice").parse(request.query.mode);
       const filter: Record<string, unknown> = {};
       const skill = optionalQuery(request.query.skill);
       if (skill && skills.includes(skill as ContentKind)) filter.skill = skill;
@@ -1023,11 +1025,22 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         database.content.countDocuments(filter, { timeoutMS: LIBRARY_READ_TIMEOUT_MS }),
         database.content.distinct("topic", {}, { timeoutMS: LIBRARY_READ_TIMEOUT_MS }),
       ]);
-      response.json({
+      const progress = await contentProgress(database, learnerOf(request).id, mode, items.map(item => item.id), LIBRARY_READ_TIMEOUT_MS);
+      response.set("Cache-Control", "private, no-store").json({
         items: items.map((content) => sanitizeContent(content, true)),
         total,
         topics: topics.sort(),
+        progress,
       });
+    }),
+  );
+  app.get(
+    "/api/content/:id/progress",
+    asyncRoute(async (request, response) => {
+      const mode = z.enum(["practice", "exam"]).default("practice").parse(request.query.mode);
+      const content = await contentOf(idOf(request), LIBRARY_READ_TIMEOUT_MS);
+      const progress = await contentProgress(database, learnerOf(request).id, mode, [content.id], LIBRARY_READ_TIMEOUT_MS);
+      response.set("Cache-Control", "private, no-store").json({ progress: progress[content.id] });
     }),
   );
   app.get(

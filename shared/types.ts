@@ -392,6 +392,12 @@ export interface AttemptSummary {
   total: number | null;
   feedbackSource: "rule-based" | "ai" | null;
 }
+/** Private, mode-specific progress for a standalone library exercise. */
+export interface ContentProgress {
+  latestAttempt: AttemptSummary | null;
+  activeAttemptId: string | null;
+  completedCount: number;
+}
 export interface SkillEstimate {
   skill: Skill;
   estimatedBand: number | null;
@@ -509,6 +515,7 @@ export interface LibraryResult {
   items: ContentItem[];
   total: number;
   topics: string[];
+  progress?: Record<string, ContentProgress>;
 }
 export interface ErrorNotebook {
   items: {

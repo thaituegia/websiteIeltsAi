@@ -45,6 +45,9 @@ interface Completion {
   at: string;
   proofIds: string[];
   kind: "attempt" | "vocabulary";
+  /** Ordering of the latest confirmed attempt; `at` keeps the first achievement. */
+  submittedAt?: string;
+  startedAt?: string;
 }
 interface LessonRecord {
   id: string;
@@ -657,14 +660,22 @@ export class DuoService {
   ): Promise<void> {
     const { user: member } = await this.member(user);
     const path = await this.path(user);
-    const current = path.bands[bandKey(path.currentBand)];
-    const lesson = current.lessons.find((entry) => entry.id === lessonId);
-    if (!lesson || !this.lessonUnlocked(current, lesson.number))
+    const current = Object.values(path.bands).find((band) =>
+      band.band <= path.currentBand && band.lessons.some((entry) => entry.id === lessonId),
+    );
+    const lesson = current?.lessons.find((entry) => entry.id === lessonId);
+    if (!current || !lesson || !this.lessonUnlocked(current, lesson.number))
       throw new ApiError(
         403,
         "Buổi học chưa mở. Cả hai cần hoàn tất Duo Gate trước.",
       );
-    if (lesson.completion[member.duoRole]) return;
+    const previous = lesson.completion[member.duoRole];
+    if (lesson.kind === "vocabulary" && previous) return;
+    // Older records predate ordering metadata. Resolve only their owned proof;
+    // subsequent concurrent confirmations always include their own timestamps.
+    const previousAttempt = previous?.kind === "attempt" && !previous.submittedAt
+      ? await this.database.attempts.findOne({ _id: previous.proofIds[0], userId: member.id, contentId: lesson.contentId!, status: "submitted" })
+      : null;
     let completion: Completion;
     if (lesson.kind === "vocabulary") {
       const cards = await this.database.cards
@@ -710,6 +721,9 @@ export class DuoService {
             userId: member.id,
             contentId: lesson.contentId!,
             status: "submitted",
+            mode: "practice",
+            duoAssessmentId: { $exists: false },
+            invalidatedAt: { $exists: false },
           })
         : null;
       const content = await this.database.content.findOne({
@@ -767,17 +781,25 @@ export class DuoService {
           409,
           "Cần bài làm đủ nội dung đã nộp và chấm của chính bạn: trả lời ít nhất 80% câu hỏi, đủ 150/250 từ cho từng Writing task, hoặc bản nói có nội dung/ghi âm.",
         );
-      completion = { at: this.iso(), proofIds: [attempt.id], kind: "attempt" };
+      completion = { at: this.iso(), proofIds: [attempt.id], kind: "attempt", submittedAt: attempt.submittedAt!, startedAt: attempt.startedAt };
     }
     await this.changePath(path.duoId, (latest) => {
-      if (latest.currentBand !== path.currentBand)
-        throw new ApiError(409, "Band chung đã thay đổi.");
-      const latestBand = latest.bands[bandKey(latest.currentBand)];
-      const target = latestBand.lessons.find((entry) => entry.id === lessonId);
-      if (!target || !this.lessonUnlocked(latestBand, target.number))
+      const latestBand = latest.bands[bandKey(current.band)];
+      const target = latestBand?.lessons.find((entry) => entry.id === lessonId);
+      if (!latestBand || current.band > latest.currentBand || !target || !this.lessonUnlocked(latestBand, target.number))
         throw new ApiError(403, "Buổi học chưa mở.");
-      if (target.completion[member.duoRole]) return false;
-      target.completion[member.duoRole] = completion;
+      const saved = target.completion[member.duoRole];
+      if (saved) {
+        if (saved.kind !== "attempt" || completion.kind !== "attempt" || saved.proofIds[0] === completion.proofIds[0]) return false;
+        const legacy = saved.proofIds[0] === previousAttempt?.id ? previousAttempt : null;
+        const savedSubmittedAt = saved.submittedAt ?? legacy?.submittedAt;
+        const savedStartedAt = saved.startedAt ?? legacy?.startedAt;
+        if (!savedSubmittedAt || !savedStartedAt) return false;
+        const candidateOrder = [completion.submittedAt!, completion.startedAt!, completion.proofIds[0]].join("\u0000");
+        const savedOrder = [savedSubmittedAt, savedStartedAt, saved.proofIds[0]].join("\u0000");
+        if (candidateOrder <= savedOrder) return false;
+      }
+      target.completion[member.duoRole] = { ...completion, at: saved?.at ?? completion.at };
     });
   }
   private assessmentView(record: AssessmentRecord): DuoAssessmentView {

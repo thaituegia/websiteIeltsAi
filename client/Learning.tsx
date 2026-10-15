@@ -39,6 +39,7 @@ import type {
   AttemptSummary,
   ContentItem,
   ContentKind,
+  ContentProgress,
   ContentSection,
   Feedback,
   Health,
@@ -74,6 +75,7 @@ import {
 import { SectionVisuals } from "./ContentVisual";
 import { WordNotebook, WordText } from "./WordNotebook";
 import { ReviewAudioPlayer } from "./ReviewAudioPlayer";
+import { CompletedExerciseDialog, CompletedExerciseResult } from "./CompletedExerciseDialog";
 import "./learning.css";
 import { DuoPlacementStatus, DuoAttemptContext } from "./Duo";
 import {
@@ -162,6 +164,8 @@ function ContentLibrary({ exam }: { exam: boolean }) {
     [generator, setGenerator] = useState(false),
     [page, setPage] = useState(1);
   const [startContentId, setStartContentId] = useState("");
+  const [completedContent, setCompletedContent] = useState<{ item: ContentItem; progress: ContentProgress } | null>(null);
+  const [completionError, setCompletionError] = useState("");
   const [audioReadiness, setAudioReadiness] = useState<Record<string, ListeningAudioReadiness>>({});
   const [audioReadinessContentId, setAudioReadinessContentId] = useState("");
   const [audioReadinessRetryId, setAudioReadinessRetryId] = useState("");
@@ -175,6 +179,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
   const queryString = new URLSearchParams({
     page: String(page),
     pageSize: "24",
+    mode: exam ? "exam" : "practice",
     ...(skill ? { skill } : {}),
     ...(topic ? { topic } : {}),
     ...(band ? { band } : {}),
@@ -188,6 +193,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
     ++actionGeneration.current;
     audioReadinessRequest.current?.abort();
     setBusy(""); setAudioCheckingId(""); setStartContentId("");
+    setCompletedContent(null); setCompletionError("");
     setActionError(""); setAudioReadinessRetryId(""); setAudioReadinessContentId(""); setContentActionErrors({});
     return () => {
       ++actionGeneration.current;
@@ -201,6 +207,29 @@ function ContentLibrary({ exam }: { exam: boolean }) {
   const progress = useApi<{ attempts: AttemptSummary[] }>(
     "/attempts?status=in-progress",
   );
+  const resumableAttempts = (progress.data?.attempts || []).filter(attempt => attempt.mode === (exam ? "exam" : "practice"));
+  async function showCompletedContent(item: ContentItem, known: ContentProgress) {
+    if (busy || attemptStarting.current) return;
+    const generation = ++actionGeneration.current;
+    setCompletedContent({ item, progress: known });
+    setCompletionError(""); setBusy(item.id);
+    try {
+      const result = await api<{ progress: ContentProgress }>(
+        `/content/${encodeURIComponent(item.id)}/progress?mode=${exam ? "exam" : "practice"}`,
+      );
+      if (generation !== actionGeneration.current) return;
+      if (!result.progress.latestAttempt) {
+        setCompletedContent(null);
+        void reload();
+        return;
+      }
+      setCompletedContent({ item, progress: result.progress });
+    } catch (cause) {
+      if (generation === actionGeneration.current) setCompletionError(errorMessage(cause));
+    } finally {
+      if (generation === actionGeneration.current) setBusy("");
+    }
+  }
   function clearContentError(contentId: string) {
     setContentActionErrors(current => {
       const next = { ...current }; delete next[contentId]; return next;
@@ -372,14 +401,14 @@ function ContentLibrary({ exam }: { exam: boolean }) {
           ))}
         </div>
       )}
-      {!!progress.data?.attempts.length && (
+      {!!resumableAttempts.length && (
         <Card className="resume-panel">
           <div className="section-heading compact">
             <h2>Tiếp tục bài đang làm</h2>
-            <Badge>{progress.data.attempts.length} bản nháp</Badge>
+            <Badge>{resumableAttempts.length} bản nháp</Badge>
           </div>
           <div className="resume-list">
-            {progress.data.attempts.slice(0, 4).map((attempt) => (
+            {resumableAttempts.slice(0, 4).map((attempt) => (
               <Link
                 key={attempt.id}
                 className="resume-item"
@@ -537,8 +566,10 @@ function ContentLibrary({ exam }: { exam: boolean }) {
           <div className="content-grid">
             {data.items.map((item, index) => {
               const Icon = icons[item.skill];
+              const completion = data.progress?.[item.id];
+              const completed = completion?.latestAttempt;
               return (
-                <article className={`content-card ${item.skill}`} key={item.id}>
+                <article className={`content-card ${item.skill}${completed ? " content-card-completed" : ""}`} key={item.id}>
                   <div className="content-art">
                     <QuestTerrain />
                     <span className="content-art-number">
@@ -552,6 +583,7 @@ function ContentLibrary({ exam }: { exam: boolean }) {
                       <SkillBadge skill={item.skill} />
                       <Badge>{item.cefr}</Badge>
                       {item.format === "full-mock" && <Badge>Full mock</Badge>}
+                      {completed && <Badge className="success"><CheckCircle2 size={12} /> Đã hoàn thành</Badge>}
                     </div>
                     <h3>{item.title}</h3>
                     <p>{item.description || skillDescriptions[item.skill]}</p>
@@ -567,15 +599,25 @@ function ContentLibrary({ exam }: { exam: boolean }) {
                       </span>
                       <span>Band {item.band.toFixed(1)}</span>
                     </div>
+                    {completed && <CompletedExerciseResult attempt={completed} />}
+                    {completion?.activeAttemptId && <small className="completed-exercise-draft">
+                      {completed ? "Có lượt làm lại đang làm" : "Có bản nháp đã lưu"}
+                    </small>}
                     <Button
                       className="secondary"
-                      disabled={!!busy || (hasAiSpeech(health) && audioReadiness[item.id]?.ready === false)}
-                      onClick={() => void begin(item.id)}
+                      disabled={!!busy || (!completed && hasAiSpeech(health) && audioReadiness[item.id]?.ready === false)}
+                      onClick={() => completed && completion
+                        ? void showCompletedContent(item, completion)
+                        : void begin(item.id)}
                     >
                       {audioCheckingId === item.id
                         ? "Đang kiểm tra âm thanh…"
                         : busy === item.id
                         ? "Đang mở…"
+                        : completed
+                          ? "Đã hoàn thành · Xem lựa chọn"
+                        : completion?.activeAttemptId
+                          ? "Tiếp tục làm bài"
                         : exam
                           ? "Bắt đầu thi thử"
                           : "Bắt đầu luyện"}
@@ -640,6 +682,22 @@ function ContentLibrary({ exam }: { exam: boolean }) {
         và CEFR của nội dung là mức tham khảo; ngân hàng chưa được hiệu chuẩn
         bởi giám khảo IELTS.
       </p>
+      {completedContent && <CompletedExerciseDialog
+        progress={completedContent.progress}
+        title={completedContent.item.title}
+        busy={!!busy}
+        error={completionError}
+        onClose={() => { setCompletedContent(null); setCompletionError(""); }}
+        onReview={() => {
+          const latest = completedContent.progress.latestAttempt;
+          if (latest) navigate(`/learn/${latest.id}`);
+        }}
+        onRetake={() => {
+          const item = completedContent.item;
+          setCompletedContent(null); setCompletionError("");
+          void begin(item.id, false, item.skill);
+        }}
+      />}
       {startContentId && (
         <Modal title="Quy định phòng thi" onClose={() => !busy && setStartContentId("")}>
           <ExamRules />
@@ -1214,6 +1272,14 @@ export function PlacementPage() {
 
 export function LearningPage() {
   const { attemptId: id = "" } = useParams();
+  // Retakes use the same route component. A new sitting must discard every old
+  // recorder, transcript, timer, save queue and modal before loading its draft.
+  return <LearningAttempt key={id} id={id} />;
+}
+
+function LearningAttempt({ id }: { id: string }) {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { health, refresh } = useSession();
   const [attempt, setAttempt] = useState<Attempt | null>(null),
     [loading, setLoading] = useState(true),
@@ -1242,6 +1308,11 @@ export function LearningPage() {
     [busy, setBusy] = useState(false),
     [confirm, setConfirm] = useState(false),
     [progress, setProgress] = useState("");
+  const [retakeProgress, setRetakeProgress] = useState<ContentProgress | null>(null);
+  const [retakeBusy, setRetakeBusy] = useState(false);
+  const [retakeError, setRetakeError] = useState("");
+  const [retakeExamConfirm, setRetakeExamConfirm] = useState(false);
+  const retakeRequest = useRef(false);
   const [recording, setRecording] = useState(false),
     [recordSeconds, setRecordSeconds] = useState(0),
     [recordBusy, setRecordBusy] = useState(false),
@@ -1438,6 +1509,61 @@ export function LearningPage() {
     };
   }, [attempt?.contentId, attempt?.status]);
   const submitted = attempt?.status === "submitted";
+  async function showRetake() {
+    if (!attempt || attempt.status !== "submitted" || attempt.duoAssessmentId || retakeRequest.current) return;
+    retakeRequest.current = true;
+    setRetakeBusy(true); setRetakeError("");
+    const generation = loadGeneration.current;
+    try {
+      const result = await api<{ progress: ContentProgress }>(
+        `/content/${encodeURIComponent(attempt.contentId)}/progress?mode=${attempt.mode}`,
+      );
+      if (!mounted.current || generation !== loadGeneration.current) return;
+      if (!result.progress.latestAttempt) throw new Error("Chưa xác minh được kết quả đã nộp. Hãy tải lại bài.");
+      setRetakeProgress(result.progress);
+    } catch (cause) {
+      if (mounted.current && generation === loadGeneration.current) setRetakeError(errorMessage(cause));
+    } finally {
+      retakeRequest.current = false;
+      if (mounted.current && generation === loadGeneration.current) setRetakeBusy(false);
+    }
+  }
+  async function beginRetake(accepted = false) {
+    if (!attempt || attempt.duoAssessmentId || !retakeProgress || retakeRequest.current) return;
+    retakeRequest.current = true;
+    setRetakeBusy(true); setRetakeError("");
+    const generation = loadGeneration.current;
+    try {
+      if (attempt.skill === "listening" && hasAiSpeech(health)) {
+        const { audio } = await api<{ audio: ListeningAudioReadiness }>(
+          `/content/${encodeURIComponent(attempt.contentId)}/listening-audio/readiness?mode=${attempt.mode}`,
+          { timeoutMs: 10_000 },
+        );
+        if (!mounted.current || generation !== loadGeneration.current) return;
+        if (!audio.ready) throw new Error(audio.notice);
+      }
+      if (attempt.mode === "exam" && integrityEnabled && !accepted) {
+        setRetakeExamConfirm(true);
+        return;
+      }
+      if (!mounted.current || generation !== loadGeneration.current) return;
+      const lessonId = attempt.mode === "practice" && !attempt.duoAssessmentId
+        ? searchParams.get("duoLesson") : null;
+      const lessonQuery = lessonId ? `?duoLesson=${encodeURIComponent(lessonId)}` : "";
+      const result = await api<{ attempt: Attempt }>("/attempts", {
+        method: "POST",
+        body: json({ contentId: attempt.contentId, mode: attempt.mode }),
+      });
+      // Once the server commits a sitting, navigate to it even if this review
+      // was left while the POST ran. Protected exams need their live monitor.
+      navigate(`/learn/${result.attempt.id}${lessonQuery}`);
+    } catch (cause) {
+      if (mounted.current && generation === loadGeneration.current) setRetakeError(errorMessage(cause));
+    } finally {
+      retakeRequest.current = false;
+      if (mounted.current && generation === loadGeneration.current) setRetakeBusy(false);
+    }
+  }
   const saveDraft = useCallback(async () => {
     if (!attempt || attempt.status !== "in-progress" || !canWrite.current) return;
     const generation = loadGeneration.current;
@@ -2308,6 +2434,10 @@ export function LearningPage() {
       )}
       {submitted && (
         <div className="row wrap">
+          {!attempt.duoAssessmentId && <Button className="secondary" disabled={retakeBusy}
+            onClick={() => void showRetake()}>
+            <RotateCcw size={16} /> {retakeBusy ? "Đang kiểm tra…" : "Làm lại"}
+          </Button>}
           <Link to="/library" className="button">
             <BookOpen size={16} />
             Tìm bài luyện tiếp theo
@@ -2318,6 +2448,36 @@ export function LearningPage() {
           </Link>
         </div>
       )}
+      {submitted && retakeError && !retakeProgress && <ErrorNotice message={retakeError} />}
+      {retakeProgress && !retakeExamConfirm && <CompletedExerciseDialog
+        progress={retakeProgress}
+        title={attempt.title}
+        busy={retakeBusy}
+        error={retakeError}
+        onClose={() => { setRetakeProgress(null); setRetakeError(""); }}
+        onReview={() => {
+          const latest = retakeProgress.latestAttempt;
+          if (latest) {
+            const lessonId = attempt.mode === "practice" && !attempt.duoAssessmentId
+              ? searchParams.get("duoLesson") : null;
+            navigate(`/learn/${latest.id}${lessonId ? `?duoLesson=${encodeURIComponent(lessonId)}` : ""}`);
+          }
+          setRetakeProgress(null); setRetakeError("");
+        }}
+        onRetake={() => void beginRetake()}
+      />}
+      {retakeProgress && retakeExamConfirm && <Modal title="Quy định phòng thi"
+        onClose={() => { if (!retakeBusy) setRetakeExamConfirm(false); }}>
+        <ExamRules />
+        <p className="muted">Kết quả cũ vẫn được giữ trong lịch sử. Lượt thi này tuân theo đầy đủ quy định phòng thi.</p>
+        {retakeError && <ErrorNotice message={retakeError} />}
+        <div className="row wrap">
+          <Button disabled={retakeBusy} onClick={() => void beginRetake(true)}>
+            {retakeBusy ? "Đang mở…" : "Tôi hiểu, bắt đầu bài thi"}
+          </Button>
+          <Button className="secondary" disabled={retakeBusy} onClick={() => setRetakeExamConfirm(false)}>Quay lại</Button>
+        </div>
+      </Modal>}
       {confirm && (
         <Modal title="Nộp bài luyện của bạn?" onClose={() => setConfirm(false)}>
           <p className="muted">
