@@ -20,6 +20,7 @@ import { contentProgress } from "./content-progress";
 import { SpeechAudioCache, speechCapabilities, type SpeechAudioResult } from "./speech-audio";
 import { readSpeechPrewarmStatus } from "./speech-prewarm";
 import { registerWordNotebookRoutes } from "./word-notebook";
+import { validIpa, type WordPronunciationOptions } from "./word-pronunciation";
 import type { WordTranslationOptions } from "./word-translation";
 import { placementDurationSeconds, suggestedPlacementSeconds } from "./placement-timing";
 import { ExamGuard, requireExamTab, type ExamTarget, type ExamResetResult } from "./exam-guard";
@@ -95,6 +96,8 @@ export interface AppConfig {
   duo?: Parameters<typeof createDuoService>[1];
   /** Isolated tests can inject a controlled dictionary transport. */
   wordTranslation?: WordTranslationOptions;
+  /** Free dictionary transport is isolated from paid AI services. */
+  wordPronunciation?: WordPronunciationOptions;
 }
 const skills = [
   "reading",
@@ -1884,6 +1887,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     },
     assertActiveRequest: (request, kind, id) => assertExamRequest(request, kind, id),
     translation: config.wordTranslation,
+    pronunciation: config.wordPronunciation,
   });
   app.get(
     "/api/vocabulary/cards",
@@ -1923,6 +1927,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       if (!word || !meaning)
         throw new ApiError(400, "Cần từ và nghĩa để tạo flashcard.");
       const userId = learnerOf(request).id;
+      const bankIpa = validIpa(vocabulary?.ipa);
       const resolveExisting = async (card: CardRecord): Promise<CardRecord> => {
         // Adding an explicit definition in the notebook can complete a word
         // captured during a paper. Keep its scheduling and review history.
@@ -1932,6 +1937,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           {
             $set: {
               meaning, meaningStatus: "ready",
+              ...(bankIpa ? { ipa: bankIpa, ipaSource: "bank" as const } : {}),
               ...(vocabulary ? { vocabularyId: vocabulary.id, cefr: vocabulary.cefr,
                 topic: vocabulary.topic, definition: vocabulary.definition,
                 partOfSpeech: vocabulary.partOfSpeech } : {}),
@@ -1955,6 +1961,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         vocabularyId: vocabulary?.id || null,
         word,
         meaning,
+        ...(bankIpa ? { ipa: bankIpa, ipaSource: "bank" as const } : {}),
         example: vocabulary?.examples[0] || input.example || "",
         cefr: vocabulary?.cefr || input.cefr || "B1",
         topic: vocabulary?.topic || input.topic || "Personal",

@@ -7,6 +7,7 @@ import { ApiError } from "./errors";
 import { newScheduler, vocabularyMetrics } from "./learning";
 import { newId, type AttemptRecord, type CardRecord, type Database, type PlacementRecord } from "./storage";
 import { translateWordWithOpenAI, type WordTranslationOptions } from "./word-translation";
+import { WordPronunciationResolver, validIpa, type WordPronunciationOptions } from "./word-pronunciation";
 
 export interface WordNotebookOptions {
   now?: () => number;
@@ -15,6 +16,7 @@ export interface WordNotebookOptions {
   /** Settles leases/cancellations before a source is read, including Duo parts. */
   inspectSource?: (request: Request, kind: WordOrigin["kind"], resourceId: string) => Promise<void>;
   translation?: WordTranslationOptions;
+  pronunciation?: WordPronunciationOptions;
 }
 
 const wordRequestSchema = z.object({
@@ -171,6 +173,7 @@ export function registerWordNotebookRoutes(app: Express, database: Database, opt
   const now = options.now ?? Date.now;
   const translations = new Map<string, { translation: WordTranslation; expiresAt: number }>();
   const inFlight = new Map<string, Promise<WordTranslation>>();
+  const pronunciationResolver = new WordPronunciationResolver(database, options.pronunciation);
 
   async function resolveSource(request: Request, kind: WordOrigin["kind"], input: WordRequest, translate: boolean): Promise<WordOrigin> {
     const id = resourceId(request);
@@ -284,7 +287,8 @@ export function registerWordNotebookRoutes(app: Express, database: Database, opt
       const card = await database.cards.findOne({ userId, word });
       if (card?.meaningStatus === "ready" && card.translationContext === origin.context && card.translationSource && card.meaning) {
         return { word, meaning: card.meaning, definition: card.definition, partOfSpeech: card.partOfSpeech,
-          source: card.translationSource, context: origin.context };
+          source: card.translationSource, context: origin.context,
+          ...(validIpa(card.ipa) ? { ipa: validIpa(card.ipa) } : {}) };
       }
       const bank = await database.vocabulary.findOne({ word: { $regex: `^${word.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}$`, $options: "i" } });
       const context = plainText(origin.context).toLowerCase();
@@ -294,7 +298,8 @@ export function registerWordNotebookRoutes(app: Express, database: Database, opt
           (context.includes(sentence) || tokens(context).length >= 3 && sentence.includes(context)));
       });
       const translation: WordTranslation = bank && bankFits
-        ? { word, meaning: bank.meaning, definition: bank.definition, partOfSpeech: bank.partOfSpeech, source: "bank", context: origin.context }
+        ? { word, meaning: bank.meaning, definition: bank.definition, partOfSpeech: bank.partOfSpeech, source: "bank", context: origin.context,
+          ...(validIpa(bank.ipa) ? { ipa: validIpa(bank.ipa) } : {}) }
         : await translateWordWithOpenAI(word, origin.context, options.translation);
       if (translations.size >= 500) translations.delete(translations.keys().next().value!);
       translations.set(key, { translation, expiresAt: now() + 30 * 60_000 });
@@ -305,6 +310,21 @@ export function registerWordNotebookRoutes(app: Express, database: Database, opt
     finally { inFlight.delete(key); }
   }
 
+  app.post("/api/vocabulary/cards/:id/pronunciation", asyncRoute(async (request, response) => {
+    const userId = learnerOf(request).id;
+    const card = await database.cards.findOne({ _id: resourceId(request), userId });
+    if (!card) throw new ApiError(404, "Không tìm thấy thẻ từ của bạn.");
+    const ipa = validIpa(card.ipa);
+    const pronunciation = ipa && (card.ipaSource === "bank" || card.ipaSource === "dictionary")
+      ? { word: card.word, ipa, source: card.ipaSource }
+      : await pronunciationResolver.get(card.word);
+    const saved = await database.cards.updateOne({ _id: card.id, userId, word: card.word }, {
+      $set: { ipa: pronunciation.ipa, ipaSource: pronunciation.source },
+    });
+    if (!saved.matchedCount) throw new ApiError(404, "Thẻ từ đã thay đổi. Hãy tải lại sổ từ.");
+    response.set("Cache-Control", "private, no-store").json({ pronunciation });
+  }));
+
   for (const kind of ["attempt", "placement"] as const) {
     const base = kind === "attempt" ? "/api/attempts/:id/words" : "/api/placement/:id/words";
     app.post(base, asyncRoute(async (request, response) => {
@@ -314,6 +334,21 @@ export function registerWordNotebookRoutes(app: Express, database: Database, opt
       const { card, alreadySaved } = await saveWord(learnerOf(request).id, word, origin);
       response.set("Cache-Control", "private, no-store").status(alreadySaved ? 200 : 201)
         .json({ saved: { cardId: card.id, word: card.word, alreadySaved } });
+    }));
+    app.post(`${base}/pronunciation`, asyncRoute(async (request, response) => {
+      const input = wordRequestSchema.parse(request.body);
+      const origin = await resolveSource(request, kind, input, true);
+      const userId = learnerOf(request).id;
+      const word = normalizeSelectedWord(input.word);
+      const pronunciation = await pronunciationResolver.get(word);
+      // The source can be invalidated while an external dictionary is loading.
+      // Reuse the same review boundary immediately before disclosure or writes.
+      const latest = await resolveSource(request, kind, input, true);
+      if (latest.context !== origin.context) throw new ApiError(409, "Ngữ cảnh của lượt đã thay đổi. Hãy tải lại bài.");
+      await database.cards.updateOne({ userId, word }, {
+        $set: { ipa: pronunciation.ipa, ipaSource: pronunciation.source },
+      });
+      response.set("Cache-Control", "private, no-store").json({ pronunciation });
     }));
     app.post(`${base}/translate`, asyncRoute(async (request, response) => {
       const input = wordRequestSchema.parse(request.body);
@@ -331,6 +366,7 @@ export function registerWordNotebookRoutes(app: Express, database: Database, opt
       const resolved = await database.cards.findOneAndUpdate({ userId, word, meaningStatus: "pending", "origin.context": translation.context }, {
         $set: { meaning: translation.meaning, meaningStatus: "ready", translationSource: translation.source,
           translationContext: translation.context, definition: translation.definition, partOfSpeech: translation.partOfSpeech,
+          ...(translation.ipa && translation.source === "bank" ? { ipa: translation.ipa, ipaSource: "bank" as const } : {}),
           origin: latest, example: translation.context },
       }, { returnDocument: "after" });
       const card = resolved ?? await database.cards.findOne({ userId, word });

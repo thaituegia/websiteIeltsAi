@@ -1,0 +1,18 @@
+.word-pronunciation { display: grid; gap: 7px; margin: 8px 0; max-width: 100%; min-width: 0; }
+.word-pronunciation-ipa-line { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.word-pronunciation-ipa-label { color: var(--muted, #64736b); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+.word-pronunciation-ipa { font-family: Arial, "DejaVu Sans", "Lucida Sans Unicode", sans-serif; font-size: 16px; font-style: normal; line-height: 1.7; overflow-wrap: anywhere; color: #294f43; }
+.word-pronunciation-empty, .word-pronunciation-status { color: var(--muted, #64736b); font-size: 11px; line-height: 1.6; }
+.word-pronunciation-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.word-pronunciation button, .word-pronunciation select { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 32px; border: 1px solid #b6d6c4; border-radius: 9px; background: #eff8f2; color: #315446; font: inherit; font-size: 11px; padding: 5px 8px; cursor: pointer; max-width: 100%; }
+.word-pronunciation button:hover:not(:disabled) { background: #deefe5; }
+.word-pronunciation button:disabled, .word-pronunciation select:disabled { opacity: .6; cursor: default; }
+.word-pronunciation button:focus-visible, .word-pronunciation select:focus-visible { outline: 3px solid #e6a477; outline-offset: 2px; }
+.word-pronunciation .word-pronunciation-lookup { min-height: 28px; padding: 3px 7px; }
+.word-pronunciation .word-pronunciation-stop { border-color: #e0b0ad; background: #fff1ef; color: #8c4945; }
+.word-pronunciation-error { display: block; color: #9a3d31; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+.word-pronunciation.compact { gap: 5px; }
+.word-pronunciation.compact .word-pronunciation-ipa { font-size: 14px; }
+.flashcard .word-pronunciation { justify-items: center; margin: 13px 0; }
+.flashcard .word-pronunciation-controls { justify-content: center; }
+@media (max-width: 600px) { .word-pronunciation button, .word-pronunciation select { min-height: 38px; } }

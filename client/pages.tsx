@@ -13,7 +13,6 @@ import {
   Check,
   Sparkles,
   ChevronRight,
-  Volume2,
   Plus,
   Search,
   Download,
@@ -53,6 +52,7 @@ import {
   skillNames,
 } from "./components";
 import { DuoDashboardCard } from "./Duo";
+import { WordPronunciation } from "./WordPronunciation";
 
 const skillIcons = {
   reading: BookOpen,
@@ -939,13 +939,6 @@ export function VocabularyPage() {
                   <article className="vocab-card" key={item.id}>
                     <div className="vocab-card-header">
                       <Badge>{item.cefr}</Badge>
-                      <button
-                        className="icon-button"
-                        aria-label={`Phát âm ${item.word}`}
-                        onClick={() => speak(item.word)}
-                      >
-                        <Volume2 size={17} />
-                      </button>
                     </div>
                     <button
                       className="vocab-word"
@@ -953,9 +946,8 @@ export function VocabularyPage() {
                     >
                       {item.word}
                     </button>
-                    <p className="vocab-ipa">
-                      {item.ipa} · {item.partOfSpeech}
-                    </p>
+                    <WordPronunciation word={item.word} ipa={item.ipa} compact />
+                    <p className="vocab-ipa">{item.partOfSpeech}</p>
                     <p className="vocab-meaning">{item.meaning}</p>
                     <div className="vocab-card-footer">
                       <span>{item.topic}</span>
@@ -1030,15 +1022,10 @@ export function VocabularyPage() {
                 <div>
                   <div className="row">
                     <h3>{card.word}</h3>
-                    <button
-                      className="icon-button"
-                      aria-label={`Phát âm ${card.word}`}
-                      onClick={() => speak(card.word)}
-                    >
-                      <Volume2 size={17} />
-                    </button>
                     <Badge>{card.cefr}</Badge>
                   </div>
+                  <WordPronunciation word={card.word} ipa={card.ipa}
+                    lookup={{ path: `/vocabulary/cards/${encodeURIComponent(card.id)}/pronunciation` }} />
                   <p>{card.meaningStatus === "pending" ? "Đã lưu từ · xem nghĩa sau khi nộp bài nguồn." : card.meaning}</p>
                   {card.example && (
                     <p className="muted italic">{card.example}</p>
@@ -1095,14 +1082,9 @@ export function VocabularyPage() {
               <Badge>
                 {activeCard.cefr} · {activeCard.topic}
               </Badge>
-              <button
-                className="icon-button flashcard-sound"
-                aria-label={`Phát âm ${activeCard.word}`}
-                onClick={() => speak(activeCard.word)}
-              >
-                <Volume2 />
-              </button>
               <h2>{activeCard.word}</h2>
+              <WordPronunciation word={activeCard.word} ipa={activeCard.ipa}
+                lookup={{ path: `/vocabulary/cards/${encodeURIComponent(activeCard.id)}/pronunciation` }} />
               {flipped ? (
                 <div className="flashcard-answer">
                   <p>{activeCard.meaning}</p>
@@ -1174,16 +1156,10 @@ export function VocabularyPage() {
               <Badge>{entry.cefr}</Badge>
               <Badge>{entry.register}</Badge>
               <span className="muted">
-                {entry.ipa} · {entry.partOfSpeech}
+                {entry.partOfSpeech}
               </span>
-              <button
-                className="icon-button"
-                aria-label={`Phát âm ${entry.word}`}
-                onClick={() => speak(entry.word)}
-              >
-                <Volume2 size={18} />
-              </button>
             </div>
+            <WordPronunciation word={entry.word} ipa={entry.ipa} />
             <h3>{entry.meaning}</h3>
             <p className="muted">{entry.definition}</p>
             <div>
@@ -1276,14 +1252,6 @@ export function VocabularyPage() {
       )}
     </div>
   );
-}
-function speak(text: string) {
-  if (!("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = "en-GB";
-  utterance.rate = 0.88;
-  window.speechSynthesis.speak(utterance);
 }
 export function HistoryPage() {
   const [skill, setSkill] = useState(""),

@@ -242,6 +242,9 @@ export interface VocabularyCard {
   translationContext?: string;
   definition?: string;
   partOfSpeech?: string;
+  /** Optional pronunciation metadata; older saved cards remain compatible. */
+  ipa?: string;
+  ipaSource?: WordPronunciation["source"];
 }
 export interface WordOrigin {
   kind: "attempt" | "placement";
@@ -265,12 +268,21 @@ export interface WordTranslation {
   meaning: string;
   definition?: string;
   partOfSpeech?: string;
+  ipa?: string;
   source: "bank" | "openai";
   context: string;
 }
 export interface WordTranslationResult {
   translation: WordTranslation;
   card?: VocabularyCard;
+}
+export interface WordPronunciation {
+  word: string;
+  ipa: string;
+  source: "bank" | "dictionary";
+}
+export interface WordPronunciationResult {
+  pronunciation: WordPronunciation;
 }
 export interface CriterionFeedback {
   name: string;

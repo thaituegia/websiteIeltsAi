@@ -5,6 +5,7 @@ import {
 import { BookMarked, Check, LoaderCircle, RotateCcw, X } from "lucide-react";
 import type { WordSaveResult, WordTranslation, WordTranslationResult } from "../shared/types";
 import { api, json } from "./api";
+import { WordPronunciation } from "./WordPronunciation";
 import "./word-notebook.css";
 
 type WordSource = { sectionIndex?: number; questionId?: string };
@@ -181,6 +182,9 @@ export function WordNotebook({ resource, review, scopeKey, disabled = false, cla
           <button type="button" className="word-inline-close" aria-label="Đóng thẻ từ" onClick={() => close(true)}><X size={18} /></button>
         </div>
         <p className="word-inline-context" lang="en">{selection.context}</p>
+        {review && <WordPronunciation word={selection.word} ipa={translation?.ipa}
+          lookup={{ path: `${path}/pronunciation`, body: wordBody(selection) }}
+          disabled={disabled} compact />}
         {review ? <div className="word-inline-translation" aria-live="polite" aria-busy={translating}>
           {translating && <p className="word-inline-status"><LoaderCircle className="word-spinner" size={15} />Đang xem nghĩa trong ngữ cảnh…</p>}
           {translation && <><strong className="word-inline-meaning">{translation.meaning}</strong>

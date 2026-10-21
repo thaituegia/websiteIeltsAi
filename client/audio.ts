@@ -1,6 +1,7 @@
 import type { Attempt, ContentSection } from "../shared/types";
 import { buildSpeechScript, chunkSpeechTurns } from "../shared/speech-script";
 import { examHeaders } from "./examTransport";
+import { stopWordPronunciation } from "./word-pronunciation";
 
 export interface RecordingSession {
   stop: () => Promise<Blob>;
@@ -152,6 +153,7 @@ export function speakSections(
   const lines = chunkSpeechTurns(turns, 220);
   if (!lines.length)
     throw new Error("Bài nghe chưa có nội dung phát âm thanh.");
+  stopWordPronunciation();
   speechSynthesis.cancel();
   speechSynthesis.resume?.();
   let cursor = 0;

@@ -44,10 +44,13 @@ Duo is the default and production mode. Only the two private configured phone id
 | GET vocabulary/cards | — | `{cards:VocabularyCard[],dueCount:number}`. |
 | POST vocabulary/cards | `{vocabularyId}` or `{word,meaning,example?,cefr?,topic?}` | `{card}`; idempotent owner save. |
 | POST vocabulary/cards/:id/review | `{rating:1}` through `{rating:4}` | `{card}` with real FSRS scheduling. |
+| POST vocabulary/cards/:id/pronunciation | — | `{pronunciation:{word,ipa,source:'bank'|'dictionary'}}`; own saved card only, enriches IPA metadata without changing meaning or FSRS. |
 | POST attempts/:id/words | `{word,context?,sectionIndex?}` | `{saved:{cardId,word,alreadySaved}}`; owner-scoped visible single-word capture, no definition or answer material. Active exam tab checks remain enforced. |
 | POST attempts/:id/words/translate | Same body | `{translation,card?}`; only owned, valid submitted work. Contextual Vietnamese meaning inline; saved pending card enriched only for its matching context, preserving FSRS/history. |
+| POST attempts/:id/words/pronunciation | Same body | Pronunciation-only response; completed, valid owned source checks before and after lookup. Bank IPA first, free dictionary fallback; no paid AI/audio. |
 | POST placement/:id/words | `{word,context?,questionId?}` | Same save-only response. Active tests accept only the currently served question and exclude hidden Listening text. |
 | POST placement/:id/words/translate | Same body | Same translation response; only valid completed tests and questions actually served to the owner. |
+| POST placement/:id/words/pronunciation | Same body | Same pronunciation-only response; completed, valid owned test and actually served question required. |
 | GET plan | — | `{plan:StudyPlan}` for legacy/personal recommendations; never a source of Duo unlock authority. |
 | PATCH plan/tasks/:id | `{completed:boolean}` | Legacy task status only; cannot bypass Duo lesson proof, Gate or promotion. |
 | GET errors | — | `ErrorNotebook` owned by the current learner. |

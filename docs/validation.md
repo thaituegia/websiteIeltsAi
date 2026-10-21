@@ -1,5 +1,13 @@
 # Kết quả kiểm tra
 
+## Phiên âm IPA và nghe từ mới — 2026-10-21
+
+Typecheck, release build và diff checks đạt. **73/73 kiểm tra native** đạt qua resolver IPA, Express/MongoDB thật, Web Speech kiểm soát, sổ từ, Listening và API hồi quy. Kiểm tra toàn bộ **648/648** IPA ngân hàng hợp lệ, gồm ký hiệu /θ/. Bao phủ exact-word matching, không đoán lemma, cache/gộp yêu cầu, timeout/body limit, lỗi từ điển/thử lại, owner isolation và kiểm tra lại trạng thái nguồn sau lookup. So sánh MongoDB trước/sau chứng minh chỉ bổ sung metadata IPA, giữ FSRS, review log, nghĩa và tài liệu học khác.
+
+**12/12 kiểm tra trình duyệt desktop/mobile** đạt: sáu kiểm tra mới cho IPA/lưu lại/tốc độ thường-chậm/giọng GB-US/lỗi playback/trình duyệt không hỗ trợ; sáu kiểm tra sổ từ hiện có cho lưu, dịch, bài đầu vào và bảo toàn bài thi. Đã xem ảnh saved-card mobile và review desktop: ký hiệu IPA rõ, controls vừa màn hình, không overflow. Tất cả dùng dữ liệu synthetic trong namespace MongoDB riêng và transport/giọng kiểm soát; không gọi AI trả phí hoặc thao tác tài khoản học thật. Đây không phải bằng chứng nghe giọng thực trên mọi hệ điều hành.
+
+Lookup live miễn phí tới `api.dictionaryapi.dev` bị proxy cloud từ chối 403; không tắt TLS hoặc né proxy. Đã lưu và đọc lại draft cấu hình, thêm đúng hostname này và hướng dẫn startup, giữ presets, các custom hosts, install script và requirements cũ. Cần Review → Save → Publish để áp dụng cloud; chưa xác minh lookup live sau publish. Ngân hàng IPA có sẵn và Web Speech không cần truy cập từ điển. Không đổi seed, ngân hàng, dependencies hay deployment helper; bản cập nhật app-only chưa được xác nhận triển khai trên VPS.
+
 ## Thông báo và chẩn đoán lỗi nộp Writing — 2026-10-21
 
 Đã tái hiện việc client thay mọi lỗi 502 bằng thông báo gateway chung, che cả lý do AI mà backend đã xác thực. Bản sửa dùng mã lỗi hữu hạn để hiển thị thông báo quyền/hạn mức/model/kết nối/kết quả AI; phản hồi thô từ nhà cung cấp và lỗi gateway không xác định vẫn được giữ kín. Log chỉ có mã, status và loại route cố định. Giữ nguyên model, hai bước chấm, yêu cầu bằng chứng nguyên văn, điểm và quy tắc thi; không thêm lượt gọi AI tự động.

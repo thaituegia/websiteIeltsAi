@@ -74,6 +74,7 @@ import {
 } from "./audio";
 import { SectionVisuals } from "./ContentVisual";
 import { WordNotebook, WordText } from "./WordNotebook";
+import { WordPronunciation } from "./WordPronunciation";
 import { ReviewAudioPlayer } from "./ReviewAudioPlayer";
 import { CompletedExerciseDialog, CompletedExerciseResult } from "./CompletedExerciseDialog";
 import "./learning.css";
@@ -2410,7 +2411,7 @@ function LearningAttempt({ id }: { id: string }) {
             {vocabulary.map((word) => (
               <div key={word.id}>
                 <strong>{word.word}</strong>
-                <span>{word.ipa}</span>
+                <WordPronunciation word={word.word} ipa={word.ipa} compact />
                 <p>{word.meaning}</p>
                 <Button
                   className="secondary small"

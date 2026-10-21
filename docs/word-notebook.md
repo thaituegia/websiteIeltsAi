@@ -13,3 +13,5 @@ Máy chủ chỉ nhận một từ và câu đã kiểm tra trong bài của ng�
 API lưu: `POST /api/attempts/:id/words` hoặc `/api/placement/:id/words`, body `{word, context?, sectionIndex?, questionId?}`. Response chỉ có `{saved:{cardId,word,alreadySaved}}`, không có nghĩa hay đáp án. Dịch dùng đường dẫn tương ứng thêm `/translate`; máy chủ chỉ trả nghĩa cho bài thuộc người dùng và đã hoàn thành hợp lệ. Lượt bị hủy không được tra nghĩa. `sectionIndex` dùng cho lượt luyện/thi; `questionId` dùng cho bài đầu vào.
 
 Bản cập nhật giữ nguyên tài khoản, học liệu, bài làm, rank/lộ trình, lịch ôn, ghi âm và audio đã tạo. Không cần reset hoặc tạo lại ngân hàng đề.
+
+Sổ từ, flashcard và thẻ chọn từ sau nộp hỗ trợ **phiên âm IPA**, **Nghe** và **Nghe chậm**. Từ chưa có IPA có nút tra riêng; giọng dùng trình duyệt, không gọi API tạo audio trả phí. Chi tiết nguồn phiên âm và các giới hạn thiết bị ở [word-pronunciation.md](word-pronunciation.md).
