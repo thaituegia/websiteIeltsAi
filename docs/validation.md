@@ -1,5 +1,15 @@
 # Kết quả kiểm tra
 
+## Thông báo và chẩn đoán lỗi nộp Writing — 2026-10-21
+
+Đã tái hiện việc client thay mọi lỗi 502 bằng thông báo gateway chung, che cả lý do AI mà backend đã xác thực. Bản sửa dùng mã lỗi hữu hạn để hiển thị thông báo quyền/hạn mức/model/kết nối/kết quả AI; phản hồi thô từ nhà cung cấp và lỗi gateway không xác định vẫn được giữ kín. Log chỉ có mã, status và loại route cố định. Giữ nguyên model, hai bước chấm, yêu cầu bằng chứng nguyên văn, điểm và quy tắc thi; không thêm lượt gọi AI tự động.
+
+**96/96 kiểm tra native đạt**, gồm adapter AI, client HTTP, nộp Writing qua Express/MongoDB thật, API/Duo/integrity và helper chẩn đoán. Bao phủ lỗi 401/403/404, phân biệt quota với rate-limit, JSON/schema/bằng chứng sai, phản hồi lớn/chậm và hủy stream không hoàn tất. Cơ chế đọc mã lỗi 429 có giới hạn 16 KiB/2 giây, không chờ vô hạn cleanup của provider. Bài nháp/nội dung, lease, quyền riêng và kết quả/bản ghi cũ được giữ; nộp lại cùng lượt thành công bằng transport AI kiểm soát.
+
+**2/2 kiểm tra trình duyệt desktop/mobile đạt trong 19,5 giây**: lỗi AI hiển thị đúng, textarea và bản nháp MongoDB còn nguyên, có thể nộp lại cùng lượt và mở lại kết quả. Browser dùng một phản hồi lỗi mô phỏng; retry không cấu hình AI lưu checklist trung thực với band null. Native HTTP riêng kiểm tra retry chấm AI thành công. Strict TypeScript và release build đạt. Không gọi AI trả phí hoặc thao tác dữ liệu học thật trong kiểm tra.
+
+Website public trả health 200/MongoDB và flag OpenAI đã cấu hình. SSH từ cloud vẫn bị từ chối; chưa xác nhận nguyên nhân lần lỗi thực tế hay triển khai bản sửa trên VPS. `deploy/diagnose-writing.py` đã có 10 kiểm tra riêng trong tổng native trên: chỉ đọc đúng app và GET model, không chấm, không truy vấn database hoặc đổi service; model đọc được không xác nhận đủ quota. Xem [writing-troubleshooting.md](writing-troubleshooting.md). Bằng chứng kiểm tra ở ignored `.local/writing-errors`.
+
 ## Bài đã hoàn thành, làm lại và kết quả gần nhất — 2026-10-15
 
 Kho luyện tập/thi thử và buổi học Duo có xác nhận hoàn thành, xem kết quả gần nhất hoặc làm lại. Chỉ lượt hợp lệ đã nộp thay kết quả gần nhất; điểm thấp hơn vẫn là kết quả mới nhất. Giữ mọi bài cũ, bản ghi, bản nháp, người đồng hành và thời điểm đạt mốc đầu tiên. Bài thay thế sau khi bị hủy được tính đúng về học liệu gốc. Bài thi Duo tiếp tục dùng quy trình riêng.

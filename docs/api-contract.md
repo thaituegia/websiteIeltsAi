@@ -2,6 +2,8 @@
 
 All paths are under `/api`. JSON bodies use `Content-Type: application/json`; authentication uses an HttpOnly cookie. Do not store tokens or passwords in localStorage. Errors use `{error:string}` and an HTTP status. Shared types are in `shared/types.ts` and `shared/duo.ts`. Personal reads/writes use the authenticated owner, never a client-provided user ID.
 
+Known AI failures additionally include a finite `code` so the client can show the safe explanation through HTTP 502. Unknown gateway errors remain generic. Provider payloads and learner text are never part of these diagnostics; see [writing-troubleshooting.md](writing-troubleshooting.md).
+
 ## Authentication and ordinary practice
 
 Duo is the default and production mode. Only the two private configured phone identities can authenticate; names and the shared target 8.0 are fixed. Original phone numbers, names and password hashes belong only in private server configuration, not examples, source or frontend bundles. Legacy email/demo mode is explicitly disabled in production and exists only for isolated regression tests.

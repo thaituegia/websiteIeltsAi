@@ -4,9 +4,35 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public code?: string,
   ) {
     super(message);
   }
+}
+
+// Application grading failures carry a finite, server-owned code. Gateway
+// responses may also be JSON, so an arbitrary error string is not enough to
+// treat a 502 response as a safe application message.
+const aiFailureCodes = new Set([
+  "AI_PROVIDER_AUTH",
+  "AI_PROVIDER_QUOTA",
+  "AI_PROVIDER_RATE_LIMIT",
+  "AI_PROVIDER_UNAVAILABLE",
+  "AI_PROVIDER_TIMEOUT",
+  "AI_PROVIDER_NETWORK",
+  "AI_MODEL_UNAVAILABLE",
+  "AI_RESPONSE_INVALID",
+  "AI_EVIDENCE_INVALID",
+]);
+function applicationAiFailure(body: unknown): { code: string; message: string } | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const value = body as Record<string, unknown>;
+  if (typeof value.code !== "string" || !aiFailureCodes.has(value.code)) return null;
+  const message = [value.error, value.message].find(
+    candidate => typeof candidate === "string" && candidate.trim().length > 0,
+  );
+  if (typeof message !== "string" || message.length > 2000) return null;
+  return { code: value.code, message };
 }
 
 export interface ApiRequestOptions extends RequestInit {
@@ -46,15 +72,18 @@ export async function api<T>(
       const body = (await response.json().catch(() => null)) as {
         error?: string;
         message?: string;
+        code?: unknown;
       } | null;
+      const applicationFailure = applicationAiFailure(body);
       throw new ApiError(
         response.status,
         response.status === 502
-          ? "Máy chủ tạm thời gián đoạn. Vui lòng thử lại."
+          ? applicationFailure?.message || "Máy chủ tạm thời gián đoạn. Vui lòng thử lại."
           : body?.error || body?.message ||
             (response.status >= 500
               ? "Máy chủ tạm thời chưa sẵn sàng. Vui lòng thử lại."
               : `Không thể tải dữ liệu (${response.status}).`),
+        applicationFailure?.code,
       );
     }
     if (response.status === 204) return undefined as T;

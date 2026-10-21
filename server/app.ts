@@ -2535,7 +2535,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   app.use(
     (
       error: unknown,
-      _request: Request,
+      request: Request,
       response: Response,
       _next: NextFunction,
     ) => {
@@ -2569,7 +2569,16 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         return;
       }
       if (error instanceof ApiError) {
-        response.status(error.status).json({ error: error.message });
+        if (error.code) {
+          // Only fixed categories enter logs: never provider payloads, essays,
+          // account IDs, credentials or the original request URL.
+          const route = /\/attempts\/[^/]+\/submit$/.test(request.path) ? "attempt-submit"
+            : /\/attempts\/[^/]+\/regrade$/.test(request.path) ? "attempt-regrade"
+            : /\/attempts\/[^/]+\/speaking$/.test(request.path) ? "speaking-submit"
+            : request.path === "/api/content/generate" ? "content-generation" : "ai-request";
+          console.error("AI grading failure:", JSON.stringify({ code: error.code, status: error.status, route }));
+        }
+        response.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
         return;
       }
       if (error instanceof Error && "status" in error && error.status === 413) {

@@ -176,6 +176,7 @@ function ensureQuote(text: string, quote: string): void {
     throw new ApiError(
       502,
       "AI trả về bằng chứng không có trong bài. Bài nháp vẫn được giữ; hãy thử chấm lại.",
+      "AI_EVIDENCE_INVALID",
     );
 }
 function verifyCriteria(
@@ -188,7 +189,7 @@ function verifyCriteria(
     new Set(criteria.map((item) => item.name)).size !== names.length ||
     names.some((name) => !criteria.some((item) => item.name === name))
   )
-    throw new ApiError(502, "AI trả về bộ tiêu chí không hợp lệ. Hãy thử lại.");
+    throw new ApiError(502, "AI trả về bộ tiêu chí không hợp lệ. Hãy thử lại.", "AI_RESPONSE_INVALID");
   for (const criterion of criteria) {
     if (
       requireScores &&
@@ -197,10 +198,64 @@ function verifyCriteria(
       throw new ApiError(
         502,
         "AI thiếu điểm hoặc bằng chứng cho tiêu chí. Hãy thử lại.",
+        "AI_RESPONSE_INVALID",
       );
     for (const evidence of criterion.evidence) ensureQuote(text, evidence);
   }
 }
+
+/** Inspect bounded error codes, never forward a provider's message or payload. */
+async function quotaFailure(response: Response): Promise<boolean> {
+  const reader = response.body?.getReader();
+  if (!reader) return false;
+  const limit = 16 * 1024;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  // A rejected request must not wait on a slow error body for the full grading
+  // timeout. Its known HTTP status is still usable when details are unavailable.
+  const timer = setTimeout(() => { void reader.cancel().catch(() => undefined); }, 2_000);
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > limit) return false;
+      chunks.push(chunk.value);
+    }
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || !("error" in parsed)) return false;
+    const error = parsed.error;
+    if (!error || typeof error !== "object") return false;
+    const codes = ["code" in error ? error.code : undefined, "type" in error ? error.type : undefined];
+    return codes.some(code => typeof code === "string" && [
+      "insufficient_quota", "quota_exceeded", "billing_hard_limit_reached",
+      "credits_exhausted", "payment_required",
+    ].includes(code));
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+    // Cancellation can wait forever on an upstream stream's own cleanup.
+    // Its known HTTP status must remain usable after our bounded read ends.
+    void reader.cancel().catch(() => undefined);
+  }
+}
+
+async function providerFailure(response: Response, provider: string): Promise<ApiError> {
+  if (response.status === 429) {
+    const exhausted = await quotaFailure(response);
+    return exhausted
+      ? new ApiError(503, `${provider} đã hết hạn mức hoặc số dư API. Bài nháp đã lưu vẫn được giữ; cần kiểm tra thanh toán trước khi chấm lại.`, "AI_PROVIDER_QUOTA")
+      : new ApiError(503, `${provider} đang giới hạn số yêu cầu. Bài nháp đã lưu vẫn được giữ; hãy đợi một lúc rồi chấm lại.`, "AI_PROVIDER_RATE_LIMIT");
+  }
+  void response.body?.cancel().catch(() => undefined);
+  if (response.status === 401 || response.status === 403)
+    return new ApiError(502, `${provider} từ chối quyền truy cập API. Bài nháp đã lưu vẫn được giữ; cần kiểm tra API key và quyền của project.`, "AI_PROVIDER_AUTH");
+  if (response.status === 404)
+    return new ApiError(502, "Model AI đang cấu hình không khả dụng hoặc chưa được cấp quyền. Bài nháp đã lưu vẫn được giữ; cần kiểm tra cấu hình model.", "AI_MODEL_UNAVAILABLE");
+  return new ApiError(502, `${provider} tạm thời chưa xử lý được yêu cầu. Bài nháp đã lưu vẫn được giữ; hãy thử chấm lại sau.`, "AI_PROVIDER_UNAVAILABLE");
+}
+
 async function request(
   url: string,
   init: RequestInit,
@@ -211,13 +266,7 @@ async function request(
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const response = await fetch(url, { ...init, signal: controller.signal });
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new ApiError(
-        response.status === 429 ? 503 : 502,
-        `${provider} chưa xử lý được yêu cầu (${response.status}). Kiểm tra quyền truy cập/quota và thử lại; dữ liệu học đã lưu vẫn được giữ.`,
-      );
-    }
+    if (!response.ok) throw await providerFailure(response, provider);
     const reader = response.body?.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -231,6 +280,7 @@ async function request(
           throw new ApiError(
             502,
             `${provider} trả về dữ liệu vượt giới hạn xử lý.`,
+            "AI_RESPONSE_INVALID",
           );
         }
         chunks.push(chunk.value);
@@ -242,10 +292,11 @@ async function request(
   } catch (error) {
     if (error instanceof ApiError) throw error;
     if (controller.signal.aborted)
-      throw new ApiError(504, `${provider} hết thời gian xử lý. Hãy thử lại.`);
+      throw new ApiError(504, `${provider} hết thời gian xử lý. Bài nháp đã lưu vẫn được giữ; hãy thử chấm lại.`, "AI_PROVIDER_TIMEOUT");
     throw new ApiError(
       502,
       `Không kết nối được ${provider}. Hãy kiểm tra kết nối và thử lại.`,
+      "AI_PROVIDER_NETWORK",
     );
   } finally {
     clearTimeout(timer);
@@ -258,7 +309,7 @@ async function jsonResponse(
   try {
     return await response.json();
   } catch {
-    throw new ApiError(502, `${provider} trả về dữ liệu không hợp lệ.`);
+    throw new ApiError(502, `${provider} trả về dữ liệu không hợp lệ.`, "AI_RESPONSE_INVALID");
   }
 }
 async function structured<T>(
@@ -308,18 +359,20 @@ async function structured<T>(
     throw new ApiError(
       502,
       "OpenAI trả về dữ liệu thiếu hoặc bị cắt. Hãy thử lại.",
+      "AI_RESPONSE_INVALID",
     );
   let payload: unknown;
   try {
     payload = JSON.parse(envelope.data.choices[0].message.content);
   } catch {
-    throw new ApiError(502, "OpenAI không trả về JSON hợp lệ. Hãy thử lại.");
+    throw new ApiError(502, "OpenAI không trả về JSON hợp lệ. Hãy thử lại.", "AI_RESPONSE_INVALID");
   }
   const validated = schema.safeParse(payload);
   if (!validated.success)
     throw new ApiError(
       502,
       "AI trả về kết quả không đúng cấu trúc. Hãy thử lại.",
+      "AI_RESPONSE_INVALID",
     );
   return validated.data;
 }
@@ -390,17 +443,17 @@ export async function evaluateWriting(
     extracted.tasks.length !== tasks.length ||
     new Set(extracted.tasks.map((task) => task.task)).size !== tasks.length
   )
-    throw new ApiError(502, "AI extractor trả về task không hợp lệ.");
+    throw new ApiError(502, "AI extractor trả về task không hợp lệ.", "AI_RESPONSE_INVALID");
   for (const extraction of extracted.tasks) {
     const task = tasks.find((item) => item.task === extraction.task);
     if (!task)
-      throw new ApiError(502, "AI extractor trả về task không được nộp.");
+      throw new ApiError(502, "AI extractor trả về task không được nộp.", "AI_RESPONSE_INVALID");
     if (
       writingNames.some(
         (name) => !extraction.quotes.some((item) => item.criterion === name),
       )
     )
-      throw new ApiError(502, "AI extractor thiếu bằng chứng rubric.");
+      throw new ApiError(502, "AI extractor thiếu bằng chứng rubric.", "AI_RESPONSE_INVALID");
     extraction.quotes.forEach((item) => ensureQuote(task.essay, item.quote));
     extraction.corrections.forEach((item) =>
       ensureQuote(task.essay, item.original),
@@ -419,7 +472,7 @@ export async function evaluateWriting(
     graded.tasks.length !== tasks.length ||
     new Set(graded.tasks.map((task) => task.task)).size !== tasks.length
   )
-    throw new ApiError(502, "AI scorer trả về task không hợp lệ.");
+    throw new ApiError(502, "AI scorer trả về task không hợp lệ.", "AI_RESPONSE_INVALID");
   const result = baseFeedback("writing", "ai");
   result.wordCount = offline.wordCount;
   result.summary =
@@ -427,7 +480,7 @@ export async function evaluateWriting(
     " Band luyện tập ước lượng; chưa được chuyên gia hiệu chuẩn.";
   result.taskScores = graded.tasks.map((gradedTask) => {
     const task = tasks.find((item) => item.task === gradedTask.task);
-    if (!task) throw new ApiError(502, "AI scorer trả về task không được nộp.");
+    if (!task) throw new ApiError(502, "AI scorer trả về task không được nộp.", "AI_RESPONSE_INVALID");
     verifyCriteria(gradedTask.criteria, writingNames, task.essay, true);
     return {
       task: gradedTask.task,
