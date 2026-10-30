@@ -4,6 +4,8 @@ All paths are under `/api`. JSON bodies use `Content-Type: application/json`; au
 
 Known AI failures additionally include a finite `code` so the client can show the safe explanation through HTTP 502. Unknown gateway errors remain generic. Provider payloads and learner text are never part of these diagnostics; see [writing-troubleshooting.md](writing-troubleshooting.md).
 
+Valid submitted Writing feedback additionally includes section-matched `writingGuides`: Vietnamese task analysis, steps, paragraph excerpts from the saved model, language notes and checklists. New submissions snapshot guides; legacy reviews can derive them read-only with conservative handling of modified sources. Reference models and assessment scores stay unchanged. Public content, active attempts and invalidated attempts disclose neither guides nor models. See [writing-study.md](writing-study.md).
+
 ## Authentication and ordinary practice
 
 Duo is the default and production mode. Only the two private configured phone identities can authenticate; names and the shared target 8.0 are fixed. Original phone numbers, names and password hashes belong only in private server configuration, not examples, source or frontend bundles. Legacy email/demo mode is explicitly disabled in production and exists only for isolated regression tests.

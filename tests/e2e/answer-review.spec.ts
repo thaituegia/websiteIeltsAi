@@ -165,15 +165,25 @@ for (const skill of ["writing", "speaking"] as const) {
     await submitFromBrowser(page);
     await expect(page.getByRole("heading", { name: "Bài mẫu tham khảo", exact: true })).toBeVisible();
     const references = page.locator(".reference-answers > article");
-    await expect(references).toHaveCount(source.sections.length);
-    await expect(page.locator(".reference-answer-notice")).toContainText("không phải đáp án duy nhất hay cam kết đạt một band cụ thể");
+    await expect(references).toHaveCount(skill === "writing" ? 1 : source.sections.length);
+    await expect(page.locator(".reference-answer-notice")).toContainText(/không phải đáp án duy nhất (?:hay|hoặc) cam kết đạt một band cụ thể/u);
     for (let index = 0; index < referenceAnswers.length; index++) {
-      await expect(references.nth(index)).toContainText(referenceAnswers[index]!.sampleAnswer);
-      if (skill === "speaking") await expect(references.nth(index)).toContainText(`Reference question for Part ${index + 1}`);
+      if (skill === "writing") {
+        await page.getByRole("group", { name: "Phần của bài tập", exact: true }).getByRole("button").nth(index).click();
+        await expect(references).toHaveCount(1);
+        await expect(references.first()).toContainText(referenceAnswers[index]!.sampleAnswer);
+        await expect(page.getByRole("heading", { name: "Hướng dẫn làm bài bằng tiếng Việt", exact: true })).toBeVisible();
+        const other = referenceAnswers[index === 0 ? 1 : 0];
+        if (other) await expect(references.first()).not.toContainText(other.sampleAnswer);
+      } else {
+        await expect(references.nth(index)).toContainText(referenceAnswers[index]!.sampleAnswer);
+        await expect(references.nth(index)).toContainText(`Reference question for Part ${index + 1}`);
+      }
     }
     expect((await getAttempt(page, attempt.id)).feedback?.estimatedBand).toBeNull();
     await page.reload();
-    await expect(references).toHaveCount(source.sections.length);
+    await expect(references).toHaveCount(skill === "writing" ? 1 : source.sections.length);
+    if (skill === "writing") await expect(references.first()).toContainText(referenceAnswers[0]!.sampleAnswer);
     await noHorizontalOverflow(page);
   });
 }

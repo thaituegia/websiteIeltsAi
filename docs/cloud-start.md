@@ -18,6 +18,8 @@ Sổ từ trong bài làm dùng collection thẻ từ hiện có, không cần m
 
 Phiên âm IPA và nghe từ mới dùng IPA ngân hàng/Free Dictionary API cùng Web Speech trên thiết bị, không gọi audio AI trả phí. Chỉ cần HTTPS ra `api.dictionaryapi.dev` khi bấm tra từ chưa có IPA; không thêm secret, seed hoặc tạo lại giọng bài nghe. Xem [word-pronunciation.md](word-pronunciation.md).
 
+Writing đã nộp có bài mẫu và hướng dẫn tiếng Việt ngay dưới từng Task. Dùng mẫu có sẵn và xử lý phía server, không thêm provider, secret, dependency hoặc migration; không chạy lại công cụ nâng/reset ngân hàng. Xem [writing-study.md](writing-study.md).
+
 Audio xem lại Listening/Speaking có thanh tua và đối chiếu transcript, dùng cache/bản ghi đã lưu; không tạo lại ngân hàng giọng khi mở review. Speaking giữ cách luyện hiện tại và phân biệt phiên âm thật với transcript nhập tay. Các lần chấm câu điền mới nhận cách viết giờ tương đương; điểm cũ không tự sửa. Không cần migration, reset hoặc thêm secret cho bản cập nhật này.
 
 Bài đã hoàn thành có lựa chọn xem kết quả gần nhất hoặc làm lại; chỉ lượt mới đã nộp hợp lệ thay nhãn kết quả gần nhất. Lịch sử/bản ghi và mốc lộ trình đã đạt được giữ. Xem [exercise-completion.md](exercise-completion.md); không chạy lại công cụ reset hoặc nâng ngân hàng cho thay đổi giao diện/tiến độ này.

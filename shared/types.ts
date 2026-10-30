@@ -204,6 +204,28 @@ export interface ReferenceResponse {
     explanation?: string;
   }[];
 }
+/** Read-only study notes tied to one saved sample; never an examiner band. */
+export interface WritingStudyGuide {
+  sectionId: string;
+  task: 1 | 2;
+  taskType: string;
+  taskTypeLabel: string;
+  sourceVerified: boolean;
+  notice?: string;
+  timePlan: {
+    totalMinutes: number;
+    planningMinutes: number;
+    writingMinutes: number;
+    checkingMinutes: number;
+    minimumWords: number;
+  };
+  analysis: string[];
+  steps: { title: string; detail: string }[];
+  paragraphs: { index: number; role: string; guidance: string; excerpt: string }[];
+  usefulLanguage: { phrase: string; meaningVi: string }[];
+  checklist: string[];
+  pitfalls: string[];
+}
 export interface VocabularyEntry {
   id: string;
   word: string;
@@ -320,6 +342,7 @@ export interface Feedback {
     skill?: ContentKind;
   }[];
   referenceAnswers?: ReferenceResponse[];
+  writingGuides?: WritingStudyGuide[];
   wordCount?: number;
   fillerCount?: number;
   fillerDensity?: number;

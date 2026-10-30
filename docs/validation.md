@@ -1,5 +1,13 @@
 # Kết quả kiểm tra
 
+## Bài mẫu và hướng dẫn Writing tiếng Việt — 2026-10-30
+
+Release build, full TypeScript và diff checks đạt. **61/61 kiểm tra native** đạt: hướng dẫn Writing, API/owner/disclosure với MongoDB thật, chấm lại Duo, lỗi nộp Writing, các đề thay thế, seed bảo toàn dữ liệu và helper cập nhật app-only. Kho 306 bài Writing có đủ hướng dẫn cho **360 Tasks**; các trích đoạn và cụm từ đều lấy nguyên văn từ đúng mẫu, dữ kiện từ đúng hình. Audit 180 Task 2 nhận ra 14 câu lệnh không khớp nhãn dạng bài cũ; hướng dẫn theo yêu cầu thật, không sửa ngân hàng hoặc nhãn đã lưu. Kiểm tra fingerprint bao phủ đổi ID bản đồ/quy trình nhưng giữ topology, cùng trường hợp nguồn/mẫu giáo viên đã thay đổi.
+
+**16 kiểm tra trình duyệt desktop/mobile** được xác minh: bốn luồng Writing mới và 12 luồng xem đáp án hiện có. Chuyển Task đổi đúng bài mẫu/hướng dẫn, bản nháp và deadline giữ nguyên, mở lại kết quả giữ snapshot và owner khác bị từ chối. Mẫu/hướng dẫn không có trong DOM/API trước nộp hoặc khi lượt bị hủy. Một luồng Speaking hiện có gặp hai lần proxy 500 khi server development bị watch-restart do source đang được sửa; chạy lại riêng sau khi source ổn định đạt, không nới assertion. Đã xem ảnh desktop/mobile, kiểm tra chữ Việt và không tràn ngang; ảnh ở ignored `.local/writing-guidance/browser/`.
+
+Toàn bộ dùng namespace MongoDB test riêng, transport có kiểm soát hoặc provider tắt. Không gọi API trả phí, không thao tác tài khoản thật, không seed/reset database người học và không sửa `server/data` hoặc audio. Bài mẫu vẫn là học liệu minh họa chưa được giám khảo IELTS hiệu chuẩn. Kiểm tra cloud và Git không chứng minh bản này đã triển khai trên VPS; áp dụng bằng helper app-only và kiểm HTTPS sau cập nhật.
+
 ## Phiên âm IPA và nghe từ mới — 2026-10-21
 
 Typecheck, release build và diff checks đạt. **73/73 kiểm tra native** đạt qua resolver IPA, Express/MongoDB thật, Web Speech kiểm soát, sổ từ, Listening và API hồi quy. Kiểm tra toàn bộ **648/648** IPA ngân hàng hợp lệ, gồm ký hiệu /θ/. Bao phủ exact-word matching, không đoán lemma, cache/gộp yêu cầu, timeout/body limit, lỗi từ điển/thử lại, owner isolation và kiểm tra lại trạng thái nguồn sau lookup. So sánh MongoDB trước/sau chứng minh chỉ bổ sung metadata IPA, giữ FSRS, review log, nghĩa và tài liệu học khác.

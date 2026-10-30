@@ -17,6 +17,7 @@ import { pipeline } from "node:stream/promises";
 import { ApiError } from "./errors";
 import { setAudioRange } from "./audio-range";
 import { contentProgress } from "./content-progress";
+import { buildWritingGuides } from "./writing-guidance";
 import { SpeechAudioCache, speechCapabilities, type SpeechAudioResult } from "./speech-audio";
 import { readSpeechPrewarmStatus } from "./speech-prewarm";
 import { registerWordNotebookRoutes } from "./word-notebook";
@@ -178,11 +179,16 @@ export function sanitizeContent(
   const clean = { ...base } as StoredContent & { _id?: string };
   delete clean._id;
   delete (clean as StoredContent & { replacement?: unknown }).replacement;
-  if (_referenceAnswers?.length)
+  if (_referenceAnswers?.length) {
     clean.description = clean.description.replace(
       "No model answer is supplied.",
       "Reference responses become available after submission.",
     );
+    if (content.skill === "writing") clean.description = clean.description.replace(
+      "No planning note or model answer is shown.",
+      "Bài mẫu và hướng dẫn mở sau khi nộp bài.",
+    );
+  }
   return {
     ...clean,
     questions: questions.map(
@@ -765,6 +771,9 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         ...(content.referenceAnswers?.length
           ? { referenceAnswers: content.referenceAnswers }
           : {}),
+        ...(content.skill === "writing" && content.referenceAnswers?.length
+          ? { writingGuides: buildWritingGuides(content, content.referenceAnswers, { sourceVerified: true }) }
+          : {}),
       };
       await retainRecognizedTranscript();
       const updated = await database.attempts.findOneAndUpdate(
@@ -896,6 +905,8 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     const feedback = record.feedback;
     const objective = ["reading", "listening", "grammar"].includes(content.skill);
     const current = objective ? gradeObjective(content, record.responses) : null;
+    const references = feedback.referenceAnswers?.length
+      ? feedback.referenceAnswers : content.referenceAnswers;
     return {
       ...feedback,
       answers: objective ? content.questions.map((question, index) => {
@@ -910,6 +921,10 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         : content.referenceAnswers?.length
           ? { referenceAnswers: content.referenceAnswers }
           : {}),
+      ...(content.skill === "writing" && references?.length
+        ? { writingGuides: feedback.writingGuides?.length
+          ? feedback.writingGuides : buildWritingGuides(content, references) }
+        : {}),
     };
   }
   async function learnerSnapshot(userId: string) {
@@ -1515,7 +1530,13 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           if (!stillValid) throw new ApiError(409, "Bài đã thay đổi trong khi nhận dạng; chưa áp dụng transcript.");
           await database.audio.updateOne({ _id: audioRecord._id, userId: record.userId, attemptId: record.id, fileId: audioRecord.fileId }, { $set: { recognizedTranscript: event.transcript } });
         });
-        const feedback: Feedback = { ...evaluated, ...(content.referenceAnswers?.length ? { referenceAnswers: content.referenceAnswers } : {}) };
+        const feedback: Feedback = {
+          ...evaluated,
+          ...(content.referenceAnswers?.length ? { referenceAnswers: content.referenceAnswers } : {}),
+          ...(content.skill === "writing" && content.referenceAnswers?.length
+            ? { writingGuides: buildWritingGuides(content, content.referenceAnswers, { sourceVerified: true }) }
+            : {}),
+        };
         await inspectAudioSource(request, "attempt", record.id);
         const updated = await database.attempts.findOneAndUpdate(
           { _id: record.id, userId: record.userId, status: "submitted", invalidatedAt: { $exists: false }, "feedback.id": record.feedback?.id ?? null },

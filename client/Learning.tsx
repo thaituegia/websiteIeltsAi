@@ -75,6 +75,7 @@ import {
 import { SectionVisuals } from "./ContentVisual";
 import { WordNotebook, WordText } from "./WordNotebook";
 import { WordPronunciation } from "./WordPronunciation";
+import { WritingStudyLocked, WritingStudyPanel } from "./WritingStudyPanel";
 import { ReviewAudioPlayer } from "./ReviewAudioPlayer";
 import { CompletedExerciseDialog, CompletedExerciseResult } from "./CompletedExerciseDialog";
 import "./learning.css";
@@ -2181,6 +2182,7 @@ function LearningAttempt({ id }: { id: string }) {
         </div>
       )}
       {attempt.skill === "writing" && activeSection && (
+        <>
         <div className="writing-workspace">
           <Card className="writing-prompt">
             <div className="section-heading compact">
@@ -2260,6 +2262,10 @@ function LearningAttempt({ id }: { id: string }) {
             )}
           </Card>
         </div>
+        {submitted ? <WritingStudyPanel key={activeSection.id} section={activeSection} sectionIndex={section}
+          reference={attempt.feedback?.referenceAnswers?.find(reference => reference.sectionId === activeSection.id)}
+          guide={attempt.feedback?.writingGuides?.find(guide => guide.sectionId === activeSection.id)} /> : <WritingStudyLocked />}
+        </>
       )}
       {attempt.skill === "speaking" && (
         <div className="speaking-workspace">
@@ -2397,7 +2403,7 @@ function LearningAttempt({ id }: { id: string }) {
           </Button>
         </div>
       )}
-      {submitted && attempt.feedback && <FeedbackView feedback={attempt.feedback} />}
+      {submitted && attempt.feedback && <FeedbackView feedback={attempt.feedback} hideReferenceAnswers={attempt.skill === "writing"} />}
       {!!vocabulary.length && submitted && (
         <Card className="lesson-vocabulary">
           <div className="section-heading compact">
@@ -2852,7 +2858,7 @@ function ReferenceAnswerReview({ feedback }: { feedback: Feedback }) {
   );
 }
 
-function FeedbackView({ feedback, placementWords = false, placementId }: { feedback: Feedback; placementWords?: boolean; placementId?: string }) {
+function FeedbackView({ feedback, placementWords = false, placementId, hideReferenceAnswers = false }: { feedback: Feedback; placementWords?: boolean; placementId?: string; hideReferenceAnswers?: boolean }) {
   return (
     <section className="feedback-section stack">
       <div className="section-heading">
@@ -3034,7 +3040,7 @@ function FeedbackView({ feedback, placementWords = false, placementId }: { feedb
         </Card>
       )}
       {!!feedback.answers.length && <ObjectiveAnswerReview answers={feedback.answers} placementWords={placementWords} placementId={placementId} />}
-      <ReferenceAnswerReview feedback={feedback} />
+      {!hideReferenceAnswers && <ReferenceAnswerReview feedback={feedback} />}
     </section>
   );
 }
