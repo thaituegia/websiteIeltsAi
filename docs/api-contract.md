@@ -4,6 +4,8 @@ All paths are under `/api`. JSON bodies use `Content-Type: application/json`; au
 
 Known AI failures additionally include a finite `code` so the client can show the safe explanation through HTTP 502. Unknown gateway errors remain generic. Provider payloads and learner text are never part of these diagnostics; see [writing-troubleshooting.md](writing-troubleshooting.md).
 
+Writing extraction receives explicit zero-based paragraph indexes from the saved essay, including single hard line breaks. Evidence is scoped to its task/paragraph; benign whitespace, NFC and curly/straight quote differences resolve back to exact source slices. Spelling/grammar edits, paraphrases, prompt-only or foreign-task evidence remain invalid. Speaking/content-generation checks are unchanged, and grading adds no automatic provider retries.
+
 Valid submitted Writing feedback additionally includes section-matched `writingGuides`: Vietnamese task analysis, steps, paragraph excerpts from the saved model, language notes and checklists. New submissions snapshot guides; legacy reviews can derive them read-only with conservative handling of modified sources. Reference models and assessment scores stay unchanged. Public content, active attempts and invalidated attempts disclose neither guides nor models. See [writing-study.md](writing-study.md).
 
 ## Authentication and ordinary practice

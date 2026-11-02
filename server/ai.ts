@@ -10,6 +10,7 @@ import type {
   TestType,
 } from "../shared/types";
 import { ApiError } from "./errors";
+import { createWritingEvidenceSource } from "./writing-evidence";
 import { speechCapabilities, synthesizeSpeechAudio } from "./speech-audio";
 import {
   contentStructureIssues,
@@ -161,12 +162,6 @@ function normalizedLabel(text: string): string {
     .trim()
     .replace(/\s+/gu, " ")
     .toLocaleLowerCase("en-US");
-}
-function paragraphs(text: string): string[] {
-  return text
-    .trim()
-    .split(/\n\s*\n/gu)
-    .filter(Boolean);
 }
 function rounded(value: number): number {
   return Math.round(value * 2) / 2;
@@ -402,6 +397,9 @@ export async function evaluateWriting(
     .filter((task) => task.essay);
   if (!tasks.length)
     throw new ApiError(400, "Hãy viết ít nhất một task trước khi nộp.");
+  // One source owns all evidence for its task. Neither paragraph validation nor
+  // the scorer can resolve a quote against a prompt or another submitted task.
+  const sources = new Map(tasks.map(task => [task.task, createWritingEvidenceSource(task.essay)]));
   const offline = baseFeedback("writing", "rule-based");
   offline.wordCount = tasks.reduce(
     (total, task) => total + words(task.essay),
@@ -423,11 +421,11 @@ export async function evaluateWriting(
     tasks
       .map(
         (task) =>
-          `Task ${task.task}: ${words(task.essay)} từ, ${paragraphs(task.essay).length} đoạn; mức tối thiểu ${task.task === 1 ? 150 : 250} từ. ${words(task.essay) < (task.task === 1 ? 150 : 250) ? "Cần bổ sung nội dung có liên quan." : "Đủ số từ để tiếp tục kiểm tra chất lượng lập luận."}`,
+          `Task ${task.task}: ${words(task.essay)} từ, ${sources.get(task.task)!.paragraphs.length} đoạn; mức tối thiểu ${task.task === 1 ? 150 : 250} từ. ${words(task.essay) < (task.task === 1 ? 150 : 250) ? "Cần bổ sung nội dung có liên quan." : "Đủ số từ để tiếp tục kiểm tra chất lượng lập luận."}`,
       )
       .join(" ") + " Chưa cấu hình AI: chỉ có checklist, không có band.";
   offline.paragraphs = tasks.flatMap((task) =>
-    paragraphs(task.essay).map((_, index) => ({
+    sources.get(task.task)!.paragraphs.map((_, index) => ({
       index,
       feedback: `Task ${task.task}, đoạn ${index + 1}: tự kiểm tra ý chính, dẫn chứng, liên kết và lỗi câu; chưa có phân tích AI.`,
     })),
@@ -435,8 +433,10 @@ export async function evaluateWriting(
   if (!openAIKey()) return offline;
   const extracted = await structured(
     "EXTRACTOR_MODEL",
-    `You are the evidence extractor, NOT a scorer. Extract actual quotations from each essay for all four criteria (${writingNames.join(", ")}). JSON {tasks:[{task:1|2,quotes:[{criterion,quote,observation}],paragraphs:[{index:zeroBased,quote,feedback}],corrections:[{original,suggestion,explanation}]}]}. Include exactly the submitted tasks. quote/original MUST be exact substrings of that essay, never of the prompt. Paragraph quote must be inside its indexed paragraph. Provide specific diagnostic observations and short correction suggestions, not a replacement essay. Do not assign scores.`,
-    { testType: content.testType, tasks },
+    `You are the evidence extractor, NOT a scorer. Extract actual quotations from each essay for all four criteria (${writingNames.join(", ")}). JSON {tasks:[{task:1|2,quotes:[{criterion,quote,observation}],paragraphs:[{index:zeroBased,quote,feedback}],corrections:[{original,suggestion,explanation}]}]}. Include exactly the submitted tasks. quote/original MUST be exact substrings of that essay, never of the prompt. Preserve the learner's spelling, grammar, case, contractions and punctuation even when incorrect; put improved wording ONLY in suggestion. Each task includes server-indexed paragraphs. Use those exact zero-based indexes and copy each paragraph quote from that indexed text; do not infer, merge or renumber paragraphs. A single actual line break already separates paragraphs; visual line wrapping does not. Prefer short literal evidence spans. Provide specific diagnostic observations and short correction suggestions, not a replacement essay. Do not assign scores.`,
+    { testType: content.testType, tasks: tasks.map(task => ({ ...task,
+      paragraphs: sources.get(task.task)!.paragraphs.map((text, index) => ({ index, text })),
+    })) },
     extractionSchema,
   );
   if (
@@ -454,17 +454,14 @@ export async function evaluateWriting(
       )
     )
       throw new ApiError(502, "AI extractor thiếu bằng chứng rubric.", "AI_RESPONSE_INVALID");
-    extraction.quotes.forEach((item) => ensureQuote(task.essay, item.quote));
-    extraction.corrections.forEach((item) =>
-      ensureQuote(task.essay, item.original),
-    );
-    extraction.paragraphs.forEach((item) =>
-      ensureQuote(paragraphs(task.essay)[item.index] ?? "", item.quote),
-    );
+    const source = sources.get(task.task)!;
+    extraction.quotes.forEach(item => { item.quote = source.quote(item.quote); });
+    extraction.corrections.forEach(item => { item.original = source.quote(item.original); });
+    extraction.paragraphs.forEach(item => { item.quote = source.paragraphQuote(item.index, item.quote); });
   }
   const graded = await structured(
     "SCORING_MODEL",
-    `Score IELTS practice Writing separately for each submitted task using ${writingNames.join(", ")}, equal weight within each task. Use public whole-band rubric descriptions as reference; half-band outputs are estimates, not official descriptors. Task 1 Academic requires accurate overview/data selection; General requires audience, purpose and all three bullets. Task 2 requires position, developed ideas and relevant evidence. Minimum 150/250 words; do not turn word counts into scores. Ground every criterion in exact essay quotes, using the verified extraction. Return {summary,tasks:[{task,summary,criteria:[{name,band:0..9 in steps of 0.5,confidence:0..1,feedback,evidence:[exactQuote]}]}]}. Do not score unsubmitted tasks. No rewrite of the whole essay.`,
+    `Score IELTS practice Writing separately for each submitted task using ${writingNames.join(", ")}, equal weight within each task. Use public whole-band rubric descriptions as reference; half-band outputs are estimates, not official descriptors. Task 1 Academic requires accurate overview/data selection; General requires audience, purpose and all three bullets. Task 2 requires position, developed ideas and relevant evidence. Minimum 150/250 words; do not turn word counts into scores. Ground every criterion in exact essay quotes, using the verified extraction. Copy evidence verbatim from the original essay or verifiedEvidence; retain learner errors, original case, contractions and punctuation. Never quote a correction suggestion or the task prompt as learner evidence. Return {summary,tasks:[{task,summary,criteria:[{name,band:0..9 in steps of 0.5,confidence:0..1,feedback,evidence:[exactQuote]}]}]}. Do not score unsubmitted tasks. No rewrite of the whole essay.`,
     { testType: content.testType, tasks, verifiedEvidence: extracted },
     writingScoringSchema,
   );
@@ -481,6 +478,10 @@ export async function evaluateWriting(
   result.taskScores = graded.tasks.map((gradedTask) => {
     const task = tasks.find((item) => item.task === gradedTask.task);
     if (!task) throw new ApiError(502, "AI scorer trả về task không được nộp.", "AI_RESPONSE_INVALID");
+    const source = sources.get(task.task)!;
+    gradedTask.criteria = gradedTask.criteria.map(criterion => ({ ...criterion,
+      evidence: criterion.evidence.map(quote => source.quote(quote)),
+    }));
     verifyCriteria(gradedTask.criteria, writingNames, task.essay, true);
     return {
       task: gradedTask.task,

@@ -1,5 +1,13 @@
 # Kết quả kiểm tra
 
+## Trích dẫn Writing và xuống dòng — 2026-11-02
+
+Đã tái hiện bằng fixture tổng hợp: một lần xuống dòng LF/CRLF làm server cũ coi cả bài là một đoạn, nên trích dẫn nguyên văn ở đoạn 2 với `index:1` bị trả `AI_EVIDENCE_INVALID` trước scorer. Bản sửa cấp chỉ số đoạn rõ ràng, giữ văn bản gốc và khôi phục exact-source quote khi chỉ khác khoảng trắng/NFC/dấu nháy. Không dùng tìm gần đúng, không sửa lỗi ngôn ngữ của người học để làm bằng chứng. Ảnh chụp của người dùng không đủ xác nhận validator/quote cụ thể của phản hồi OpenAI thực tế.
+
+Release build, full TypeScript và diff checks đạt. **106/106 kiểm tra native** đạt, gồm 28 kiểm tra mới cho helper/adapter/HTTP và 78 hồi quy AI, chấm lại Duo, Writing, hướng dẫn, sinh học liệu và updater app-only. Phủ single LF/CRLF/CR/Unicode breaks, exact-source offset với dấu kết hợp/emoji, nguyên văn khi đổi dấu nháy/NBSP, đoạn sai/Task sai, chỉ có trong đề, sửa ngữ pháp, bịa dẫn chứng, schema/quota và trọng số Task 2. HTTP/MongoDB thật xác nhận lỗi vẫn giữ bài nháp, bỏ lease đúng, retry cùng lượt chỉ gọi hai bước, giữ mẫu/hướng dẫn và owner isolation. Speaking và content generation giữ kiểm tra trích dẫn cũ.
+
+**2/2 kiểm tra browser desktop/mobile** đạt qua Writing failure/retry/reload; UI giữ đúng bài đã lưu và không tràn ngang. Không sửa giao diện hoặc thêm luồng retry tự động. Tất cả bài/credentials trong tests là synthetic; không chép bài thật từ ảnh vào Git, không gọi provider trả phí hoặc chấm tài khoản thật. Runtime cloud hiện không có OpenAI credential/network grant sẵn sàng nên chưa xác minh live grading. Docker socket local và MongoDB hiện có healthy; không restart hoặc thay container. Không đổi seed, ngân hàng, dependency, audio hoặc deployment helper. Chưa xác nhận bản sửa triển khai trên VPS.
+
 ## Bài mẫu và hướng dẫn Writing tiếng Việt — 2026-10-30
 
 Release build, full TypeScript và diff checks đạt. **61/61 kiểm tra native** đạt: hướng dẫn Writing, API/owner/disclosure với MongoDB thật, chấm lại Duo, lỗi nộp Writing, các đề thay thế, seed bảo toàn dữ liệu và helper cập nhật app-only. Kho 306 bài Writing có đủ hướng dẫn cho **360 Tasks**; các trích đoạn và cụm từ đều lấy nguyên văn từ đúng mẫu, dữ kiện từ đúng hình. Audit 180 Task 2 nhận ra 14 câu lệnh không khớp nhãn dạng bài cũ; hướng dẫn theo yêu cầu thật, không sửa ngân hàng hoặc nhãn đã lưu. Kiểm tra fingerprint bao phủ đổi ID bản đồ/quy trình nhưng giữ topology, cùng trường hợp nguồn/mẫu giáo viên đã thay đổi.
