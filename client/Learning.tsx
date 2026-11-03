@@ -1333,6 +1333,7 @@ function LearningAttempt({ id }: { id: string }) {
     [vocabulary, setVocabulary] = useState<VocabularyEntry[]>([]),
     [activeSeconds, setActiveSeconds] = useState(0);
   const recorder = useRef<RecordingSession | null>(null),
+    acceptedRecordingBlob = useRef<Blob | null>(null),
     stopSpeech = useRef<(() => void) | null>(null),
     listenAudio = useRef<HTMLAudioElement | null>(null),
     listenUrl = useRef(""),
@@ -1357,6 +1358,7 @@ function LearningAttempt({ id }: { id: string }) {
   useEffect(() => {
     if (!invalidated) return;
     setResponses({}); setEssays({}); setTranscript(""); setAudioBlob(null);
+    acceptedRecordingBlob.current = null;
     void recorder.current?.discard(); recorder.current = null;
     clearListeningPlayback();
     setRecording(false); setPlaying(false); setPaused(false); setListenBusy(false); setConfirm(false);
@@ -1388,6 +1390,7 @@ function LearningAttempt({ id }: { id: string }) {
       setEssays(result.attempt.essays);
       setTranscript(result.attempt.transcript);
       setAudioBlob(null);
+      acceptedRecordingBlob.current = null;
       setSection(0);
       setRecording(false);
       setPlaying(false);
@@ -1644,6 +1647,8 @@ function LearningAttempt({ id }: { id: string }) {
         throw new Error(
           "Bản ghi vượt giới hạn 25 MB. Hãy ghi lại một đoạn ngắn hơn.",
         );
+      // This is a new capture, even when an older recording is already saved.
+      acceptedRecordingBlob.current = null;
       setAudioBlob(blob);
       return blob;
     } catch (cause) {
@@ -1692,22 +1697,12 @@ function LearningAttempt({ id }: { id: string }) {
     setError("");
     let finalSubmission = false;
     try {
-      let recordingBlob = recording ? await stopRecordingNow() : audioBlob;
-      if (
-        attempt.skill === "speaking" &&
-        !recordingBlob &&
-        attempt.audioAvailable
-      ) {
-        const stored = await fetch(`/api/attempts/${attempt.id}/audio`, {
-          credentials: "include",
-          headers: examHeaders(),
-        });
-        if (!stored.ok)
-          throw new Error(
-            "Không tải lại được bản ghi đã lưu. Hãy tải lại trang và thử lần nữa.",
-          );
-        recordingBlob = await stored.blob();
-      }
+      const recordingBlob = recording ? await stopRecordingNow() : audioBlob;
+      // A retry can refer to the server's owned recording without downloading
+      // and uploading it again. Keep the local Blob for playback, and omit it
+      // only after this exact Blob received a server processing receipt.
+      const uploadBlob = recordingBlob && acceptedRecordingBlob.current !== recordingBlob
+        ? recordingBlob : null;
       await saveDraft();
       if (!canWrite.current) return;
       if (protectedExam && !attempt.duoAssessmentId) {
@@ -1724,14 +1719,19 @@ function LearningAttempt({ id }: { id: string }) {
       let result: Attempt;
       if (
         attempt.skill === "speaking" &&
-        (recordingBlob || latest.current.transcript.trim())
+        (recordingBlob || attempt.audioAvailable || latest.current.transcript.trim())
       ) {
         result = await submitSpeaking(
           attempt.id,
-          recordingBlob,
+          uploadBlob,
           latest.current.transcript,
           (stage, detected) => {
             if (!mounted.current || generation !== loadGeneration.current || (!canWrite.current && !finalSubmission)) return;
+            // These provider stages are emitted only after the server has
+            // published the recording under its submission lease. Bind the
+            // receipt to the submitted Blob, never a later/new recording.
+            if (uploadBlob && ["transcribing", "transcribed", "pronunciation", "scoring", "audio-scoring"].includes(stage))
+              acceptedRecordingBlob.current = uploadBlob;
             const labels: Record<string, string> = {
               transcribing: "Đang phiên âm bản ghi…",
               transcribed: "Đã phiên âm, đang xử lý…",
@@ -1765,12 +1765,17 @@ function LearningAttempt({ id }: { id: string }) {
       await resumeExamSubmission();
       if (generation !== loadGeneration.current || !mounted.current) return;
       setError(`${timeout ? "Đã hết thời gian. " : ""}${errorMessage(cause)}`);
-      if (attempt.skill === "speaking")
-        void api<{ attempt: Attempt }>(`/attempts/${attempt.id}`)
-          .then((result) => {
-            setAttempt(result.attempt);
-          })
-          .catch(() => undefined);
+      if (attempt.skill === "speaking") {
+        const version = draftVersion.current;
+        try {
+          const recovered = await api<{ attempt: Attempt }>(`/attempts/${attempt.id}`);
+          if (generation !== loadGeneration.current || !mounted.current) return;
+          setAttempt(recovered.attempt);
+          // Submission locks the editor. Recover recognition persisted before
+          // grading failed, but never replace a newer user edit.
+          if (draftVersion.current === version) setTranscript(recovered.attempt.transcript);
+        } catch { /* The local recording and transcript remain available. */ }
+      }
     } finally {
       if (generation === loadGeneration.current && mounted.current) {
         setBusy(false);

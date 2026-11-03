@@ -1,5 +1,15 @@
 # Kết quả kiểm tra
 
+## Speaking: cấu trúc audio và thử lại bản ghi — 2026-11-03
+
+Đã tái hiện cùng thông báo cấu trúc khi phản hồi audio thiếu confidence/corrections hoặc null observations trong kết quả không chấm âm học; ảnh không chỉ ra trường cụ thể của phản hồi provider thật. Bộ đọc mới chỉ bổ sung giá trị chưa biết/rỗng cho metadata phụ. Bốn tiêu chí, điểm nửa band 0–9, speech detection, dẫn chứng transcript và quan sát âm học có mốc thời gian vẫn được kiểm chặt. Prompt nhận JSON schema thật, không thêm provider response-format mode chưa xác minh hoặc tự gọi sửa JSON. Lỗi cấu trúc có `AI_RESPONSE_INVALID`; log chỉ giữ code/danh mục trường cố định.
+
+Release build, full TypeScript và diff checks đạt. **146/146 kiểm tra native** đạt: parser mới, Speaking waveform, HTTP retry/MongoDB thật, API/GridFS, chấm lại Duo, lease nhiều app, integrity phòng chung, audio review, AI/provider diagnostics, hồi quy Writing và updater app-only. STT hoàn tất rồi chấm lỗi vẫn giữ đúng file/transcript và giải phóng lease; retry không kèm file dùng lại STT server gắn đúng ObjectId, nhưng chấm vẫn nhận nguyên waveform. File mới buộc STT mới, trường recognition do client giả không được dùng, owner khác bị từ chối và kết quả cũ không đổi. Không nới kiểm tra trích dẫn Speaking.
+
+**4/4 kiểm tra browser desktop/mobile** đạt qua hai luồng mới: Blob đã được server xác nhận không upload lại, bản mới vẫn upload, sau reload dùng file server, khôi phục transcript khi thiếu sự kiện transcribed, và upload chưa được xác nhận không bị bỏ chỉ vì đã có file cũ. Player giữ Blob nghe lại; không fetch tải lại file chỉ để nộp. Kiểm tra không có exception/tràn ngang. Fixture browser dùng fake microphone và GridFS test thật với SSE kiểm soát; đây không phải kiểm định giọng thật hoặc model live.
+
+Tất cả dữ liệu và credentials đều synthetic; không sao chép transcript thật từ ảnh vào Git, không gọi API trả phí hoặc thao tác tài khoản thật. Runtime cloud không có OpenAI credentials/host grant sẵn sàng; chưa xác minh một lần chấm `gpt-audio` thật. Không đổi ngân hàng, dependencies, voice Listening, deployment helper hay container đang chạy. Dùng updater app-only để triển khai; build/Git chưa xác nhận VPS đã được cập nhật.
+
 ## Trích dẫn Writing và xuống dòng — 2026-11-02
 
 Đã tái hiện bằng fixture tổng hợp: một lần xuống dòng LF/CRLF làm server cũ coi cả bài là một đoạn, nên trích dẫn nguyên văn ở đoạn 2 với `index:1` bị trả `AI_EVIDENCE_INVALID` trước scorer. Bản sửa cấp chỉ số đoạn rõ ràng, giữ văn bản gốc và khôi phục exact-source quote khi chỉ khác khoảng trắng/NFC/dấu nháy. Không dùng tìm gần đúng, không sửa lỗi ngôn ngữ của người học để làm bằng chứng. Ảnh chụp của người dùng không đủ xác nhận validator/quote cụ thể của phản hồi OpenAI thực tế.

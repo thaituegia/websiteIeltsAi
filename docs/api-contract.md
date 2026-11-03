@@ -34,7 +34,7 @@ Duo is the default and production mode. Only the two private configured phone id
 | POST attempts/:id/submit | — | `{attempt}` with stored feedback; valid Duo linkage reconciles own assessment and shared progress. |
 | POST attempts/:id/regrade | — | Own submitted Duo Writing/Speaking only. Reuses saved essays/private recording; requires real provider configuration. Missing AI → 503, conflicting grading → 409; no client-supplied score accepted. |
 | POST attempts/:id/listening-source | — | `{sections,source:'browser-tts',notice}`; Exam allows one request and hides text in normal view. |
-| POST attempts/:id/speaking | Multipart `audio?`, `transcript?` | JSON `{attempt}` or SSE with `Accept:text/event-stream`; saves own recording and grading results. |
+| POST attempts/:id/speaking | Multipart `audio?`, `transcript?` | JSON `{attempt}` or SSE with `Accept:text/event-stream`; saves own recording and grading results. With no file, reuses the owned saved recording; recognized transcript cache is server-only and bound to that exact GridFS file. |
 | GET attempts/:id/audio | Optional `Range: bytes=...` | Private original Speaking recording after owner/file/integrity checks; single-range seek supports 206/416 and no-store. |
 | GET attempts/:id/listening-audio | `sectionIndex?` and optional Range header | Prepared audio for valid submitted owned Listening; selected section or complete audio, repeatable without consuming a play or generating speech. Active POST keeps its one-play exam contract. |
 | GET placement/:id/audio | `questionId` and optional Range header | Prepared audio for a Listening question actually served in an owned, valid completed placement; no new test or speech generation. |
@@ -88,7 +88,9 @@ A `pending-ai` Writing/Speaking result means submitted work is saved but has no 
 
 ## Grading and data limits
 
-SSE Speaking sends `progress` with the transcription/pronunciation/audio-scoring/evaluation/saving stage, final `result` with `{attempt}`, or `error` with `{error}`. Drafts, deadlines, recordings and all assessment histories persist in MongoDB. Answer keys/evidence never appear in public content before grading. Practice-only advanced lesson guides are hidden during Exam and Duo assessment.
+SSE Speaking sends `progress` with the transcription/pronunciation/audio-scoring/evaluation/saving stage, final `result` with `{attempt}`, or `error` with `{error,status,code?}` using finite AI codes. Drafts, deadlines, recordings and all assessment histories persist in MongoDB. Answer keys/evidence never appear in public content before grading. Practice-only advanced lesson guides are hidden during Exam and Duo assessment.
+
+Audio grading accepts omitted confidence as unknown and omitted/null optional diagnostic collections as empty. Required four criteria, speech detection, half-band scores, transcript evidence and timestamped acoustic support remain strict. The actual schema is supplied in the prompt without an unverified provider response-format mode. See [speaking-troubleshooting.md](speaking-troubleshooting.md).
 
 `estimatedBand:null` is correct for short objective drills and ungraded Writing/Speaking. Full 40-item Reading/Listening forms use indicative reference conversion. The bank contains original, unreviewed content; structural checks do not establish IELTS examiner review or psychometric calibration.
 

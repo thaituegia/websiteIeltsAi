@@ -40,6 +40,8 @@ Speaking giữ cách luyện hiện tại: đề/câu hỏi và một bản ghi 
 
 Whisper hoàn tất phiên âm thì máy chủ lưu transcript gắn với đúng file trước khi gọi các bước chấm sau. Nếu chấm lỗi, bản ghi và phần phiên âm đã nhận được vẫn được giữ để thử lại; thay file mới xóa nguồn nhận dạng của file cũ. Giao diện phân biệt **Transcript AI nghe được**, **Transcript bạn đã nhập** và bài cũ chưa xác định nguồn. Chỉ có transcript nhập tay không được ghi nhãn là AI nhận dạng. Tính năng này không tạo hội thoại AI hỏi đáp mới hoặc tự chia một bản ghi chung thành các lượt nói không được ghi nhận.
 
+Thử lại Speaking hiện dùng thẳng file server đã lưu và nhận dạng đã gắn với file đó, không tải xuống rồi upload lại hoặc gọi Whisper thêm lần nữa khi cache hợp lệ. Bản ghi mới luôn có nhận dạng riêng. Cấu trúc đánh giá âm thanh và các kiểm tra bằng chứng được mô tả trong [speaking-troubleshooting.md](speaking-troubleshooting.md).
+
 ## Triển khai
 
 `deploy/run-speech-update.py` nhận commit và SHA256 archive đã ghim, gọi updater giữ dữ liệu hiện tại rồi tạo container worker riêng từ cùng image app. Worker có 384 MiB RAM, không thêm swap, 0,25 CPU, filesystem chỉ đọc, không capabilities, không mở cổng và log có giới hạn. Chỉ worker tham gia cả mạng dữ liệu riêng và mạng web để gọi nhà cung cấp. Cấu hình/key nằm trong file riêng hoặc được mở trong bộ nhớ; không đưa key vào lệnh hoặc frontend. Không reset band/tài khoản/tiến độ. Lệnh không khẳng định cả kho đã hoàn tất ngay: theo dõi log/count, bài nào đủ audio sẽ mở, toàn bộ kho tiếp tục được chuẩn bị.
