@@ -1,5 +1,13 @@
 # Kết quả kiểm tra
 
+## Speaking: định dạng evidence từ log VPS — 2026-11-03
+
+Người dùng gửi log VPS của bản mới với ba lần `AI_RESPONSE_INVALID`, `fields:["evidence"]`. Log xác nhận trường gây lỗi, không chứa payload nên không khẳng định kiểu/giá trị thực tế model đã trả. Bản sửa chuẩn hóa các biểu diễn trích dẫn rõ nghĩa (chuỗi, quote/text object, danh sách kết hợp) thành mảng chuỗi. Không chọn giữa hai trích dẫn mâu thuẫn, không lọc bỏ phần tử sai, không nới giới hạn số lượng/độ dài hoặc kiểm tra nguyên văn. Dẫn chứng âm học còn thiếu chỉ dùng lại quote trong quan sát có sẵn của chính tiêu chí đó; tất cả quote và mốc thời gian vẫn phải hợp lệ trước khi công bố điểm. Không tạo bằng chứng cho điểm ngôn ngữ còn thiếu hỗ trợ.
+
+Release build, full TypeScript và diff checks đạt. **117/117 kiểm tra native** đạt qua parser, 20 trường hợp mới tích hợp định dạng evidence, waveform, HTTP retry/cache, Duo regrade, audio review, AI/provider/Writing hồi quy và updater app-only. Bao phủ thiếu/null/rỗng, các biểu diễn hợp lệ, tiêu chí không có điểm, thiếu bằng chứng ngôn ngữ, quote bịa không được thay thế, quan sát nhầm tiêu chí, mốc sai thứ tự/ngoài bản ghi, dữ liệu mơ hồ/lồng/quá giới hạn và metadata chẩn đoán không chứa nội dung riêng. Cache hợp lệ chỉ gọi chấm audio; chưa có cache gọi STT+audio như trước, không thêm lượt sửa phản hồi tự động.
+
+Log lỗi mới có metadata kiểu dữ liệu gốc cho tối đa bốn tiêu chí bằng enum/index hữu hạn, không có giá trị hoặc khóa tùy ý từ provider. Canonical prompt schema vẫn yêu cầu mảng trích nguyên văn; chỉ adapter nhận dạng thêm biểu diễn tương đương. Không sửa client, app route, ngân hàng, dependencies, audio hoặc deployment helper; không chạy lại browser suite của bản trước vì giao diện/transport giữ nguyên. Mọi fixture đều synthetic và không gọi provider trả phí. Chưa xác minh payload/chấm live của bản ghi người dùng hoặc triển khai bản sửa này trên VPS.
+
 ## Speaking: cấu trúc audio và thử lại bản ghi — 2026-11-03
 
 Đã tái hiện cùng thông báo cấu trúc khi phản hồi audio thiếu confidence/corrections hoặc null observations trong kết quả không chấm âm học; ảnh không chỉ ra trường cụ thể của phản hồi provider thật. Bộ đọc mới chỉ bổ sung giá trị chưa biết/rỗng cho metadata phụ. Bốn tiêu chí, điểm nửa band 0–9, speech detection, dẫn chứng transcript và quan sát âm học có mốc thời gian vẫn được kiểm chặt. Prompt nhận JSON schema thật, không thêm provider response-format mode chưa xác minh hoặc tự gọi sửa JSON. Lỗi cấu trúc có `AI_RESPONSE_INVALID`; log chỉ giữ code/danh mục trường cố định.

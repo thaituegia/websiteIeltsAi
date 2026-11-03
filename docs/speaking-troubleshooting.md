@@ -4,9 +4,13 @@ Thông báo **Đánh giá âm thanh không đúng cấu trúc** xảy ra sau khi
 
 Bộ đọc riêng của audio hiện cho `confidence` bị thiếu thành `null` (chưa biết), và các danh sách `corrections`/`observations` bị thiếu hoặc null thành `[]`. Đây chỉ là thông tin phụ: bốn tên tiêu chí vẫn phải xuất hiện đúng một lần; `speechDetected`, `summary`, điểm hoặc null, nhận xét và mảng dẫn chứng vẫn phải có. Không đổi chuỗi thành số, phần trăm thành điểm, làm tròn điểm sai bước, đoán điểm còn thiếu hoặc bỏ tiêu chí lỗi.
 
+Log VPS sau cập nhật xác định lỗi ở `evidence`; các dòng này không chứa payload nên chưa xác nhận được model trả chuỗi, đối tượng hay bỏ trường. Bộ đọc nhận các biểu diễn trích dẫn rõ nghĩa: một chuỗi, đối tượng có `quote`/`text`, hoặc danh sách các dạng đó; kết quả lưu vẫn là `string[]`. Không tách câu theo dấu, diễn giải lại nội dung, loại phần tử sai hoặc chọn tùy tiện giữa hai trường `quote`/`text` mâu thuẫn. Giới hạn độ dài/số lượng và kiểm tra nguyên văn transcript giữ nguyên.
+
+Tiêu chí không được chấm (`band:null`) có thể có dẫn chứng trống. Nếu phát âm/độ trôi chảy thiếu dẫn chứng riêng nhưng đã có quan sát âm học của chính tiêu chí đó, chỉ các câu `quote` trong các quan sát ấy được dùng lại. Mọi câu trích và mốc thời gian vẫn phải qua kiểm tra trước khi công bố điểm. Không dùng quan sát tiêu chí khác để bù bằng chứng, không thay một câu sai đã được trả về bằng câu khác, và không tạo dẫn chứng cho điểm ngôn ngữ còn thiếu hỗ trợ.
+
 Điểm chỉ nhận 0–9 với bước 0,5. Mỗi tiêu chí có điểm vẫn cần trích dẫn có thật trong transcript; phát âm và độ trôi chảy còn cần quan sát âm học kèm thời gian nằm trong bản ghi. Thiếu bằng chứng thì không có điểm đạt. Không suy ra phát âm từ văn bản. Ghi âm không đủ hoặc không có lời nói tiếp tục không có toàn band Speaking.
 
-Prompt audio nhận chính JSON schema làm hợp đồng đầu ra, thay cho ví dụ mô tả rút gọn. Không thêm chế độ `response_format` chưa xác minh model hỗ trợ, không gọi thêm AI để tự sửa JSON hoặc thử lại ngầm. Khi cấu trúc vẫn sai, API/SSE trả `AI_RESPONSE_INVALID` cùng thông báo giữ bản ghi. Log `Speaking audio response rejected:` chỉ chứa mã và danh mục trường được cho phép, không có transcript, âm thanh, thông tin tài khoản hay phản hồi thô của nhà cung cấp.
+Prompt audio nhận chính JSON schema làm hợp đồng đầu ra và nhấn mạnh dẫn chứng phải là mảng trích nguyên văn từ transcript đã cung cấp. Không thêm chế độ `response_format` chưa xác minh model hỗ trợ, không gọi thêm AI để tự sửa JSON hoặc thử lại ngầm. Khi cấu trúc vẫn sai, API/SSE trả `AI_RESPONSE_INVALID` cùng thông báo giữ bản ghi. Log `Speaking audio response rejected:` chỉ chứa mã, danh mục trường và metadata kiểu dữ liệu hữu hạn cho tối đa bốn tiêu chí; không có transcript, âm thanh, thông tin tài khoản, giá trị hay khóa tùy ý từ phản hồi nhà cung cấp.
 
 ## Thử lại
 

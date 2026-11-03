@@ -76,7 +76,7 @@ test("required response and criterion fields never receive guessed defaults", ()
   for (const field of ["summary", "speechDetected", "criteria"]) {
     const input = response(); delete input[field]; invalid(input, field);
   }
-  for (const field of ["name", "band", "feedback", "evidence"]) {
+  for (const field of ["name", "band", "feedback"]) {
     const input = response(); delete input.criteria[0][field];
     invalid(input, field === "band" || field === "evidence" ? field : "criteria");
   }
@@ -105,12 +105,85 @@ test("band values stay numeric half bands in range; confidence is never converte
   }
 });
 
-test("evidence is required and bounded even when a criterion abstains from scoring", () => {
-  for (const value of [undefined, null, "a quiet room", [""], ["x".repeat(2001)], Array(21).fill("a quiet room")]) {
+test("evidence remains bounded and malformed members are never dropped", () => {
+  for (const value of [false, 17, {}, [""], ["x".repeat(2001)], Array(21).fill("a quiet room"), ["a quiet room", {}], [["a quiet room"]]]) {
     const input = response(); input.criteria[0].band = null; input.criteria[0].evidence = value; invalid(input, "evidence");
   }
   const input = response(); input.criteria[0].band = null; input.criteria[0].evidence = [];
   assert.deepEqual(parseSpeakingAudioResponse(input).criteria[0].evidence, []);
+});
+
+test("literal evidence strings and quote/text objects normalize without changing the source values", () => {
+  const quote = "a quiet study room", other = "a quiet room";
+  for (const [raw, expected] of [
+    [quote, [quote]], [{ quote }, [quote]], [{ text: quote }, [quote]], [{ quote, text: quote, explanation: "Unused metadata." }, [quote]],
+    [[quote, { quote: other }, { text: quote }], [quote, other, quote]],
+  ] as const) {
+    const input = response(); input.criteria[0].evidence = structuredClone(raw);
+    const before = structuredClone(input);
+    const result = parseSpeakingAudioResponse(input);
+    assert.deepEqual(result.criteria[0].evidence, expected);
+    assert.deepEqual(input, before);
+  }
+  for (const raw of [{ quote, text: other }, { quote: null, text: quote }, [{ quote, text: other }], { quote: "" }]) {
+    const input = response(); input.criteria[0].evidence = raw; invalid(input, "evidence");
+  }
+});
+
+test("absent evidence never invents language support or a score, and only same-category acoustic observations can supply quotes", () => {
+  for (const raw of [undefined, null, []]) {
+    const input = response();
+    input.criteria[0].evidence = raw; input.criteria[1].evidence = raw;
+    input.criteria[2].band = null; input.criteria[2].evidence = raw;
+    input.criteria[3].evidence = raw;
+    const before = structuredClone(input), result = parseSpeakingAudioResponse(input);
+    assert.deepEqual(result.criteria[0].evidence, [input.observations[1].quote]);
+    assert.deepEqual(result.criteria[3].evidence, [input.observations[0].quote]);
+    assert.deepEqual(result.criteria[1].evidence, [], "The audio-aware caller must reject a scored language criterion lacking evidence");
+    assert.equal(result.criteria[1].band, 5.5, "No replacement score is manufactured");
+    assert.deepEqual(result.criteria[2].evidence, []); assert.equal(result.criteria[2].band, null);
+    assert.deepEqual(input, before);
+  }
+  const wrong = response(); delete wrong.criteria[0].evidence;
+  wrong.observations = wrong.observations.filter((item: any) => item.criterion !== "Fluency & Coherence");
+  assert.deepEqual(parseSpeakingAudioResponse(wrong).criteria[0].evidence, [], "Never borrow another acoustic category's quote");
+  const abstained = response(); abstained.criteria[0].band = null; delete abstained.criteria[0].evidence;
+  assert.deepEqual(parseSpeakingAudioResponse(abstained).criteria[0].evidence, []);
+});
+
+test("explicit malformed or invented evidence is never replaced by acoustic observations", () => {
+  const input = response(); input.criteria[0].evidence = "INVENTED_PROVIDER_QUOTE";
+  assert.deepEqual(parseSpeakingAudioResponse(input).criteria[0].evidence, ["INVENTED_PROVIDER_QUOTE"], "The caller must source-check and reject it");
+  for (const raw of [{ quote: 3 }, ["a quiet room", { text: false }], [{ quote: "a quiet room", text: "a different phrase" }]]) {
+    const invalidInput = response(); invalidInput.criteria[0].evidence = raw; invalid(invalidInput, "evidence");
+  }
+  const excess = response(); delete excess.criteria[0].evidence;
+  excess.observations = Array.from({ length: 21 }, (_, index) => ({ criterion: "Fluency & Coherence", startSeconds: index,
+    endSeconds: index + 1, quote: `literal observation ${index}`, observation: "A synthetic observation." }));
+  invalid(excess, "evidence");
+  const malformed = response(); delete malformed.criteria[0].evidence; malformed.observations[1].quote = null;
+  invalid(malformed, "evidence");
+});
+
+test("raw evidence shape diagnostics are bounded, frozen and contain only fixed categories", () => {
+  const input = response();
+  input.criteria[0].band = privateValue;
+  input.criteria[0].evidence = privateValue;
+  input.criteria[1].evidence = { quote: privateValue };
+  input.criteria[2].evidence = [{ text: privateValue }];
+  input.criteria[3].evidence = null;
+  const error = invalid(input);
+  assert.deepEqual(error.evidenceDetails.map(detail => detail.kind), ["string", "quote-object", "object-array", "null"]);
+  assert.deepEqual(error.evidenceDetails.map(detail => detail.issue), ["none", "none", "none", "null"]);
+  assert.deepEqual(error.evidenceDetails.map(detail => detail.index), [0, 1, 2, 3]);
+  assert.equal(JSON.stringify(error.evidenceDetails).includes(privateValue), false);
+  assert.ok(Object.isFrozen(error.evidenceDetails)); assert.ok(error.evidenceDetails.every(Object.isFrozen));
+  assert.equal(Reflect.set(error.evidenceDetails[0], "kind", privateValue), false);
+  const unknown = response(); unknown.criteria[0].name = privateValue;
+  assert.equal(invalid(unknown).evidenceDetails[0].criterion, "unknown");
+  const extra = response(); extra.criteria = Array(100).fill({ name: privateValue, evidence: { [privateValue]: privateValue } });
+  const details = invalid(extra).evidenceDetails;
+  assert.equal(details.length, 4); assert.equal(JSON.stringify(details).includes(privateValue), false);
 });
 
 test("optional collections accept only null/absence or bounded well-formed arrays", () => {
