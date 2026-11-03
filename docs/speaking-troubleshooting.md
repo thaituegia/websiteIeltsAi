@@ -12,6 +12,16 @@ Tiêu chí không được chấm (`band:null`) có thể có dẫn chứng tr�
 
 Prompt audio nhận chính JSON schema làm hợp đồng đầu ra và nhấn mạnh dẫn chứng phải là mảng trích nguyên văn từ transcript đã cung cấp. Không thêm chế độ `response_format` chưa xác minh model hỗ trợ, không gọi thêm AI để tự sửa JSON hoặc thử lại ngầm. Khi cấu trúc vẫn sai, API/SSE trả `AI_RESPONSE_INVALID` cùng thông báo giữ bản ghi. Log `Speaking audio response rejected:` chỉ chứa mã, danh mục trường và metadata kiểu dữ liệu hữu hạn cho tối đa bốn tiêu chí; không có transcript, âm thanh, thông tin tài khoản, giá trị hay khóa tùy ý từ phản hồi nhà cung cấp.
 
+## Liên kết dẫn chứng với transcript đã lưu
+
+Sau khi qua bước cấu trúc, thông báo `AI_EVIDENCE_INVALID` có thể xuất hiện vì model tự chép lại lời nói khác với transcript Whisper. Ảnh lỗi không cho biết đó là dấu câu/khoảng trắng hay một câu bị viết lại, cũng không chỉ ra dẫn chứng của tiêu chí, quan sát âm học hay câu gốc cần sửa.
+
+Mỗi yêu cầu chấm audio hiện tạo danh sách đoạn nguyên văn có mã tham chiếu riêng từ transcript. Prompt/schema yêu cầu model chọn mã trong danh sách hiện tại cho `criteria[].evidence`, `observations[].quote` và `corrections[].original`. Máy chủ đổi mã đã chọn thành đúng chuỗi gốc trước khi chạy các kiểm tra cũ và lưu feedback. Bản ghi/Whisper không bị sửa để hợp với phản hồi model; các trường trích dẫn trả về giao diện vẫn là văn bản, không đổi hợp đồng API.
+
+Mã gắn với transcript hiện tại, không được lấy từ một bài khác; mã không có trong danh sách bị từ chối. Chuỗi trông như mã trong chính lời nói vẫn có thể được chọn qua tham chiếu hợp lệ và chỉ được phân giải một lần. Với phản hồi tương thích cũ còn trả câu trực tiếp, chỉ khác biệt NFC/khoảng trắng/dấu nháy được khôi phục về nguyên văn; không sửa ngữ pháp, đổi hoa/thường, bỏ từ/dấu câu, dùng ellipsis hoặc tìm gần đúng. Cả chuỗi trả về sau khôi phục cũng không vượt giới hạn 2.000 ký tự.
+
+Danh sách được giới hạn ở transcript 100.000 ký tự, tối đa 512 đoạn, mỗi đoạn tối đa 1.000 ký tự, không chia vỡ grapheme hay bỏ phần đuôi có nội dung. Mã chỉ xác định văn bản: model vẫn nghe chính waveform và phải nêu mốc âm thanh có thật. Không suy timestamp hay điểm phát âm từ vị trí chữ. Cache STT và số lần gọi provider giữ như bản trước; không gọi model để tự sửa dẫn chứng. Khi lỗi, log chỉ có giai đoạn cố định (`criterion`, `correction`, `observation`) và lý do hữu hạn, không in mã tham chiếu, hash transcript, câu lỗi hay dữ liệu người học.
+
 ## Thử lại
 
 Máy chủ giữ WAV và transcript Whisper trên metadata của đúng file GridFS trước khi chấm. Thử lại bằng `POST /api/attempts/:id/speaking` không kèm file sẽ đọc bản ghi riêng đã lưu và dùng transcript nhận dạng của đúng file đó. Model chấm vẫn nhận chính âm thanh; chỉ bước STT được bỏ qua nếu đã có nhận dạng hợp lệ. Trường `recognizedTranscript` do trình duyệt gửi không được tin dùng. Regrade Duo cũng dùng nguồn nhận dạng gắn file đã được máy chủ kiểm tra.

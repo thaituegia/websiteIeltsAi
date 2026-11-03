@@ -145,6 +145,22 @@ const inputSchema = z.object({
 /** Prompt contract only: no unsupported provider response-format mode is implied. */
 export const speakingAudioOutputSchema = z.toJSONSchema(inputSchema);
 
+/** A request-scoped prompt contract; the shared canonical schema stays intact. */
+export function speakingAudioEvidenceSchema(sourceIds: readonly string[]): typeof speakingAudioOutputSchema {
+  const schema = structuredClone(speakingAudioOutputSchema);
+  // These paths are generated from the fixed schema above, not provider keys.
+  const properties = schema.properties!;
+  const criteria = properties.criteria as { items: { properties: { evidence: { items: Record<string, unknown> } } } };
+  const observations = properties.observations as { anyOf: { items?: { properties: { quote: Record<string, unknown> } } }[] };
+  const corrections = properties.corrections as { anyOf: { items?: { properties: { original: Record<string, unknown> } } }[] };
+  criteria.items.properties.evidence.items.enum = [...sourceIds];
+  for (const branch of observations.anyOf) if (branch.items)
+    branch.items.properties.quote.enum = [...sourceIds];
+  for (const branch of corrections.anyOf) if (branch.items)
+    branch.items.properties.original.enum = [...sourceIds];
+  return schema;
+}
+
 export interface SpeakingAudioResponse {
   summary: string;
   speechDetected: boolean;

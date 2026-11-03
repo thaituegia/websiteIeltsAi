@@ -1,5 +1,13 @@
 # Kết quả kiểm tra
 
+## Speaking: chọn nguồn dẫn chứng thay vì chép lại câu — 2026-11-03
+
+Ảnh mới cho thấy bước cấu trúc đã qua nhưng đối chiếu trích dẫn bị `AI_EVIDENCE_INVALID`; ảnh không xác định câu nào hoặc carrier nào sai. Luồng chấm audio hiện gửi catalog đoạn nguyên văn có mã gắn với transcript hiện tại, và schema mỗi request giới hạn mã được chọn cho evidence tiêu chí, quote quan sát âm học và original của correction. Máy chủ phân giải cả ba thành đúng chuỗi gốc trước các gate cũ. Mã lạ/cũ/nguồn khác bị từ chối; không lấy một câu bất kỳ để bù dẫn chứng. Literal tương thích cũ chỉ được khôi phục NFC/khoảng trắng/dấu nháy, không chấp nhận sửa ngữ pháp, đổi hoa/thường hay diễn giải lại.
+
+Release build, full TypeScript và diff checks đạt. **163/163 kiểm tra native** đạt, gồm 10 helper và 22 tích hợp mới, hồi quy biểu diễn evidence, waveform/schema, HTTP retry/cache, Duo regrade, audio review, AI/provider, Writing và updater app-only. Catalog kiểm tra đủ nguồn đến 100k ký tự với tối đa 512 đoạn/1.000 ký tự, không vỡ grapheme/bỏ đuôi; nội dung ID-like được phân giải một lần qua anchor hợp lệ. Schema enums được clone theo request, không sửa schema dùng chung. ID ở cả ba carrier ra feedback thành nguyên văn; sai transcript, ID cũ và mốc âm thanh sai vẫn bị từ chối. Cache hợp lệ dùng 0 STT + 1 audio; không có lời gọi sửa phản hồi tự động.
+
+Không thay validator Writing/typed Speaking, client, routes, ngân hàng, dependencies, waveform hoặc deployment helper. Không lặp browser suite vì chỉ đổi giao thức nội bộ server/provider và giữ public feedback. Fixtures đều synthetic, không dùng bài nói thật trong ảnh và không gọi provider trả phí. Log lỗi chỉ có stage/reason hữu hạn, không có câu, mã nguồn dẫn chứng hay hash transcript. Mã tham chiếu chỉ xác định văn bản, không phải bằng chứng âm học; các gate nghe waveform/quan sát/thời gian và điểm còn nguyên. Chưa xác minh model live trên bản ghi người dùng hoặc áp dụng bản này trên VPS.
+
 ## Speaking: định dạng evidence từ log VPS — 2026-11-03
 
 Người dùng gửi log VPS của bản mới với ba lần `AI_RESPONSE_INVALID`, `fields:["evidence"]`. Log xác nhận trường gây lỗi, không chứa payload nên không khẳng định kiểu/giá trị thực tế model đã trả. Bản sửa chuẩn hóa các biểu diễn trích dẫn rõ nghĩa (chuỗi, quote/text object, danh sách kết hợp) thành mảng chuỗi. Không chọn giữa hai trích dẫn mâu thuẫn, không lọc bỏ phần tử sai, không nới giới hạn số lượng/độ dài hoặc kiểm tra nguyên văn. Dẫn chứng âm học còn thiếu chỉ dùng lại quote trong quan sát có sẵn của chính tiêu chí đó; tất cả quote và mốc thời gian vẫn phải hợp lệ trước khi công bố điểm. Không tạo bằng chứng cho điểm ngôn ngữ còn thiếu hỗ trợ.
