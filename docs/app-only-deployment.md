@@ -48,6 +48,13 @@ model bằng key hiện tại cùng hai yêu cầu JSON tổng hợp nhỏ (obje
 schema) trong container riêng có giới hạn tài nguyên. Xem
 [phạm vi và cách xác minh nâng model](openai-model-upgrade.md).
 
+Cờ `--prepare-duo-exams` tạo ngân hàng và audio Duo riêng trong image mới
+trước khi thay app. Cờ này có thể dùng cùng `--upgrade-text-models`. Job giữ
+app cũ chạy, có giới hạn RAM/CPU, kiểm tra dự phòng mỗi 15 giây và chỉ xác
+nhận sẵn sàng khi toàn bộ audio riêng đã tạo xong. Nếu bị ngắt, cache riêng
+đã tạo được giữ để tiếp tục; chỉ container job đúng sở hữu bị dừng/xóa. Xem
+[phạm vi đề riêng và chấm đáp án](private-duo-exams.md).
+
 Kiểm tra helper trong cloud:
 
 ```bash

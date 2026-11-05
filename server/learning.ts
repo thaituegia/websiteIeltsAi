@@ -18,6 +18,7 @@ import type {
 import { ApiError } from "./errors";
 import { withinAnswerLimit } from "../shared/content-visuals";
 import { matchingTimeAnswer, timeAnswerExamples } from "./time-answers";
+import { matchingEquivalentShortAnswer } from "./answer-equivalence";
 
 export function roundBand(value: number): number {
   return Math.round(value * 2) / 2;
@@ -155,6 +156,10 @@ export function gradeObjective(
     const matchedTime = question.type === "text"
       ? matchingTimeAnswer(response, acceptedKeys.filter((key) =>
         withinAnswerLimit(key, question.wordLimit, question.allowNumbers)), question.prompt) : undefined;
+    const matchedPhrase = content.skill !== "grammar"
+      ? matchingEquivalentShortAnswer(response, acceptedKeys.filter((key) =>
+        withinAnswerLimit(key, question.wordLimit, question.allowNumbers)), question,
+        content.sections[question.sectionIndex]?.text ?? "") : undefined;
     // Written clocks can use more words than their numeric keyed equivalent.
     // Other responses still obey the original IELTS word/number limit.
     const withinLimit = withinAnswerLimit(response, question.wordLimit, question.allowNumbers) ||
@@ -168,7 +173,7 @@ export function gradeObjective(
       answer: question.answer,
       correct: question.type === "choice-multiple"
         ? validMultiple && selected!.includes(normalized(question.answer))
-        : withinLimit && (accepted.includes(normalized(response)) || matchedTime !== undefined),
+        : withinLimit && (accepted.includes(normalized(response)) || matchedTime !== undefined || matchedPhrase !== undefined),
       explanation: question.type === "choice-multiple" && !validMultiple
         ? `Nhóm lựa chọn không hợp lệ: chọn tối đa ${question.selectionGroup?.count ?? 0} phương án khác nhau và dùng cùng lựa chọn cho các số câu trong nhóm. ${question.explanation}`
         : withinLimit

@@ -680,6 +680,7 @@ test("native Duo notebook translation settles an expired or interrupted assessme
           wife: { at: at(), proofIds: ["synthetic-notebook-duo-practice-b"], kind: "attempt" },
         };
         const gateId = "synthetic-notebook-duo:gate";
+        const legacyAssessmentId = "synthetic-notebook-duo-active-legacy";
         const path = {
           _id: settings.duoId, duoId: settings.duoId, members, startingBand: 6, currentBand: 6, targetBand: 8,
           gateInterval: 5, sessionsPerBand: 5, passPercent: 70, strictRetakeMode: false, revision: 0, startedAt: at(), updatedAt: at(),
@@ -687,11 +688,24 @@ test("native Duo notebook translation settles an expired or interrupted assessme
             band: 6, unlockedAt: at(), completedAt: null,
             lessons: Array.from({ length: 5 }, (_, index) => ({ id: `synthetic-notebook-duo:lesson:${index}`, number: index + 1,
               title: "Completed synthetic practice", kind: "reading", contentId: bank[0].id, vocabularyIds: [], completion: structuredClone(completion) })),
-            gates: [{ id: gateId, number: 1, fromLesson: 1, afterLesson: 5, contentIds: bank.map(row => row.id), results: { husband: null, wife: null } }],
+            gates: [{ id: gateId, number: 1, fromLesson: 1, afterLesson: 5, contentIds: bank.map(row => row.id), results: { husband: { status: "in-progress", assessmentId: legacyAssessmentId, at: at() }, wife: null } }],
             promotionContentIds: [], promotionResults: { husband: null, wife: null }, lastPromotionRoomId: null,
           } },
         };
         await database.db.collection<typeof path>("duo_learning_paths").insertOne(path);
+        // This source/lease regression resumes a sitting already open before
+        // exclusive papers were introduced. A new sitting must use the private
+        // bank; an active legacy receipt must keep its original two passages.
+        const legacyAssessment = {
+          _id: legacyAssessmentId, duoId: settings.duoId, userId: members.husband, role: "husband", kind: "gate", band: 6,
+          gateId, roomId: null, status: "in-progress", active: true,
+          parts: bank.map(source => ({ contentId: source.id, title: source.title, skill: source.skill, attemptId: null,
+            status: "in-progress", scorePercent: null, estimatedBand: null, startsAt: at(),
+            deadlineAt: new Date(now + source.durationMinutes * 60_000).toISOString() })),
+          passPercent: 70, requiredBand: 6.5, deadlineAt: new Date(now + bank.reduce((sum, source) => sum + source.durationMinutes, 0) * 60_000).toISOString(),
+          createdAt: at(), completedAt: null, revision: 0,
+        };
+        await database.db.collection<typeof legacyAssessment>("duo_assessments").insertOne(legacyAssessment);
         server = createApp(database, { production: false, serveClient: false, duoEnabled: true, demoEnabled: false,
           duoCredentials: settings, examIntegrityEnabled: true,
           duo: { sessionsPerBand: 5, gateInterval: 5, lessonKinds: ["reading"], now: () => now },
@@ -704,6 +718,8 @@ test("native Duo notebook translation settles an expired or interrupted assessme
         await request("POST", "/auth/login", { phone: settings.accounts[0].phone, password: "synthetic-notebook-duo-password-a" });
         const tab = randomUUID();
         const assessment = (await request("POST", `/duo/gates/${gateId}/start`, {}, 200, tab)).assessment as DuoAssessmentView;
+        assert.equal(assessment.id, legacyAssessmentId);
+        assert.deepEqual(assessment.parts.map(part => part.contentId), bank.map(source => source.id));
         assert.equal(assessment.parts.length, 2);
         const attempt = (await request("POST", "/attempts", {
           contentId: bank[0].id, mode: "exam", duoAssessmentId: assessment.id,

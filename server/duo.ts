@@ -18,7 +18,12 @@ import type {
 import { learnerOf } from "./auth";
 import { ApiError } from "./errors";
 import { EXAM_LEASE_SECONDS, requireExamTab } from "./exam-guard";
-import { createExamReplacement, examReplacementSourceIds, ExamReplacementUnavailableError } from "./exam-variants";
+import {
+  duoAssessmentContents,
+  ensureExclusiveDuoBank,
+  isExclusiveDuoContentId,
+  selectExclusiveDuoContent,
+} from "./duo-exam-content";
 import type {
   AttemptRecord,
   Database,
@@ -287,6 +292,7 @@ export class DuoService {
   }
   initialize(): Promise<void> {
     this.initialization ??= Promise.all([
+      ensureExclusiveDuoBank(this.database),
       this.placements.createIndex({ duoId: 1, userId: 1, startedAt: -1 }),
       this.assessments.createIndex({ duoId: 1, userId: 1, createdAt: -1 }),
       this.assessments.createIndex(
@@ -378,11 +384,11 @@ export class DuoService {
     testType: "academic" | "general",
   ): Promise<BandRecord> {
     const content = await this.database.content
-      .find({ testType: { $in: [testType, "both"] } })
+      .find({ testType: { $in: [testType, "both"] }, format: "lesson" })
       .toArray();
-    const nearest = (kind: ContentKind, format: "lesson" | "full-mock") =>
+    const nearest = (kind: ContentKind) =>
       content
-        .filter((row) => row.skill === kind && row.format === format)
+        .filter((row) => row.skill === kind && row.format === "lesson")
         .sort(
           (a, b) =>
             Math.abs(a.band - band) - Math.abs(b.band - band) ||
@@ -415,7 +421,7 @@ export class DuoService {
         if (!vocabularyIds.length)
           throw new ApiError(409, "Chưa có học liệu từ vựng cho lộ trình.");
       } else {
-        const candidates = nearest(kind, "lesson");
+        const candidates = nearest(kind);
         const candidate =
           candidates.find((item) => !used.has(item.id)) ?? candidates[0];
         if (!candidate)
@@ -444,24 +450,20 @@ export class DuoService {
       after += this.config.gateInterval
     ) {
       const segment = lessons.slice(after - this.config.gateInterval, after);
-      const contentIds = segment
+      const objectiveKinds = segment
         .filter(
           (lesson) =>
             ["reading", "listening", "grammar"].includes(lesson.kind) &&
             lesson.contentId,
         )
-        .map((lesson) => lesson.contentId!);
-      if (!contentIds.length)
-        contentIds.push(
-          ...segment
-            .filter((lesson) => lesson.contentId)
-            .map((lesson) => lesson.contentId!),
-        );
-      if (!contentIds.length)
-        throw new ApiError(
-          409,
-          "Duo Gate cần ít nhất một bài kiểm tra có thể chấm.",
-        );
+        .map((lesson) => lesson.kind as ContentKind);
+      const skills: ContentKind[] = objectiveKinds.length
+        ? [...new Set(objectiveKinds)]
+        : ["reading", "listening", "grammar"];
+      const contentIds = await selectExclusiveDuoContent(this.database, {
+        band, testType, kind: "gate", skills,
+        excludeIds: gates.flatMap(gate => gate.contentIds),
+      });
       gates.push({
         id: `${duoId}:${bandKey(band)}:gate:${gates.length + 1}`,
         number: gates.length + 1,
@@ -471,13 +473,9 @@ export class DuoService {
         results: pair(null),
       });
     }
-    const promotionContentIds = (
-      ["reading", "listening", "writing", "speaking"] as ContentKind[]
-    ).map((kind) => {
-      const candidate = nearest(kind, "full-mock")[0];
-      if (!candidate)
-        throw new ApiError(409, `Kỳ thi nâng band cần đề ${kind} đủ cấu trúc.`);
-      return candidate.id;
+    const promotionContentIds = await selectExclusiveDuoContent(this.database, {
+      band, testType, kind: "promotion",
+      skills: ["reading", "listening", "writing", "speaking"],
     });
     return {
       band,
@@ -990,21 +988,43 @@ export class DuoService {
     });
     return this.cancelAssessments(assessmentIds, reason, room._id);
   }
-  private async replacementSet(contentIds: string[], excludedContentIds: string[]): Promise<string[]> {
-    const contents = await this.database.content.find({ _id: { $in: [...contentIds, ...excludedContentIds] } }).toArray();
-    const excluded = [...new Set([...excludedContentIds, ...contents.flatMap(examReplacementSourceIds)])];
-    const replacements: string[] = [];
-    for (const id of contentIds) {
-      const source = contents.find(content => content.id === id);
-      if (!source) throw new ApiError(409, "Học liệu của bài đánh giá chưa đầy đủ.");
-      const replacement = await createExamReplacement(this.database, source, [...excluded, ...replacements]).catch(error => {
-        if (error instanceof ExamReplacementUnavailableError) throw new ApiError(409, error.message);
-        throw error;
-      });
-      await this.database.content.insertOne(replacement);
-      replacements.push(replacement.id);
-    }
-    return replacements;
+  /** New sittings draw only from the private bank. An ordinary failed/timed-out
+   * paper is just as exposed as one cancelled by the integrity guard. */
+  private async exclusiveAssessmentSet(
+    path: PathRecord,
+    kind: "gate" | "promotion",
+    canonicalIds: string[],
+    testType: "academic" | "general",
+    gateId?: string,
+  ): Promise<string[]> {
+    const [assessments, rooms, canonical] = await Promise.all([
+      this.assessments.find({ duoId: path.duoId }).toArray(),
+      this.rooms.find({ duoId: path.duoId }).toArray(),
+      duoAssessmentContents(this.database, canonicalIds),
+    ]);
+    const exposed = new Set([
+      ...assessments.flatMap(record => record.parts.map(part => part.contentId)),
+      ...rooms.flatMap(room => room.contentIds ?? []),
+    ]);
+    const objectiveKinds = canonical
+      .map(content => content.skill)
+      .filter(skill => ["reading", "listening", "grammar"].includes(skill));
+    const skills: ContentKind[] = kind === "promotion"
+      ? ["reading", "listening", "writing", "speaking"]
+      : objectiveKinds.length ? [...new Set(objectiveKinds)] : ["reading", "listening", "grammar"];
+    const band = path.bands[bandKey(path.currentBand)];
+    const reservedElsewhere = new Set(band.gates
+      .filter(gate => gate.id !== gateId)
+      .flatMap(gate => gate.contentIds)
+      .filter(isExclusiveDuoContentId));
+    if (canonicalIds.length === skills.length && canonical.length === canonicalIds.length &&
+        canonicalIds.every(id => isExclusiveDuoContentId(id) && !exposed.has(id) && !reservedElsewhere.has(id)) &&
+        skills.every(skill => canonical.filter(content => content.skill === skill).length === 1))
+      return canonicalIds;
+    return selectExclusiveDuoContent(this.database, {
+      band: path.currentBand, testType, kind, skills,
+      excludeIds: [...exposed, ...reservedElsewhere],
+    });
   }
   private async makeAssessment(
     path: PathRecord,
@@ -1021,9 +1041,7 @@ export class DuoService {
         currentPath.invalidatedRoomIds?.includes(room._id))
         throw new ApiError(409, "Phòng thi đã đóng.");
     }
-    const contents = await this.database.content
-      .find({ _id: { $in: contentIds } })
-      .toArray();
+    const contents = await duoAssessmentContents(this.database, contentIds);
     if (contents.length !== contentIds.length)
       throw new ApiError(409, "Học liệu của bài đánh giá chưa đầy đủ.");
     await this.config.ensureAudioReady(contents);
@@ -1125,15 +1143,20 @@ export class DuoService {
     });
     if (active) {
       const reconciled = await this.reconcileAssessment(active);
-      if (!reconciled.invalidatedAt) return reconciled;
+      if (!reconciled.invalidatedAt && (reconciled.active || reconciled.status === "passed")) return reconciled;
     }
-    const invalidated = await this.assessments.find({
-      duoId: path.duoId, userId: member.id, band: path.currentBand, kind: "gate", gateId,
-      invalidatedAt: { $exists: true },
-    }).toArray();
-    const contentIds = invalidated.length
-      ? await this.replacementSet(gate.contentIds, invalidated.flatMap(record => record.parts.map(part => part.contentId)))
-      : gate.contentIds;
+    const contentIds = await this.exclusiveAssessmentSet(path, "gate", gate.contentIds, member.testType, gateId);
+    if (gate.contentIds.some(id => !isExclusiveDuoContentId(id))) {
+      await this.changePath(path.duoId, latest => {
+        if (latest.currentBand !== path.currentBand) return false;
+        const currentBand = latest.bands[bandKey(path.currentBand)];
+        const currentGate = currentBand.gates.find(entry => entry.id === gateId);
+        if (!currentGate || currentBand.completedAt || currentGate.contentIds.every(isExclusiveDuoContentId)) return false;
+        // Only the future paper allocation changes. Results, proofs and any
+        // already active/passed legacy assessment remain their own receipts.
+        currentGate.contentIds = [...contentIds];
+      });
+    }
     const created = await this.makeAssessment(
       path,
       member,
@@ -1161,7 +1184,11 @@ export class DuoService {
     user: UserRecord,
     input: DuoAttemptInput,
   ): Promise<DuoAttemptPermission> {
-    if (!input.duoAssessmentId) return {};
+    if (!input.duoAssessmentId) {
+      if (isExclusiveDuoContentId(input.contentId))
+        throw new ApiError(403, "Đề riêng Duo chỉ được mở trong bài đánh giá đã được cấp.");
+      return {};
+    }
     if (input.mode !== "exam")
       throw new ApiError(
         400,
@@ -1229,9 +1256,7 @@ export class DuoService {
           "Bạn cần nộp các phần thi trước trước khi chuyển phần.",
         );
     }
-    const content = await this.database.content.findOne({
-      _id: input.contentId,
-    });
+    const [content] = await duoAssessmentContents(this.database, [input.contentId]);
     if (!content) throw new ApiError(404, "Không tìm thấy học liệu.");
     const deadlineAt =
       assessment.kind === "promotion"
@@ -1349,15 +1374,9 @@ export class DuoService {
           userId: record.userId,
         })
         .toArray();
-      const writingContent = await this.database.content
-        .find({
-          _id: {
-            $in: record.parts
-              .filter((part) => part.skill === "writing")
-              .map((part) => part.contentId),
-          },
-        })
-        .toArray();
+      const writingContent = await duoAssessmentContents(this.database, record.parts
+        .filter(part => part.skill === "writing")
+        .map(part => part.contentId));
       const savedAudio = await this.database.audio
         .find({
           userId: record.userId,
@@ -1892,8 +1911,8 @@ export class DuoService {
   }
   private async createRoom(user: UserRecord): Promise<RoomRecord> {
     const { user: member, members } = await this.member(user);
-    const path = await this.path(user);
-    const band = path.bands[bandKey(path.currentBand)];
+    let path = await this.path(user);
+    let band = path.bands[bandKey(path.currentBand)];
     if (!this.promotionEligible(band) || band.completedAt)
       throw new ApiError(
         403,
@@ -1904,9 +1923,16 @@ export class DuoService {
       band: path.currentBand,
       active: true,
     });
-    if (existing) return this.reconcileRoom(existing);
-    const contents = await this.database.content.find({ _id: { $in: band.promotionContentIds } }).toArray();
-    await this.config.ensureAudioReady(contents);
+    if (existing) {
+      const reconciled = await this.reconcileRoom(existing);
+      if (reconciled.active) return reconciled;
+      // Reconciliation may finish an expired/failed sitting or advance the
+      // shared band. Allocate against the refreshed path, never its old room.
+      path = await this.path(user);
+      band = path.bands[bandKey(path.currentBand)];
+      if (!this.promotionEligible(band) || band.completedAt)
+        throw new ApiError(403, "Cả hai cần hoàn thành mọi buổi học và pass tất cả Duo Gate.");
+    }
     const presence = (role: DuoRole): RoomPresence => ({
       userId: members[role].id,
       joinedAt: null,
@@ -1917,17 +1943,19 @@ export class DuoService {
         band.promotionResults[role]?.status === "passed",
       assessmentId: null,
     });
-    const invalidated = await this.rooms.find({
-      duoId: path.duoId, band: path.currentBand, invalidatedAt: { $exists: true },
-    }).toArray();
-    const previousAssessments = invalidated.length
-      ? await this.assessments.find({ roomId: { $in: invalidated.map(entry => entry._id) } }).toArray()
-      : [];
-    const contentIds = invalidated.length
-      ? await this.replacementSet(band.promotionContentIds, [
-        ...invalidated.flatMap(entry => entry.contentIds ?? []),
-        ...previousAssessments.flatMap(entry => entry.parts.map(part => part.contentId)),
-      ]) : band.promotionContentIds;
+    const contentIds = await this.exclusiveAssessmentSet(path, "promotion", band.promotionContentIds, member.testType);
+    const contents = await duoAssessmentContents(this.database, contentIds);
+    if (contents.length !== contentIds.length)
+      throw new ApiError(409, "Học liệu của bài đánh giá chưa đầy đủ.");
+    await this.config.ensureAudioReady(contents);
+    if (band.promotionContentIds.some(id => !isExclusiveDuoContentId(id))) {
+      await this.changePath(path.duoId, latest => {
+        if (latest.currentBand !== path.currentBand) return false;
+        const currentBand = latest.bands[bandKey(path.currentBand)];
+        if (currentBand.completedAt || currentBand.promotionContentIds.every(isExclusiveDuoContentId)) return false;
+        currentBand.promotionContentIds = [...contentIds];
+      });
+    }
     const room: RoomRecord = {
       _id: randomUUID(),
       duoId: member.duoId,
@@ -1980,9 +2008,7 @@ export class DuoService {
     const band = path.bands[bandKey(room.band)];
     if (path.currentBand !== room.band || !this.promotionEligible(band))
       throw new ApiError(403, "Kỳ thi nâng band chưa mở.");
-    const contents = await this.database.content
-      .find({ _id: { $in: room.contentIds ?? band.promotionContentIds } })
-      .toArray();
+    const contents = await duoAssessmentContents(this.database, room.contentIds ?? band.promotionContentIds);
     const duration = contents.reduce(
       (sum, content) => sum + content.durationMinutes,
       0,

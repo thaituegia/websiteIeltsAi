@@ -1,5 +1,44 @@
 # Kết quả kiểm tra
 
+## Đề Duo độc lập và đáp án ngắn — 2026-11-05
+
+Gate và nâng band dùng ngân hàng riêng 484 bài trong `duo_exam_content`, không
+được thêm vào public contentBank/placement/planner. Có 220 đoạn đọc và 264
+nguồn audio mới, không trùng nguồn công khai hoặc giữa Gate và full mock.
+Tất cả câu hỏi khách quan chấm đúng khi điền chính canonical key. Phân bổ
+đúng band/profile, loại trừ toàn bộ lịch sử lượt trước, từ chối khi hết nguồn
+riêng; không dùng bài luyện làm fallback. Lượt cũ đang hoạt động, kết quả đạt,
+lịch sử và CAS của lộ trình tiếp tục được giữ. Hash thân bài thực tế được đối
+chiếu với nguồn authored, không chỉ tin metadata trong database.
+
+Quy tắc short-answer mới nhận hai ví dụ `Yoghurt pot` và `A tray` trong ảnh,
+đồng thời kiểm tra ngược lượng/tên riêng/tính từ/mạo từ/grammar/giới hạn từ.
+Các kiểu đáp án giờ bằng chữ vẫn đạt. Điểm và phản hồi đã lưu không được tự
+chấm lại khi xem lịch sử.
+
+Toàn bộ native suite đạt **1.006 ca, 0 lỗi, 5 ca tùy chọn skip**. Riêng suite
+operator Duo đã chạy tiếp với MongoDB Docker thật: **30/30 đạt**, bao gồm
+kiểm tra native trước đó bị skip; bước lập kế hoạch vẫn không ghi collection.
+Các phần kiểm thử tập trung bao phủ ngân hàng, riêng tư HTTP, audio/readiness,
+word notebook, giữ lượt legacy, thi lại khi trượt/hết giờ, regrade và deployment.
+Các bộ kiểm thử liên quan được chạy lại sau những bổ sung cuối.
+Lần chạy cuối đạt **170/170 ca** sau khi bổ sung 176 bài mẫu Writing và mã
+chẩn đoán audio hữu hạn; bao gồm **69 ca updater** và các hướng dẫn Writing
+tiếng Việt cho toàn bộ đề riêng. Task 1 mẫu có 190–262 từ, Task 2 có 337–384
+từ; dữ kiện bảng và nội dung tình huống được kiểm tra.
+
+TypeScript, release build và diff checks đạt. Một smoke test Docker thật trong
+cloud xác minh hai network, memory 512 MiB/no extra swap, CPU 0,25, rootfs
+read-only và lifecycle/JSON status với shell image đã cache; đây không phải
+kiểm tra image app hoặc TTS live. Updater có kiểm thử guard RAM trước/trong/sau
+job, timeout/ngắt SSH, ownership, sẵn sàng đủ audio, rollback, cache tiếp tục,
+quota/storage và việc không in lỗi provider riêng.
+
+Fixtures tổng hợp, database riêng có tiền tố test và được dọn sau kiểm tra.
+Chưa đọc dữ liệu học thật, chưa gọi TTS/OpenAI trả phí hoặc triển khai lên VPS.
+Lệnh `--prepare-duo-exams` thực hiện việc tạo audio mới trước khi thay app;
+manifest riêng `bank:duo` không ghi đè trạng thái/cache audio công khai cũ.
+
 ## Nâng model văn bản OpenAI — 2026-11-05
 
 Model mặc định cho content/extraction/scoring/translation là `gpt-6.1-sol`,

@@ -9,6 +9,7 @@ import express from "express";
 import type { Document } from "mongodb";
 import { contentBank, vocabularyBank } from "../server/data/index";
 import { createDuoService } from "../server/duo";
+import { duoAssessmentContents } from "../server/duo-exam-content";
 import type { DuoCredentialSettings } from "../server/duo-auth";
 import { ApiError } from "../server/errors";
 import { SpeechAudioCache, speechSectionFingerprint } from "../server/speech-audio";
@@ -136,7 +137,7 @@ async function fixture(eligibility: "gate" | "promotion") {
     return { database: db, path, band, gate, users, cache, paths, rooms, assessments, request, guardedContentIds,
       now: () => clock, advance: (ms: number) => { clock += ms; }, providerCalls: () => providerCalls, close,
       prepareAudio: async (contentIds: string[]) => {
-        const contents = await db.content.find({ _id: { $in: contentIds }, skill: "listening" }).toArray();
+        const contents = (await duoAssessmentContents(db, contentIds)).filter(content => content.skill === "listening");
         assert.ok(contents.length);
         generationAllowed = true;
         try { for (const content of contents) await cache.get(content.sections); }
@@ -151,7 +152,7 @@ async function fixture(eligibility: "gate" | "promotion") {
 test("Duo Gate rejects missing Listening audio before any assessment deadline or path receipt", { timeout: 30_000 }, async () => {
   const f = await fixture("gate");
   try {
-    const listening = await f.database.content.findOne({ _id: { $in: f.gate.contentIds }, skill: "listening" });
+    const listening = (await duoAssessmentContents(f.database, f.gate.contentIds)).find(content => content.skill === "listening");
     assert.ok(listening);
     const jobs = f.database.db.collection<Document & { _id: string }>("speech_audio_jobs");
     const heldJob = { _id: speechSectionFingerprint(listening.sections[0]), state: "generating",
@@ -213,7 +214,7 @@ test("an existing waiting room cannot Ready or start its clock until Listening i
     const second = await f.request<{ room: DuoRoomView }>("wife", `/api/duo/rooms/${roomId}/ready`, { ready: true });
     assert.equal(second.room.status, "countdown");
     assert.equal(second.room.startsAt, new Date(f.now() + 5_000).toISOString());
-    const contents = await f.database.content.find({ _id: { $in: f.band.promotionContentIds } }).toArray();
+    const contents = await duoAssessmentContents(f.database, f.band.promotionContentIds);
     const duration = contents.reduce((sum, content) => sum + content.durationMinutes, 0);
     assert.equal(second.room.deadlineAt, new Date(f.now() + 5_000 + duration * 60_000).toISOString());
     f.advance(5_001);

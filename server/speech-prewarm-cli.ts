@@ -4,9 +4,10 @@ import { pathToFileURL } from "node:url";
 import { loadDuoCredentials } from "./duo-auth";
 import { activateProviderConfig } from "./provider-config";
 import { inspectSpeechBank, runSpeechBankPrewarm, watchSpeechBankPrewarm } from "./speech-prewarm";
+import { ensureExclusiveDuoBank } from "./duo-exam-content";
 
 export function parseSpeechPrewarmArguments(args: string[]) {
-  let mode: "inspect" | "once" | "watch" = "inspect", selected = false, maxClips = 32, maxRetries = 3, intervalMs = 60_000, resume = false;
+  let mode: "inspect" | "once" | "watch" = "inspect", selected = false, maxClips = 32, maxRetries = 3, intervalMs = 60_000, resume = false, duoOnly = false;
   const number = (value: string | undefined, min: number, max: number) => {
     if (!value || !/^\d+$/u.test(value) || Number(value) < min || Number(value) > max) throw new Error("Invalid speech pregeneration bound.");
     return Number(value);
@@ -20,10 +21,11 @@ export function parseSpeechPrewarmArguments(args: string[]) {
     else if (arg === "--max-retries") maxRetries = number(args[++index], 0, 5);
     else if (arg === "--interval-seconds") intervalMs = number(args[++index], 1, 3600) * 1000;
     else if (arg === "--resume") resume = true;
-    else throw new Error("Usage: speech-prewarm-cli.ts --inspect | --once | --watch [--max-clips 32] [--max-retries 3] [--interval-seconds 60] [--resume]");
+    else if (arg === "--duo-only" && !duoOnly) duoOnly = true;
+    else throw new Error("Usage: speech-prewarm-cli.ts --inspect | --once | --watch [--max-clips 32] [--max-retries 3] [--interval-seconds 60] [--resume] [--duo-only]");
   }
   if (mode === "inspect" && resume) throw new Error("Read-only inspection cannot resume a paused worker.");
-  return { mode, maxClips, maxRetries, intervalMs, resume };
+  return { mode, maxClips, maxRetries, intervalMs, resume, ...(duoOnly ? { scope: "duo" as const } : {}) };
 }
 
 export async function speechPrewarmMain(args = process.argv.slice(2)): Promise<void> {
@@ -40,9 +42,18 @@ export async function speechPrewarmMain(args = process.argv.slice(2)): Promise<v
   try {
     await client.connect(); const db = client.db();
     if (db.databaseName !== "ielts_ai") throw new Error("Speech pregeneration operates only on ielts_ai.");
+    // Inspection remains read-only. Preparing a release may add its authored
+    // private bank, without seeding/resetting any learner or public collection.
+    if (mode !== "inspect") await ensureExclusiveDuoBank({ db });
     const options = { ...bounds, signal: controller.signal, onProgress: (status: unknown) => console.log(JSON.stringify(status)) };
     if (mode === "watch") await watchSpeechBankPrewarm(db, options);
-    else console.log(JSON.stringify(mode === "inspect" ? await inspectSpeechBank(db, options) : await runSpeechBankPrewarm(db, options)));
+    else {
+      const status = mode === "inspect" ? await inspectSpeechBank(db, options) : await runSpeechBankPrewarm(db, options);
+      console.log(JSON.stringify(status));
+      // A finite, scoped rollout must not announce success while its assigned
+      // voices are missing, paused, unconfigured or the inventory is absent.
+      if (bounds.scope === "duo" && (!status.configured || status.state !== "complete" || status.total <= 0 || status.ready !== status.total || status.pending !== 0 || status.failed !== 0)) process.exitCode = 1;
+    }
   } catch {
     // Never let Mongo/provider errors print credentials, URIs or response bodies.
     console.error("Speech pregeneration did not complete. Inspect its generic progress metadata and provider configuration.");

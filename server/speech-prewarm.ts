@@ -5,6 +5,7 @@ import type { ContentSection } from "../shared/types";
 import { ApiError } from "./errors";
 import { SpeechAudioCache, SpeechCacheError, SpeechProviderError, speechCapabilities, speechSectionFingerprint, speechStorageOperation, type SpeechFailureStage } from "./speech-audio";
 import type { Database } from "./storage";
+import { DUO_EXAM_CONTENT_COLLECTION } from "./duo-exam-content";
 
 const COLLECTION = "speech_bank_prewarm";
 const LEASE_MS = 90_000;
@@ -52,7 +53,11 @@ export interface SpeechPrewarmOptions {
   resume?: boolean;
   signal?: AbortSignal;
   onProgress?: (status: SpeechPrewarmStatus) => void;
+  /** A scoped rollout can prepare exclusive papers without rescanning public clips. */
+  scope?: "all" | "duo";
 }
+
+const bankManifestId = (scope: SpeechPrewarmOptions["scope"] = "all") => scope === "duo" ? "bank:duo" : "bank";
 
 function assertDatabase(db: Db, expected = "ielts_ai"): void {
   if (db.databaseName !== expected || (expected !== "ielts_ai" && !OWNED_TEST_DATABASE.test(expected)))
@@ -71,16 +76,17 @@ function statusOf(manifest: Manifest | null, configured = speechCapabilities().c
 }
 
 /** A single metadata lookup: no index creation, download, synthesis or writes. */
-export async function readSpeechPrewarmStatus(db: Db): Promise<SpeechPrewarmStatus> {
-  return statusOf(await speechStorageOperation("bank-metadata", () => db.collection<Manifest>(COLLECTION).findOne({ _id: "bank" }, { timeoutMS: METADATA_TIMEOUT_MS })));
+export async function readSpeechPrewarmStatus(db: Db, scope: SpeechPrewarmOptions["scope"] = "all"): Promise<SpeechPrewarmStatus> {
+  return statusOf(await speechStorageOperation("bank-metadata", () => db.collection<Manifest>(COLLECTION).findOne({ _id: bankManifestId(scope) }, { timeoutMS: METADATA_TIMEOUT_MS })));
 }
 
-/** Only public authored sources are scanned; projections exclude answers. */
-async function* authoredSections(db: Db): AsyncGenerator<ContentSection> {
+/** Only authored sources are scanned; projections exclude answers in both banks. */
+async function* authoredSections(db: Db, scope: SpeechPrewarmOptions["scope"] = "all"): AsyncGenerator<ContentSection> {
   // Prepare lower-band lessons before mocks, so early practice becomes ready
   // while the rest of the bank is still being synthesized.
-  for (const filter of [{ skill: "listening", format: "lesson" }, { skill: "listening", format: { $ne: "lesson" } }]) {
-    const content = db.collection("content").find(filter, {
+  const collections = scope === "duo" ? [DUO_EXAM_CONTENT_COLLECTION] : ["content", DUO_EXAM_CONTENT_COLLECTION];
+  for (const collection of collections) for (const filter of [{ skill: "listening", format: "lesson" }, { skill: "listening", format: { $ne: "lesson" } }]) {
+    const content = db.collection(collection).find(filter, {
       projection: { _id: 0, "sections.id": 1, "sections.text": 1, "sections.dialogue": 1 },
       timeoutMS: METADATA_TIMEOUT_MS, timeoutMode: "iteration",
     }).sort({ band: 1, _id: 1 }).batchSize(24);
@@ -92,6 +98,7 @@ async function* authoredSections(db: Db): AsyncGenerator<ContentSection> {
     } catch (error) { if (error instanceof SpeechCacheError) throw error; throw new SpeechCacheError("storage", "bank-scan"); }
     finally { await speechStorageOperation("bank-scan", () => content.close({ timeoutMS: METADATA_TIMEOUT_MS })); }
   }
+  if (scope === "duo") return;
   const placement = db.collection("placementItems").find({ skill: "listening" }, {
     projection: { _id: 0, id: 1, text: 1 },
     timeoutMS: METADATA_TIMEOUT_MS, timeoutMode: "iteration",
@@ -116,11 +123,11 @@ function fingerprint(section: ContentSection, configured: boolean): { key: strin
   }
 }
 
-async function inspect(db: Db, cache: SpeechAudioCache, writeManifest = false, signal?: AbortSignal): Promise<SpeechPrewarmStatus> {
+async function inspect(db: Db, cache: SpeechAudioCache, writeManifest = false, signal?: AbortSignal, scope: SpeechPrewarmOptions["scope"] = "all"): Promise<SpeechPrewarmStatus> {
   const configured = speechCapabilities().configured, seen = new Set<string>();
   const collection = db.collection<Manifest>(COLLECTION);
   let ready = 0, failed = 0;
-  for await (const section of authoredSections(db)) {
+  for await (const section of authoredSections(db, scope)) {
     if (signal?.aborted) throw signal.reason instanceof SpeechCacheError ? signal.reason : new SpeechCacheError("interrupted", "bank-scan");
     const { key, valid } = fingerprint(section, configured);
     if (seen.has(key)) continue;
@@ -144,10 +151,10 @@ async function inspect(db: Db, cache: SpeechAudioCache, writeManifest = false, s
 }
 
 /** Inspect all current content/variants and placement, without writing anything. */
-export async function inspectSpeechBank(db: Db, options: Pick<SpeechPrewarmOptions, "expectedDatabase" | "signal"> = {}): Promise<SpeechPrewarmStatus> {
+export async function inspectSpeechBank(db: Db, options: Pick<SpeechPrewarmOptions, "expectedDatabase" | "signal" | "scope"> = {}): Promise<SpeechPrewarmStatus> {
   assertDatabase(db, options.expectedDatabase);
-  const status = await inspect(db, new SpeechAudioCache({ db } as Database), false, options.signal);
-  const previous = await speechStorageOperation("bank-metadata", () => db.collection<Manifest>(COLLECTION).findOne({ _id: "bank" }, { timeoutMS: METADATA_TIMEOUT_MS }));
+  const status = await inspect(db, new SpeechAudioCache({ db } as Database), false, options.signal, options.scope);
+  const previous = await speechStorageOperation("bank-metadata", () => db.collection<Manifest>(COLLECTION).findOne({ _id: bankManifestId(options.scope) }, { timeoutMS: METADATA_TIMEOUT_MS }));
   if (status.configured && previous?.state === "paused") {
     status.state = "paused";
     if (previous.lastErrorCode) status.lastErrorCode = previous.lastErrorCode;
@@ -184,30 +191,31 @@ function retryDelay(retry: number, retryAfterMs?: number): number {
 /**
  * Resumable administrative worker. Successful sections/turns remain in the
  * generic cache. The manifest contains hashes, counts and safe error codes only.
- * The bank lease prevents two worker services from processing different clips
- * simultaneously; per-audio claims also protect publishing across processes.
+ * The scope lease prevents two workers processing one inventory simultaneously;
+ * per-audio claims also protect publishing across inventories and processes.
  */
 export async function runSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptions = {}): Promise<SpeechPrewarmStatus> {
   assertDatabase(db, options.expectedDatabase);
+  const bankId = bankManifestId(options.scope);
   const maxClips = options.maxClips ?? 32, maxRetries = options.maxRetries ?? 3;
   if (!Number.isSafeInteger(maxClips) || maxClips < 1 || maxClips > 4096 || !Number.isSafeInteger(maxRetries) || maxRetries < 0 || maxRetries > 5)
     throw new Error("Speech pregeneration bounds require 1–4096 clips and 0–5 retries per pass.");
   const cache = new SpeechAudioCache({ db } as Database);
-  if (!speechCapabilities().configured) return inspect(db, cache, false, options.signal);
+  if (!speechCapabilities().configured) return inspect(db, cache, false, options.signal, options.scope);
   const collection = db.collection<Manifest>(COLLECTION);
-  const previous = await speechStorageOperation("bank-metadata", () => collection.findOne({ _id: "bank" }, { timeoutMS: METADATA_TIMEOUT_MS }));
+  const previous = await speechStorageOperation("bank-metadata", () => collection.findOne({ _id: bankId }, { timeoutMS: METADATA_TIMEOUT_MS }));
   if (previous?.state === "paused" && !options.resume) return statusOf(previous);
   const owner = randomUUID(), now = new Date();
   if (!previous) {
-    try { await collection.insertOne({ _id: "bank", state: "pending", total: 0, ready: 0, failed: 0, updatedAt: now }, { timeoutMS: METADATA_TIMEOUT_MS }); }
+    try { await collection.insertOne({ _id: bankId, state: "pending", total: 0, ready: 0, failed: 0, updatedAt: now }, { timeoutMS: METADATA_TIMEOUT_MS }); }
     catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === 11000)) throw new SpeechCacheError("storage", "bank-metadata"); }
   }
-  const claim = await speechStorageOperation("bank-metadata", () => collection.findOneAndUpdate({ _id: "bank", ...(options.resume ? {} : { state: { $ne: "paused" } }),
+  const claim = await speechStorageOperation("bank-metadata", () => collection.findOneAndUpdate({ _id: bankId, ...(options.resume ? {} : { state: { $ne: "paused" } }),
     $or: [{ leaseExpiresAt: { $lte: now } }, { owner: { $exists: false } }],
   }, { $set: { state: "running", owner, leaseExpiresAt: new Date(now.getTime() + LEASE_MS), updatedAt: now },
     $unset: { lastErrorCode: "", lastErrorStage: "" },
   }, { returnDocument: "after", timeoutMS: METADATA_TIMEOUT_MS }));
-  if (!claim) return readSpeechPrewarmStatus(db);
+  if (!claim) return readSpeechPrewarmStatus(db, options.scope);
   const interrupted = new AbortController();
   const signal = options.signal ? AbortSignal.any([options.signal, interrupted.signal]) : interrupted.signal;
   let heartbeatRunning = false, result = statusOf(claim);
@@ -215,7 +223,7 @@ export async function runSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptions
     if (heartbeatRunning) return;
     heartbeatRunning = true;
     const now = new Date();
-    void speechStorageOperation("lease-heartbeat", () => collection.updateOne({ _id: "bank", owner, leaseExpiresAt: { $gt: now } }, { $set: { leaseExpiresAt: new Date(now.getTime() + LEASE_MS) } }, { timeoutMS: HEARTBEAT_TIMEOUT_MS }))
+    void speechStorageOperation("lease-heartbeat", () => collection.updateOne({ _id: bankId, owner, leaseExpiresAt: { $gt: now } }, { $set: { leaseExpiresAt: new Date(now.getTime() + LEASE_MS) } }, { timeoutMS: HEARTBEAT_TIMEOUT_MS }))
       .then(update => { if (!update.matchedCount) interrupted.abort(new SpeechCacheError("lease-lost", "lease-heartbeat")); }, error => interrupted.abort(error))
       .finally(() => { heartbeatRunning = false; });
   }, LEASE_MS / 3);
@@ -224,7 +232,7 @@ export async function runSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptions
     result.state = state; result.updatedAt = new Date().toISOString();
     result.pending = Math.max(0, result.total - result.ready - result.failed);
     const { total, ready, failed, lastErrorCode, lastErrorStage } = result;
-    const saved = await speechStorageOperation("bank-publish", () => collection.updateOne({ _id: "bank", owner }, {
+    const saved = await speechStorageOperation("bank-publish", () => collection.updateOne({ _id: bankId, owner }, {
       $set: { state, total, ready, failed, updatedAt: new Date(), ...(lastErrorCode ? { lastErrorCode } : {}), ...(lastErrorStage ? { lastErrorStage } : {}) },
       $unset: { ...(!lastErrorCode ? { lastErrorCode: "" } : {}), ...(!lastErrorStage ? { lastErrorStage: "" } : {}) },
     }, { timeoutMS: METADATA_TIMEOUT_MS }));
@@ -235,10 +243,10 @@ export async function runSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptions
     options.onProgress?.({ ...result });
   };
   try {
-    result = await inspect(db, cache, true, signal);
+    result = await inspect(db, cache, true, signal, options.scope);
     await publish("running");
     const seen = new Set<string>(); let processed = 0;
-    for await (const section of authoredSections(db)) {
+    for await (const section of authoredSections(db, options.scope)) {
       if (signal.aborted || processed >= maxClips) break;
       const { key, valid } = fingerprint(section, true);
       if (!valid) continue;
@@ -306,7 +314,7 @@ export async function runSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptions
     return { ...result };
   } finally {
     clearInterval(heartbeat);
-    await collection.updateOne({ _id: "bank", owner }, { $unset: { owner: "", leaseExpiresAt: "" } }, { timeoutMS: METADATA_TIMEOUT_MS }).catch(() => undefined);
+    await collection.updateOne({ _id: bankId, owner }, { $unset: { owner: "", leaseExpiresAt: "" } }, { timeoutMS: METADATA_TIMEOUT_MS }).catch(() => undefined);
   }
 }
 

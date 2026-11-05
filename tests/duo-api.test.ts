@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { test } from "node:test";
 import type { Server } from "node:http";
 import { createApp } from "../server/app";
+import { duoAssessmentContents } from "../server/duo-exam-content";
 import { hashPassword, hashToken } from "../server/auth";
 import { parseDuoCredentials, provisionDuoAccounts } from "../server/duo-auth";
 import { connectDatabase, seedDatabase } from "../server/storage";
@@ -97,7 +98,7 @@ test("real Duo HTTP: fixed identities, independent practice, owned graded proof 
     await request("a", "POST", `/duo/gates/${band.gates[0].id}/start`, {}, 403);
     await request("a", "POST", "/duo/rooms", {}, 403);
     async function objective(who: "a" | "b", contentId: string, correct = true, assessmentId?: string): Promise<Attempt> {
-      const content = await database.content.findOne({ _id: contentId }); assert.ok(content);
+      const [content] = await duoAssessmentContents(database, [contentId]); assert.ok(content);
       const attempt = (await request(who, "POST", "/attempts", { contentId, mode: assessmentId ? "exam" : "practice", ...(assessmentId ? { duoAssessmentId: assessmentId } : {}) }, 201)).attempt as Attempt;
       const responses = Object.fromEntries(content.questions.map(question => [question.id, correct ? question.type === "choice-multiple" ? JSON.stringify(content.questions.filter(other => other.selectionGroup?.id === question.selectionGroup?.id).map(other => other.answer)) : question.answer : "deliberately incorrect test response"]));
       await request(who, "PATCH", `/attempts/${attempt.id}`, { responses, feedback: { source: "ai", estimatedBand: 9 }, passed: true });

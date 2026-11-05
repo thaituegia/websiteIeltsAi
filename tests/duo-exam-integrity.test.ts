@@ -5,6 +5,7 @@ import { test } from "node:test";
 import express from "express";
 import type { Collection, Document } from "mongodb";
 import { createDuoService } from "../server/duo";
+import { duoAssessmentContents, isExclusiveDuoContentId } from "../server/duo-exam-content";
 import { ApiError } from "../server/errors";
 import { requireExamTab } from "../server/exam-guard";
 import { connectDatabase, type AttemptRecord, type UserRecord } from "../server/storage";
@@ -158,7 +159,7 @@ async function acceptParts(f: Awaited<ReturnType<typeof fixture>>, role: DuoRole
   const parts = assessment.parts as DuoAssessmentView["parts"];
   const template = f.attempts.find(attempt => attempt.userId === f.users[role].id)!;
   for (const [index, part] of parts.entries()) {
-    const content = await f.database.content.findOne({ _id: part.contentId }); assert.ok(content);
+    const [content] = await duoAssessmentContents(f.database, [part.contentId]); assert.ok(content);
     const id = part.attemptId ?? `${f.namespace}:accepted:${role}:${index}`;
     const lastGrading = grading && index === parts.length - 1;
     const attempt: AttemptRecord = { ...template, _id: id, id, contentId: content.id, skill: content.skill, title: content.title,
@@ -222,9 +223,10 @@ test("Duo gate integrity resets only the active learner receipt, blocks stale gr
     const retake = await f.request<{ assessment: DuoAssessmentView }>("husband", `/api/duo/gates/${f.gateId}/start`, {});
     assert.notEqual(retake.assessment.id, f.assessmentIds.husband);
     assert.notEqual(retake.assessment.parts[0]!.contentId, f.seedGate);
-    const newContent = await f.database.content.findOne({ _id: retake.assessment.parts[0]!.contentId });
+    const [newContent] = await duoAssessmentContents(f.database, [retake.assessment.parts[0]!.contentId]);
     assert.ok(newContent); assert.notEqual(newContent.sections[0]!.text, (await f.database.content.findOne({ _id: f.seedGate }))!.sections[0]!.text);
-    assert.deepEqual((await f.path())!.bands.b12.gates[0].contentIds, [f.seedGate]);
+    assert.ok((await f.path())!.bands.b12.gates[0].contentIds.every(isExclusiveDuoContentId));
+    assert.deepEqual((await f.path())!.bands.b12.gates[0].contentIds, retake.assessment.parts.map(part => part.contentId));
   } finally { await f.close(); }
 });
 
@@ -249,7 +251,8 @@ test("shared promotion integrity resets both current-room receipts including the
     const views = await Promise.all(roles.map(role => f.request<{ assessment: DuoAssessmentView }>(role, `/api/duo/rooms/${fresh.id}/start`, {})));
     assert.deepEqual(views[0]!.assessment.parts.map(part => part.contentId), views[1]!.assessment.parts.map(part => part.contentId));
     assert.ok(views[0]!.assessment.parts.every(part => !f.seedPromotion.includes(part.contentId)));
-    assert.deepEqual((await f.path())!.bands.b12.promotionContentIds, f.seedPromotion);
+    assert.ok((await f.path())!.bands.b12.promotionContentIds.every(isExclusiveDuoContentId));
+    assert.deepEqual((await f.path())!.bands.b12.promotionContentIds, views[0]!.assessment.parts.map(part => part.contentId));
   } finally { await f.close(); }
 });
 

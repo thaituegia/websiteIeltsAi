@@ -12,6 +12,7 @@ import {
   type DuoConfig,
 } from "../server/duo";
 import { gradeObjective } from "../server/learning";
+import { duoAssessmentContents } from "../server/duo-exam-content";
 import type {
   Database,
   UserRecord,
@@ -275,7 +276,7 @@ async function fixture(config: DuoConfig = {}): Promise<Fixture> {
     assessmentId?: string,
     aiBand?: number | null,
   ): Promise<AttemptRecord> {
-    const item = await database.content.findOne({ _id: contentId });
+    const [item] = await duoAssessmentContents(database, [contentId]);
     assert.ok(item);
     const permission = await service.beforeAttempt(users[role], {
       contentId,
@@ -288,7 +289,7 @@ async function fixture(config: DuoConfig = {}): Promise<Fixture> {
     const responses = Object.fromEntries(
       item.questions.map((question, index) => [
         question.id,
-        (index / item.questions.length) * 100 < percent ? "correct" : "wrong",
+        (index / item.questions.length) * 100 < percent ? question.answer : "deliberately wrong fixture answer",
       ]),
     );
     const productive = item.skill === "writing" || item.skill === "speaking";
@@ -749,9 +750,7 @@ test(
             estimatedBand: 3,
             ...(part.skill === "writing"
               ? {
-                  taskScores: [
-                    { task: 2 as const, estimatedBand: 3, criteria: [] },
-                  ],
+                  taskScores: ([1, 2] as const).map(task => ({ task, estimatedBand: 3, criteria: [] })),
                 }
               : {}),
           },
@@ -1280,17 +1279,6 @@ test(
   async () => {
     const f = await fixture({ sessionsPerBand: 5 });
     try {
-      const writingId = "duo-fixture-writing-full-mock-0";
-      const tasks = [1, 2].map((task) => ({
-        id: `${writingId}-task${task}`,
-        title: `Required Task ${task}`,
-        text: "Server-owned synthetic task.",
-        task: task as 1 | 2,
-      }));
-      await f.database.content.updateOne(
-        { _id: writingId },
-        { $set: { sections: tasks } },
-      );
       await f.placement("husband", 4);
       await f.placement("wife", 4);
       await completeThrough(f, 5);
@@ -1308,6 +1296,10 @@ test(
         await f.submit("husband", part.contentId, 100, assessment.id);
       }
       const writing = assessment.parts[2];
+      const [writingContent] = await duoAssessmentContents(f.database, [writing.contentId]);
+      assert.ok(writingContent);
+      const tasks = writingContent.sections.filter(section => section.task === 1 || section.task === 2);
+      assert.deepEqual(tasks.map(section => section.task), [1, 2]);
       f.advance(Date.parse(writing.startsAt) - f.now());
       const valid = await f.submit(
         "husband",
@@ -1400,9 +1392,7 @@ test(
               ...attempt.feedback!,
               source: "ai" as const,
               estimatedBand: 8,
-              taskScores: [
-                { task: 2 as const, estimatedBand: 8, criteria: [] },
-              ],
+              taskScores: ([1, 2] as const).map(task => ({ task, estimatedBand: 8, criteria: [] })),
             },
           };
           await f.database.attempts.replaceOne({ _id: graded.id }, graded);

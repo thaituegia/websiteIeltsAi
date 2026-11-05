@@ -28,6 +28,7 @@ import { ExamGuard, requireExamTab, type ExamTarget, type ExamResetResult } from
 import { createExamReplacement, examReplacementSourceIds, ExamReplacementUnavailableError } from "./exam-variants";
 import { loadDuoCredentials, loginDuo, type DuoCredentialSettings } from "./duo-auth";
 import { createDuoService } from "./duo";
+import { DUO_EXAM_CONTENT_COLLECTION, isExclusiveDuoContentId } from "./duo-exam-content";
 import {
   services,
   evaluateWriting,
@@ -179,6 +180,7 @@ export function sanitizeContent(
   const clean = { ...base } as StoredContent & { _id?: string };
   delete clean._id;
   delete (clean as StoredContent & { replacement?: unknown }).replacement;
+  delete (clean as StoredContent & { duoExam?: unknown }).duoExam;
   if (_referenceAnswers?.length) {
     clean.description = clean.description.replace(
       "No model answer is supplied.",
@@ -604,10 +606,19 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   }
 
   async function contentOf(contentId: string, timeoutMS?: number): Promise<StoredContent> {
-    const content = await database.content.findOne({ _id: contentId }, { timeoutMS });
+    const collection = isExclusiveDuoContentId(contentId)
+      ? database.db.collection<StoredContent & { _id: string }>(DUO_EXAM_CONTENT_COLLECTION)
+      : database.content;
+    const content = await collection.findOne({ _id: contentId }, { timeoutMS });
     if (!content) throw new ApiError(404, "Không tìm thấy bài luyện.");
-    const { _id: _id, ...value } = content;
+    const { _id: _id, duoExam: _duoExam, ...value } = content as StoredContent & { _id: string; duoExam?: unknown };
     return value;
+  }
+  async function publicContentOf(contentId: string, timeoutMS?: number): Promise<StoredContent> {
+    // An exclusive paper is served only through its owner's assessment/attempt.
+    // Knowing a reserved ID must not expose its text, answers or prepared audio.
+    if (isExclusiveDuoContentId(contentId)) throw new ApiError(404, "Không tìm thấy bài luyện.");
+    return contentOf(contentId, timeoutMS);
   }
   async function deleteOwnedRecording(
     userId: string,
@@ -1063,7 +1074,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     "/api/content/:id/progress",
     asyncRoute(async (request, response) => {
       const mode = z.enum(["practice", "exam"]).default("practice").parse(request.query.mode);
-      const content = await contentOf(idOf(request), LIBRARY_READ_TIMEOUT_MS);
+      const content = await publicContentOf(idOf(request), LIBRARY_READ_TIMEOUT_MS);
       const progress = await contentProgress(database, learnerOf(request).id, mode, [content.id], LIBRARY_READ_TIMEOUT_MS);
       response.set("Cache-Control", "private, no-store").json({ progress: progress[content.id] });
     }),
@@ -1071,7 +1082,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   app.get(
     "/api/content/:id",
     asyncRoute(async (request, response) => {
-      const content = await contentOf(idOf(request));
+      const content = await publicContentOf(idOf(request));
       const activeExam = await database.attempts.findOne({
         userId: learnerOf(request).id,
         contentId: content.id,
@@ -1112,12 +1123,12 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     "/api/content/:id/listening-audio/readiness",
     asyncRoute(async (request, response) => {
       const mode = z.enum(["practice", "exam"]).parse(request.query.mode || "practice");
-      let content = await contentOf(idOf(request), LIBRARY_READ_TIMEOUT_MS);
+      let content = await publicContentOf(idOf(request), LIBRARY_READ_TIMEOUT_MS);
       const previous = await database.attempts.findOne({
         userId: learnerOf(request).id, mode, status: "invalidated",
         $or: [{ rootContentId: content.id }, { contentId: content.id }],
       }, { sort: { startedAt: -1 }, timeoutMS: LIBRARY_READ_TIMEOUT_MS });
-      if (previous?.replacementContentId) content = await contentOf(previous.replacementContentId, LIBRARY_READ_TIMEOUT_MS);
+      if (previous?.replacementContentId) content = await publicContentOf(previous.replacementContentId, LIBRARY_READ_TIMEOUT_MS);
       const audio = await speechAudio.readiness(content.skill === "listening" ? content.sections : []);
       response.set("Cache-Control", "private, no-store").json({ audio });
     }),
@@ -1132,7 +1143,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
   app.post(
     "/api/content/:id/audio",
     asyncRoute(async (request, response) => {
-      const content = await contentOf(idOf(request));
+      const content = await publicContentOf(idOf(request));
       if (content.skill !== "listening")
         throw new ApiError(400, "Bài này không phải bài nghe.");
       const userId = learnerOf(request).id;
@@ -1187,8 +1198,14 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         })
         .parse(request.body);
       if (examIntegrityEnabled && (input.mode === "exam" || input.duoAssessmentId)) requireExamTab(request.get("X-Exam-Tab"));
-      let content = await contentOf(input.contentId);
       const user = learnerOf(request);
+      if (isExclusiveDuoContentId(input.contentId) && !input.duoAssessmentId)
+        throw new ApiError(403, "Đề riêng chỉ được mở trong bài đánh giá Duo đã giao.");
+      if (input.duoAssessmentId && !duoService) throw new ApiError(403, "Lộ trình Duo chưa được bật.");
+      // Authorize the owned assessment before even inspecting a private paper
+      // or its readiness. The same guard also enforces exam mode and sequencing.
+      const protectedContext = duoService ? await duoService.beforeAttempt(user, input) : {};
+      let content = await contentOf(input.contentId);
       const requestedId = content.id;
       let rootContentId = requestedId;
       if (!input.duoAssessmentId) {
@@ -1196,16 +1213,14 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
           $or: [{ rootContentId: requestedId }, { contentId: requestedId }] }, { sort: { startedAt: -1 } });
         if (invalidated) {
           if (!invalidated.replacementContentId) throw new ApiError(409, "Ngân hàng chưa có bộ đề tương đương chưa dùng. Hãy chọn bài khác; lượt cũ vẫn bị hủy.");
-          content = await contentOf(invalidated.replacementContentId);
+          content = await publicContentOf(invalidated.replacementContentId);
           rootContentId = invalidated.rootContentId ?? invalidated.contentId;
         } else {
           const predecessor = await database.attempts.findOne({ userId: user.id, replacementContentId: requestedId });
           rootContentId = predecessor?.rootContentId ?? predecessor?.contentId ?? requestedId;
         }
       }
-      if (input.duoAssessmentId && !duoService) throw new ApiError(403, "Lộ trình Duo chưa được bật.");
       await requireReadyListening([content]);
-      const protectedContext = duoService ? await duoService.beforeAttempt(user, input) : {};
       if (protectedContext.existingAttemptId) {
         const bound = await database.attempts.findOne({ _id: protectedContext.existingAttemptId, userId: user.id, duoAssessmentId: input.duoAssessmentId, contentId: content.id });
         if (!bound) throw new ApiError(409, "Lượt thi Duo đã liên kết chưa sẵn sàng; hãy tải lại phòng thi.");

@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { ContentSection, Feedback, StoredContent, VocabularyCard, WordOrigin, WordRequest, WordTranslation } from "../shared/types";
 import { learnerOf } from "./auth";
 import { ApiError } from "./errors";
+import { DUO_EXAM_CONTENT_COLLECTION, isExclusiveDuoContentId } from "./duo-exam-content";
 import { newScheduler, vocabularyMetrics } from "./learning";
 import { newId, type AttemptRecord, type CardRecord, type Database, type PlacementRecord } from "./storage";
 import { translateWordWithOpenAI, type WordTranslationOptions } from "./word-translation";
@@ -197,7 +198,9 @@ export function registerWordNotebookRoutes(app: Express, database: Database, opt
         if (!record) throw new ApiError(404, "Không tìm thấy lượt luyện của bạn.");
         if (invalidAttempt(record)) throw new ApiError(409, "Lượt đã bị hủy; không thể lưu từ.");
       }
-      const content = await database.content.findOne({ _id: record.contentId });
+      const content = isExclusiveDuoContentId(record.contentId)
+        ? await database.db.collection<StoredContent & { _id: string }>(DUO_EXAM_CONTENT_COLLECTION).findOne({ _id: record.contentId })
+        : await database.content.findOne({ _id: record.contentId });
       if (!content) throw new ApiError(404, "Không tìm thấy nội dung của lượt luyện.");
       texts = attemptTexts(content, record, input);
       if (record.status === "submitted" && content.skill === "speaking" && input.sectionIndex === undefined) {

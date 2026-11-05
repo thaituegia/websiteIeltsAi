@@ -4,6 +4,7 @@ import { once } from "node:events";
 import type { Server } from "node:http";
 import { test } from "node:test";
 import { createApp } from "../server/app";
+import { duoAssessmentContents } from "../server/duo-exam-content";
 import { hashPassword } from "../server/auth";
 import { parseDuoCredentials, provisionDuoAccounts } from "../server/duo-auth";
 import { connectDatabase, type Database } from "../server/storage";
@@ -257,7 +258,7 @@ async function setup(): Promise<Setup> {
     context?: string,
     submit = true,
   ): Promise<Attempt> {
-    const content = await database.content.findOne({ _id: contentId });
+    const [content] = await duoAssessmentContents(database, [contentId]);
     assert.ok(content);
     const started = (
       await request<{ attempt: Attempt }>(

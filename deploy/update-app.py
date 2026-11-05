@@ -14,12 +14,14 @@ import json
 import os
 import pathlib
 import re
+import signal
 import shutil
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 
@@ -30,6 +32,15 @@ PROJECT = 'website-ielts-ai-20261007172235-7d7gnc'
 ORIGIN = 'https://sutonghanyu.vn'
 TEXT_MODEL = 'gpt-6.1-sol'
 TEXT_MODEL_ROLES = ('CONTENT_MODEL', 'EXTRACTOR_MODEL', 'SCORING_MODEL', 'TRANSLATION_MODEL')
+DUO_PREPARE_TIMEOUT = 4 * 60 * 60
+DUO_PREPARE_INTERVAL = 15
+DUO_AUDIO_ERROR_CODES = frozenset(('auth', 'quota', 'rate-limit', 'unavailable', 'invalid', 'storage',
+                                   'interrupted', 'provider-timeout', 'lease-lost', 'claim-timeout'))
+
+
+class DuoPreparationError(RuntimeError):
+    """A finite operator-safe message, without provider/Docker response text."""
+
 TEXT_MODEL_PROBE = r'''
 const model = "gpt-6.1-sol";
 const result = {ok:false, model, code:"probe-unavailable"};
@@ -364,6 +375,204 @@ def check_text_model(guards, original, values, audit):
                        '). App cũ vẫn chạy; chưa build hoặc thay cấu hình.')
 
 
+def duo_job(guards, name, image, operation, identifier=None):
+    query = ['docker', 'ps', '-aq', '--no-trunc', '--filter', 'name=^/' + name + '$']
+    identifiers = guards.command(query, timeout=20).split()
+    if not identifiers:
+        return None
+    if (len(identifiers) != 1 or not re.fullmatch(r'[a-f0-9]{64}', identifiers[0]) or
+            (identifier is not None and identifiers[0] != identifier)):
+        raise DuoPreparationError('Không xác minh được container tạo audio Duo; giữ app hiện tại.')
+    template = ('{"Id":{{json .Id}},"Image":{{json .Image}},"Name":{{json .Name}},'
+                '"Labels":{{json .Config.Labels}},"State":{{json .State}},'
+                '"Networks":{{json .NetworkSettings.Networks}}}')
+    try:
+        row = json.loads(guards.command(['docker', 'inspect', '--format', template, identifiers[0]], timeout=20))
+    except Exception:
+        if not guards.command(query, timeout=20).split():
+            return None
+        raise DuoPreparationError('Chưa đọc được trạng thái container tạo audio Duo; giữ app hiện tại.') from None
+    labels = row.get('Labels') or {}
+    if (row.get('Id') != identifiers[0] or row.get('Image') != image or row.get('Name') != '/' + name or
+            labels.get('com.websiteieltsai.project') != PROJECT or
+            labels.get('com.websiteieltsai.kind') != 'duo-exam-prewarm' or
+            labels.get('com.websiteieltsai.operation-id') != operation):
+        raise DuoPreparationError('Quyền sở hữu container tạo audio Duo không khớp; không tác động container đó.')
+    return row
+
+
+def cleanup_duo_job(guards, name, image, operation, identifier=None):
+    row = duo_job(guards, name, image, operation, identifier)
+    if row is None:
+        return
+    identifier = row['Id']
+    if (row.get('State') or {}).get('Running') is True:
+        try:
+            guards.command(['docker', 'stop', '--time', '15', identifier], timeout=30)
+        except Exception:
+            # A stop/exit race is harmless only after exact ownership is checked
+            # again. Force removal is limited to this one immutable job ID.
+            pass
+        row = duo_job(guards, name, image, operation, identifier)
+        if row is None:
+            return
+    try:
+        guards.command(['docker', 'rm', '--force', identifier], timeout=30)
+    except Exception:
+        if duo_job(guards, name, image, operation, identifier) is None:
+            return
+        raise DuoPreparationError('Chưa xác nhận dọn container tạo audio Duo; giữ app hiện tại.') from None
+    if duo_job(guards, name, image, operation, identifier) is not None:
+        raise DuoPreparationError('Chưa xác nhận dọn container tạo audio Duo; giữ app hiện tại.')
+
+
+def duo_audio_error_suffix(raw):
+    # Match the finite SpeechPrewarmStatus error codes, never provider messages,
+    # user-controlled fields, or arbitrary values from the worker's output.
+    try:
+        if not isinstance(raw, str) or len(raw) > 65536 or not raw.strip():
+            return ''
+        status = json.loads(raw.strip().splitlines()[-1])
+        code = status.get('lastErrorCode') if isinstance(status, dict) else None
+        return ' (' + code + ')' if isinstance(code, str) and code in DUO_AUDIO_ERROR_CODES else ''
+    except (ValueError, TypeError):
+        return ''
+
+
+def prepare_duo_exam_bank(guards, image, values, audit, networks):
+    """Prepare only the isolated private bank while the old app stays online.
+
+    The finite CLI seeds its own collection and reuses already-ready audio.
+    Interrupted/failed jobs leave resumable private clips, never reset learners
+    or the public study bank. No shell command contains provider credentials.
+    """
+    guards.memory_headroom(512)
+    current_networks = network_identity(guards, {name: service(guards, name) for name in ('app', 'mongo', 'proxy')})
+    if current_networks != networks:
+        raise DuoPreparationError('Mạng riêng IELTS đã đổi trước khi tạo audio Duo; giữ app hiện tại.')
+    roles = ('MONGODB_URI', 'IELTS_OPENAI_API_KEY', 'OPENAI_API_KEY', 'APP_ORIGIN', 'NODE_ENV',
+             'DUO_ENABLED', 'DUO_CREDENTIALS_FILE', 'DUO_ACCOUNTS_JSON', 'ELEVENLABS_API_KEY',
+             'ELEVENLABS_VOICE_BRITISH', 'ELEVENLABS_VOICE_AMERICAN', 'ELEVENLABS_VOICE_AUSTRALIAN',
+             'ELEVENLABS_MODEL')
+    private_values = {key: values[key] for key in roles if key in values}
+    if (private_values.get('MONGODB_URI') != 'mongodb://mongo:27017/ielts_ai' or
+            any(not isinstance(value, str) or re.search(r'[\x00\r\n]', value) for value in private_values.values())):
+        raise DuoPreparationError('Cấu hình tạo audio Duo không khớp bản cài; giữ app hiện tại.')
+    operation = os.urandom(6).hex()
+    name = PROJECT + '-duo-exam-prewarm-' + operation
+    path = audit / 'duo-exam-prewarm.env'
+    created, attempted, identifier = False, False, None
+    previous_signals = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+
+    def interrupted(_number, _frame):
+        raise KeyboardInterrupt()
+
+    for number in previous_signals:
+        signal.signal(number, interrupted)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        created = True
+        with os.fdopen(descriptor, 'w') as output:
+            output.write(''.join(key + '=' + value + '\n' for key, value in private_values.items()))
+        attempted = True
+        identifier = guards.command(['docker', 'create', '--name', name,
+                                     '--label', 'com.websiteieltsai.project=' + PROJECT,
+                                     '--label', 'com.websiteieltsai.kind=duo-exam-prewarm',
+                                     '--label', 'com.websiteieltsai.operation-id=' + operation,
+                                     '--env-file', str(path), '--network', PROJECT + '_web',
+                                     '--network', PROJECT + '_database', '--memory=512m', '--memory-swap=512m',
+                                     '--cpus=0.25', '--pids-limit=64', '--read-only', '--cap-drop=ALL',
+                                     '--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=32m',
+                                     '--security-opt=no-new-privileges:true', '--user=node', '--entrypoint=node',
+                                     image, '--import', 'tsx', '/app/server/speech-prewarm-cli.ts', '--once',
+                                     '--duo-only', '--max-clips', '4096', '--max-retries', '3', '--resume'], timeout=60).strip()
+        if not re.fullmatch(r'[a-f0-9]{64}', identifier):
+            identifier = None
+            raise DuoPreparationError('Container tạo audio Duo chưa có định danh hợp lệ; giữ app hiện tại.')
+        row = duo_job(guards, name, image, operation, identifier)
+        actual = row.get('Networks') or {} if row is not None else {}
+        if (row is None or set(actual) != set(networks) or
+                any(actual[key].get('NetworkID') not in ('', None, value) for key, value in networks.items())):
+            raise DuoPreparationError('Mạng tạo audio Duo không khớp mạng riêng đã xác minh; giữ app hiện tại.')
+        guards.command(['docker', 'start', identifier], timeout=60)
+        started = time.monotonic()
+        while True:
+            # Keep the 1 GiB reserve under observation while this bounded job is
+            # alive, rather than waiting hours for a synchronous Docker call.
+            try:
+                guards.memory_headroom(0)
+            except Exception:
+                raise DuoPreparationError('RAM không còn đủ 1 GiB dự phòng; dừng riêng việc tạo audio Duo, giữ app hiện tại.') from None
+            row = duo_job(guards, name, image, operation, identifier)
+            if row is None:
+                raise DuoPreparationError('Container tạo audio Duo kết thúc không có kết quả; giữ app hiện tại.')
+            actual = row.get('Networks') or {}
+            if (set(actual) != set(networks) or
+                    any(actual[key].get('NetworkID') != value for key, value in networks.items())):
+                raise DuoPreparationError('Mạng tạo audio Duo đã đổi; giữ app hiện tại.')
+            state = row.get('State') or {}
+            if state.get('Running') is not True:
+                if state.get('Status') != 'exited':
+                    raise DuoPreparationError('Audio Duo chưa tạo đủ; giữ app hiện tại. Có thể chạy lại để tiếp tục cache riêng.')
+                if state.get('ExitCode') != 0:
+                    try:
+                        suffix = duo_audio_error_suffix(guards.command(['docker', 'logs', '--tail', '64', identifier], timeout=30))
+                    except Exception:
+                        suffix = ''
+                    raise DuoPreparationError('Audio Duo chưa tạo đủ' + suffix +
+                                              '; giữ app hiện tại. Có thể chạy lại để tiếp tục cache riêng.')
+                break
+            elapsed = time.monotonic() - started
+            if elapsed >= DUO_PREPARE_TIMEOUT:
+                raise DuoPreparationError('Đã hết 4 giờ tạo audio Duo; giữ app hiện tại và cache riêng để tiếp tục lần sau.')
+            print('Đang tạo audio cho đề Duo riêng: ' + str(int(elapsed) // 60) +
+                  ' phút; giữ app hiện tại. Kiểm tra RAM mỗi 15 giây.', flush=True)
+            time.sleep(DUO_PREPARE_INTERVAL)
+        raw = guards.command(['docker', 'logs', '--tail', '64', identifier], timeout=30)
+        if len(raw) > 65536 or not raw.strip():
+            raise DuoPreparationError('Chưa có báo cáo sẵn sàng audio Duo hợp lệ; giữ app hiện tại.')
+        try:
+            status = json.loads(raw.strip().splitlines()[-1])
+            valid = (isinstance(status, dict) and status.get('configured') is True and
+                     status.get('state') == 'complete' and
+                     all(type(status.get(key)) is int for key in ('total', 'ready', 'pending', 'failed')) and
+                     0 < status['total'] <= 4096 and status['ready'] == status['total'] and
+                     status['pending'] == 0 and status['failed'] == 0)
+        except (ValueError, TypeError, KeyError):
+            valid = False
+        if not valid:
+            raise DuoPreparationError('Audio Duo chưa đủ hoặc báo cáo chưa hợp lệ' +
+                                      duo_audio_error_suffix(raw) + '; giữ app hiện tại.')
+        return {'scope': 'duo', 'state': 'complete', 'total': status['total'], 'ready': status['ready'],
+                'pending': 0, 'failed': 0}
+    except DuoPreparationError:
+        raise
+    except KeyboardInterrupt:
+        raise DuoPreparationError('Đã dừng tạo audio Duo theo yêu cầu; giữ app hiện tại và cache riêng để tiếp tục lần sau.') from None
+    except Exception:
+        raise DuoPreparationError('Chuẩn bị audio Duo chưa hoàn tất; giữ app hiện tại và cache riêng để tiếp tục lần sau.') from None
+    finally:
+        # An SSH hangup/termination uses the same bounded, owned cleanup as
+        # Ctrl+C. A second signal must not interrupt that cleanup halfway.
+        for number in previous_signals:
+            signal.signal(number, signal.SIG_IGN)
+        try:
+            try:
+                if created:
+                    path.unlink(missing_ok=True)
+            finally:
+                if attempted:
+                    try:
+                        cleanup_duo_job(guards, name, image, operation, identifier)
+                    except DuoPreparationError:
+                        raise
+                    except Exception:
+                        raise DuoPreparationError('Chưa xác nhận dọn container tạo audio Duo; giữ app hiện tại.') from None
+        finally:
+            for number, handler in previous_signals.items():
+                signal.signal(number, handler)
+
+
 def file_snapshot(paths):
     result = {}
     for path in paths:
@@ -401,7 +610,7 @@ def healthy(guards, diagnostic, expected_image=None):
     return app
 
 
-def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False):
+def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False, prepare_duo_exams=False):
     owned(LIVE_DIR, directory=True)
     private = LIVE_DIR / '.local/deploy'
     owned(private, directory=True, private=True)
@@ -415,10 +624,10 @@ def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('Project này đang có lượt cập nhật khác.') from None
-        update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models)
+        update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models, prepare_duo_exams)
 
 
-def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models=False):
+def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models=False, prepare_duo_exams=False):
     base_file, domain, release = LIVE_DIR / 'deploy/compose.yaml', private / 'domain.compose.yaml', private / 'release.compose.yaml'
     protected = [private / 'deploy.env', private / 'app.env', base_file, domain, LIVE_DIR / 'deploy/compose.sh',
                  LIVE_DIR / 'deploy/nginx.conf', private / 'tls/site.crt']
@@ -507,6 +716,11 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
         raise RuntimeError('Image mới chưa có định danh bất biến; app cũ vẫn chạy.')
     if image_bank(guards, original['Image']) != image_bank(guards, image_id):
         raise RuntimeError('Học liệu khác bản đang chạy; chỉ updater học liệu mới được áp dụng, app cũ vẫn chạy.')
+    duo_preparation = None
+    if prepare_duo_exams:
+        print('Đang chuẩn bị đề Duo và audio riêng; chưa thay app hoặc học liệu công khai.', flush=True)
+        duo_preparation = prepare_duo_exam_bank(guards, image_id, values, audit, networks)
+        (audit / 'duo-exam-preparation.json').write_text(json.dumps(duo_preparation) + '\n')
     candidate = audit / 'release.compose.new'
     candidate.write_text('services:\n  app:\n    image: ' + image + '\n    build:\n      context: ' + str(source) +
                          '\n      dockerfile: deploy/Dockerfile.release\n    env_file:\n      - ' + json.dumps(str(duo_env)) + '\n')
@@ -567,18 +781,25 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
                'bankUnchanged': True, 'onlyAppReplaced': True}
     if upgrade_text_models:
         receipt['textModels'] = {role: TEXT_MODEL for role in TEXT_MODEL_ROLES}
+    if duo_preparation:
+        receipt['duoExams'] = duo_preparation
     (audit / 'complete.json').write_text(json.dumps(receipt) + '\n')
-    print('HOÀN TẤT: ' + ORIGIN + ' — app mới healthy; không chạy migration/reset hoặc tạo lại audio.', flush=True)
+    print('HOÀN TẤT: ' + ORIGIN + ' — app mới healthy; không chạy migration/reset hoặc tạo lại audio cũ.', flush=True)
     if upgrade_text_models:
         print('Model text đã cập nhật: ' + TEXT_MODEL + ' (' + ', '.join(TEXT_MODEL_ROLES) + ').', flush=True)
+    if duo_preparation:
+        print('Đề Duo riêng và audio sẵn sàng: ' + str(duo_preparation['ready']) + '/' +
+              str(duo_preparation['total']) + '; giữ nguyên bài làm và audio cũ.', flush=True)
 
 
 def main():
-    if (os.geteuid() != 0 or len(sys.argv) not in (3, 4) or not re.fullmatch(r'[a-f0-9]{40}', sys.argv[1]) or
+    if (os.geteuid() != 0 or not 3 <= len(sys.argv) <= 5 or not re.fullmatch(r'[a-f0-9]{40}', sys.argv[1]) or
             not re.fullmatch(r'[a-f0-9]{64}', sys.argv[2]) or
-            (len(sys.argv) == 4 and sys.argv[3] != '--upgrade-text-models')):
-        raise RuntimeError('Chạy bằng root với commit đầy đủ, SHA256 archive và tùy chọn --upgrade-text-models nếu cần.')
-    upgrade_text_models = len(sys.argv) == 4
+            len(set(sys.argv[3:])) != len(sys.argv[3:]) or
+            any(flag not in ('--upgrade-text-models', '--prepare-duo-exams') for flag in sys.argv[3:])):
+        raise RuntimeError('Chạy bằng root với commit đầy đủ, SHA256 archive và các cờ --upgrade-text-models/--prepare-duo-exams nếu cần.')
+    upgrade_text_models = '--upgrade-text-models' in sys.argv[3:]
+    prepare_duo_exams = '--prepare-duo-exams' in sys.argv[3:]
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix='ielts-app-update-', dir='/tmp') as folder:
         folder = pathlib.Path(folder)
@@ -588,7 +809,7 @@ def main():
             download('https://raw.githubusercontent.com/thaituegia/websiteIeltsAi/' + sys.argv[1] + '/deploy/' + name,
                      digest, path, 1024 * 1024)
             modules.append(checked_module(path, 'ielts_app_update_' + name.replace('-', '_').replace('.', '_')))
-        deploy(*modules, *sys.argv[1:3], upgrade_text_models=upgrade_text_models)
+        deploy(*modules, *sys.argv[1:3], upgrade_text_models=upgrade_text_models, prepare_duo_exams=prepare_duo_exams)
 
 
 if __name__ == '__main__':
