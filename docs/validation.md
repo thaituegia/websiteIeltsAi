@@ -1,5 +1,30 @@
 # Kết quả kiểm tra
 
+## Dừng chi phí audio và kiểm tra toàn bộ đề — 2026-11-06
+
+Theo trạng thái VPS được cung cấp: worker đã dừng, 432 audio công khai đủ;
+171/264 audio riêng đủ, 93 nguồn chưa tạo, không có failed. Quy trình mới
+bỏ bulk preparation khỏi updater, có cached-only không gọi TTS/model probe,
+và không thay fingerprint/giọng/model cache.
+
+Ngân sách TTS mặc định 0; kiểm tra atomicsync ngay trước paid fetch và sau
+cache lookup, trừ cả retry/lỗi, dùng chung qua các lượt watch. Watch dừng khi
+hết trần. Phần đã hoàn tất được dùng lại với ngân sách 0. Các giá trị kỹ thuật
+không được trình bày như trần USD hay số tiền lịch sử.
+
+**227/227 kiểm thử liên quan đạt**, full TypeScript/release build/Python AST
+và diff checks đạt. Bao gồm cache/voice/partial-turn recovery, zero-default,
+trần request/ký tự, concurrent không overshoot, watch không tự cấp lại, CLI
+cached-only từ chối bulk/model flags, HTTP listening/readiness/review, private
+assessment guard và inspector mới. Inspector chạy thực tế chương trình JS
+với transport tổng hợp để kiểm tra từng đề/section, 171/264 partial, inventory
+thiếu, input riêng không bị in và không có fetch/write/download. Các kiểm tra
+lifecycle Python xác minh RAM, network/owner, timeout và cleanup riêng.
+
+Không gọi provider trả phí hoặc triển khai từ cloud. Kết quả chi tiết từng
+đề/band trên VPS chỉ được xác nhận sau khi người vận hành chạy inspector;
+không coi tổng manifest là bằng chứng mọi đề đều đủ phần nghe.
+
 ## Đề Duo độc lập và đáp án ngắn — 2026-11-05
 
 Gate và nâng band dùng ngân hàng riêng 484 bài trong `duo_exam_content`, không

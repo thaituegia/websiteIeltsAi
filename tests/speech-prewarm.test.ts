@@ -3,11 +3,12 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { MongoClient, MongoOperationTimeoutError, type Db, type Document, type Filter, type FindOptions } from "mongodb";
 import { parseSpeechPrewarmArguments } from "../server/speech-prewarm-cli";
-import { inspectSpeechBank, readSpeechPrewarmStatus, runSpeechBankPrewarm } from "../server/speech-prewarm";
+import { inspectSpeechBank, readSpeechPrewarmStatus, runSpeechBankPrewarm, watchSpeechBankPrewarm } from "../server/speech-prewarm";
 import { SpeechAudioCache, speechSectionFingerprint } from "../server/speech-audio";
 import type { ContentSection } from "../shared/types";
 
 const ownedDatabasePattern = /^ielts_prewarm_test_\d+_[a-f0-9]{32}$/;
+const syntheticBudget = { maxProviderRequests: 10_000, maxInputCharacters: 10_000_000 };
 const syntheticKey = "sk-synthetic-prewarm-no-live-provider";
 const environmentNames = ["IELTS_OPENAI_API_KEY", "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_BRITISH", "ELEVENLABS_VOICE_AMERICAN", "ELEVENLABS_VOICE_AUSTRALIAN", "ELEVENLABS_MODEL"];
 function pcmResponse(): Response {
@@ -33,6 +34,95 @@ test("administrative speech CLI defaults to read-only inspection and rejects unb
     { mode: "watch", maxClips: 10, maxRetries: 2, intervalMs: 90_000, resume: true });
   for (const args of [["--inspect", "--once"], ["--once", "--max-clips", "0"], ["--once", "--max-clips", "4097"], ["--watch", "--max-retries", "6"], ["--watch", "--interval-seconds", "0"], ["--once", "--max-clips", "Infinity"], ["--inspect", "--resume"], ["--unknown"]])
     assert.throws(() => parseSpeechPrewarmArguments(args));
+  assert.deepEqual(parseSpeechPrewarmArguments(["--once", "--max-provider-requests", "2", "--max-input-characters", "8000"]),
+    { mode: "once", maxClips: 32, maxRetries: 3, intervalMs: 60_000, resume: false, maxProviderRequests: 2, maxInputCharacters: 8000 });
+  for (const args of [["--once", "--max-provider-requests", "1"], ["--once", "--max-input-characters", "8000"],
+    ["--inspect", "--max-provider-requests", "0", "--max-input-characters", "0"],
+    ["--once", "--max-provider-requests", "1", "--max-provider-requests", "2", "--max-input-characters", "8000"]])
+    assert.throws(() => parseSpeechPrewarmArguments(args));
+});
+
+test("paid pregeneration defaults to zero and one allowance survives retries, partial caches and watch passes", { timeout: 30_000 }, async t => {
+  const name = `ielts_prewarm_test_${process.pid}_${randomBytes(16).toString("hex")}`;
+  const client = new MongoClient("mongodb://127.0.0.1:27017", { serverSelectionTimeoutMS: 5000, maxPoolSize: 3 });
+  const old = new Map(environmentNames.map(key => [key, process.env[key]]));
+  environmentNames.forEach(key => delete process.env[key]); process.env.IELTS_OPENAI_API_KEY = syntheticKey;
+  const originalFetch = globalThis.fetch, originalTimeout = globalThis.setTimeout;
+  let calls = 0;
+  let respond: () => Response = pcmResponse;
+  globalThis.fetch = async (url) => {
+    assert.equal(String(url), "https://api.openai.com/v1/audio/speech");
+    calls++;
+    return respond();
+  };
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+    originalTimeout(callback, ms === 1000 || (ms && ms >= 30_000 && ms < 45_000) ? 1 : ms, ...args)) as typeof setTimeout;
+  try {
+    await client.connect(); const db = client.db(name);
+    const reset = async (sections: ContentSection[]) => {
+      await db.collection("content").deleteMany({});
+      await db.collection("speech_bank_prewarm").deleteMany({});
+      await db.collection("content").insertOne({ skill: "listening", format: "lesson", band: 3, sections });
+      calls = 0; respond = pcmResponse;
+    };
+    await t.test("missing allowance never makes a paid request", async () => {
+      await reset([section("no-budget", "The unfunded synthetic museum closes at seven.")]);
+      const status = await runSpeechBankPrewarm(db, { expectedDatabase: name });
+      assert.equal(calls, 0);
+      assert.equal(status.state, "paused");
+      assert.equal(status.lastErrorCode, "budget-exhausted");
+      assert.equal(status.failed, 0);
+      assert.equal(status.budget?.providerRequests, 0);
+    });
+    await t.test("paid turns survive a one-request stop and a zero-budget resume", async () => {
+      await reset([{ id: "partial-budget", title: "", text: "", dialogue: [
+        { speaker: "Teacher", accent: "british", text: "The budgeted synthetic library opens at eight." },
+        { speaker: "Student", accent: "american", text: "The second budgeted turn confirms an arrival at nine." },
+      ] }]);
+      const first = await runSpeechBankPrewarm(db, { expectedDatabase: name, maxProviderRequests: 1, maxInputCharacters: 100_000 });
+      assert.equal(calls, 1); assert.equal(first.ready, 0); assert.equal(first.failed, 0);
+      assert.equal(first.state, "paused");
+      const stopped = await runSpeechBankPrewarm(db, { expectedDatabase: name, resume: true });
+      assert.equal(calls, 1); assert.equal(stopped.state, "paused");
+      const completed = await runSpeechBankPrewarm(db, { expectedDatabase: name, resume: true, maxProviderRequests: 1, maxInputCharacters: 100_000 });
+      assert.equal(calls, 2); assert.equal(completed.ready, 1); assert.equal(completed.state, "complete");
+      await runSpeechBankPrewarm(db, { expectedDatabase: name });
+      assert.equal(calls, 2, "ready clips remain usable without a paid allowance");
+    });
+    await t.test("character allowance also prevents a provider request", async () => {
+      await reset([section("small-character-budget", "This character-limited synthetic message is longer than one character.")]);
+      const status = await runSpeechBankPrewarm(db, { expectedDatabase: name, maxProviderRequests: 5, maxInputCharacters: 1 });
+      assert.equal(calls, 0); assert.equal(status.state, "paused");
+      assert.equal(status.budget?.inputCharacters, 0);
+    });
+    await t.test("failed requests consume allowance and are not silently refunded for retries", async () => {
+      await reset([section("failed-budget", "A failed synthetic request must still consume its allowance.")]);
+      respond = () => Response.json({ error: { code: "rate_limit_exceeded" } }, { status: 429 });
+      const status = await runSpeechBankPrewarm(db, { expectedDatabase: name, maxRetries: 3, maxProviderRequests: 1, maxInputCharacters: 100_000 });
+      assert.equal(calls, 1); assert.equal(status.lastErrorCode, "budget-exhausted");
+      assert.equal(status.state, "paused"); assert.equal(status.budget?.providerRequests, 1);
+    });
+    await t.test("watch keeps one shared allowance across passes and exits on exhaustion", async () => {
+      await reset([section("watch-budget-one", "The first watched synthetic message opens a new exhibit."),
+        section("watch-budget-two", "The second watched synthetic message requires another request.")]);
+      const controller = new AbortController();
+      respond = () => {
+        if (calls > 1) controller.abort();
+        return pcmResponse();
+      };
+      await watchSpeechBankPrewarm(db, { expectedDatabase: name, maxClips: 1, maxRetries: 0, intervalMs: 1000,
+        maxProviderRequests: 1, maxInputCharacters: 100_000, signal: controller.signal });
+      assert.equal(calls, 1);
+      const status = await readSpeechPrewarmStatus(db);
+      assert.equal(status.state, "paused"); assert.equal(status.lastErrorCode, "budget-exhausted");
+      assert.equal(status.budget?.providerRequests, 1);
+      assert.equal(status.ready, 1);
+    });
+  } finally {
+    await client.db(name).dropDatabase(); await client.close();
+    globalThis.fetch = originalFetch; globalThis.setTimeout = originalTimeout;
+    for (const [key, value] of old) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
 });
 
 test("speech pregeneration rejects unrelated databases before any collection access", async () => {
@@ -94,14 +184,14 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
 
     await t.test("a bounded pass publishes one unique clip and a new process finishes only missing clips", async () => {
       const progress: number[] = [];
-      const first = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, onProgress: status => progress.push(status.ready) });
+      const first = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1, onProgress: status => progress.push(status.ready) });
       assert.equal(first.state, "pending", JSON.stringify(first)); assert.equal(first.total, 3, JSON.stringify(first)); assert.equal(first.ready, 1, JSON.stringify(first)); assert.equal(first.pending, 2, JSON.stringify(first));
       assertCalls(calls, dialogue.dialogue!.map(line => line.text)); assert.ok(progress.includes(1));
-      const second = await runSpeechBankPrewarm(otherDb, { expectedDatabase, maxClips: 2 });
+      const second = await runSpeechBankPrewarm(otherDb, { ...syntheticBudget, expectedDatabase, maxClips: 2 });
       assert.equal(second.state, "complete"); assert.equal(second.ready, 3); assert.equal(second.failed, 0); assert.equal(calls.length, 4);
       assert.equal(await db.collection("speech_bank_prewarm").countDocuments(), 4);
       const before = calls.length;
-      assert.equal((await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1 })).ready, 3);
+      assert.equal((await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1 })).ready, 3);
       assert.equal((await inspectSpeechBank(db, { expectedDatabase })).ready, 3); assert.equal(calls.length, before);
     });
 
@@ -114,7 +204,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       let interrupted = false;
       respond = text => text === retry.dialogue[1].text && !interrupted
         ? (interrupted = true, Response.json({ error: { message: `Private provider body ${syntheticKey}` } }, { status: 503 })) : pcmResponse();
-      const before = calls.length, result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 1 });
+      const before = calls.length, result = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1, maxRetries: 1 });
       assert.equal(result.state, "complete"); assert.equal(result.ready, 4);
       assertCalls(calls.slice(before), [retry.dialogue[0].text, retry.dialogue[1].text, retry.dialogue[1].text]);
       assert.equal(await db.collection("speech_bank_prewarm").countDocuments({ attempts: 2, state: "ready" }), 1);
@@ -132,15 +222,15 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       respond = text => text === partial.dialogue[1].text
         ? Response.json({ error: { code: "insufficient_quota", type: "insufficient_quota", message: `Secret quota detail ${syntheticKey}` } }, { status: 429 }) : pcmResponse();
       const before = calls.length;
-      const paused = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 5, maxRetries: 3 });
+      const paused = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 5, maxRetries: 3 });
       assert.equal(paused.state, "paused"); assert.equal(paused.lastErrorCode, "quota"); assert.equal(paused.ready, 4); assert.equal(paused.failed, 1); assert.equal(paused.pending, 1);
       assertCalls(calls.slice(before), partial.dialogue.map(line => line.text));
-      assert.equal((await runSpeechBankPrewarm(otherDb, { expectedDatabase })).state, "paused"); assert.equal(calls.length - before, 2);
+      assert.equal((await runSpeechBankPrewarm(otherDb, { ...syntheticBudget, expectedDatabase })).state, "paused"); assert.equal(calls.length - before, 2);
       assert.equal((await readSpeechPrewarmStatus(otherDb)).lastErrorCode, "quota");
       const inspection = await inspectSpeechBank(otherDb, { expectedDatabase });
       assert.equal(inspection.state, "paused"); assert.equal(inspection.failed, 1); assert.equal(inspection.lastErrorCode, "quota");
       respond = () => pcmResponse();
-      const complete = await runSpeechBankPrewarm(otherDb, { expectedDatabase, maxClips: 2, resume: true });
+      const complete = await runSpeechBankPrewarm(otherDb, { ...syntheticBudget, expectedDatabase, maxClips: 2, resume: true });
       assert.equal(complete.state, "complete"); assert.equal(complete.ready, 6); assert.equal(complete.failed, 0);
       assertCalls(calls.slice(before), [partial.dialogue[0].text, partial.dialogue[1].text, partial.dialogue[1].text, "Do not start until the provider quota is restored."]);
       assert.equal((await readSpeechPrewarmStatus(db)).lastErrorCode, undefined);
@@ -152,10 +242,10 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       await db.collection("content").insertOne({ id: "synthetic-lease-source", skill: "listening", sections: [section("synthetic-lease", text)] });
       respond = async input => { assert.equal(input, text); started.resolve(); await released.promise; return pcmResponse(); };
       const before = calls.length;
-      const first = runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1 });
+      const first = runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1 });
       await Promise.race([started.promise, first.then(result => assert.fail(`Worker returned before transport: ${JSON.stringify(result)}`))]);
       try {
-        const concurrent = await runSpeechBankPrewarm(otherDb, { expectedDatabase, maxClips: 1 });
+        const concurrent = await runSpeechBankPrewarm(otherDb, { ...syntheticBudget, expectedDatabase, maxClips: 1 });
         assert.equal(concurrent.state, "running"); assert.equal(calls.length - before, 1);
       } finally { released.resolve(); }
       assert.equal((await first).state, "complete"); assert.equal(calls.length - before, 1);
@@ -182,7 +272,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       };
       const before = calls.length;
       const partsBefore = await db.collection("speech_audio.files").countDocuments({ "metadata.kind": "turn" });
-      const stopping = runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, signal: controller.signal });
+      const stopping = runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1, signal: controller.signal });
       try {
         await Promise.race([started.promise, stopping.then(result => assert.fail(`Worker returned before transport: ${JSON.stringify(result)}`))]);
         for (let poll = 0; poll < 100 && await db.collection("speech_audio.files").countDocuments({ "metadata.kind": "turn" }) === partsBefore; poll++)
@@ -193,7 +283,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       assert.equal(interrupted.state, "pending"); assert.equal(interrupted.lastErrorCode, "interrupted"); assert.equal(interrupted.failed, 0);
       assertCalls(calls.slice(before), scene.dialogue.map(line => line.text));
       respond = () => pcmResponse();
-      const restarted = await runSpeechBankPrewarm(otherDb, { expectedDatabase, maxClips: 1 });
+      const restarted = await runSpeechBankPrewarm(otherDb, { ...syntheticBudget, expectedDatabase, maxClips: 1 });
       assert.equal(restarted.state, "complete");
       assertCalls(calls.slice(before), [scene.dialogue[0].text, scene.dialogue[1].text, scene.dialogue[1].text]);
     });
@@ -205,12 +295,12 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
         { id: "synthetic-valid-custom", skill: "listening", sections: [section("synthetic-valid-section", validText)] },
       ]);
       const before = calls.length;
-      const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1 });
+      const result = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1 });
       assert.equal(result.state, "pending"); assert.equal(result.failed, 1); assert.equal(result.pending, 0);
       assert.equal(result.total, result.ready + 1); assert.deepEqual(calls.slice(before), [validText]);
       const inspected = await inspectSpeechBank(db, { expectedDatabase });
       assert.equal(inspected.failed, 1); assert.equal(inspected.ready, result.ready);
-      assert.equal((await runSpeechBankPrewarm(otherDb, { expectedDatabase, maxClips: 1, resume: true })).failed, 1);
+      assert.equal((await runSpeechBankPrewarm(otherDb, { ...syntheticBudget, expectedDatabase, maxClips: 1, resume: true })).failed, 1);
       assert.deepEqual(calls.slice(before), [validText]);
     });
 
@@ -232,7 +322,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       db.collection = ((collectionName, options) => collectionName === "speech_bank_prewarm" ? bank : originalCollection(collectionName, options)) as typeof db.collection;
       respond = () => pcmResponse();
       try {
-        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 1 });
+        const result = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1, maxRetries: 1 });
         assert.equal(publicationFailures, 1);
         assert.equal(result.ready, baseline.ready + 1); assert.equal(result.failed, baseline.failed);
         assert.equal(result.total, baseline.total + 1); assert.ok(result.ready + result.failed <= result.total);
@@ -257,7 +347,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
         return result;
       };
       try {
-        const result = await runSpeechBankPrewarm(db, { expectedDatabase, signal: controller.signal });
+        const result = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, signal: controller.signal });
         assert.equal(inspected, 1); assert.equal(result.state, "pending");
         assert.equal(result.lastErrorCode, "interrupted"); assert.equal(result.lastErrorStage, "bank-scan");
         for (const key of ["total", "ready", "failed", "pending"] as const) assert.equal(result[key], baseline[key]);
@@ -275,7 +365,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
         ? previousTimer(callback, 20, ...args) : pacingTimer(callback, milliseconds, ...args)) as typeof setTimeout;
       respond = () => new Response(new ReadableStream<Uint8Array>(), { headers: { "content-type": "audio/pcm" } });
       try {
-        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 0 });
+        const result = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1, maxRetries: 0 });
         assert.equal(result.lastErrorCode, "provider-timeout"); assert.equal(result.lastErrorStage, "provider-response");
         assertCalls(calls.slice(providerCalls), [scene.text]);
         const clip = await db.collection("speech_bank_prewarm").findOne({ _id: `clip:${speechSectionFingerprint(scene)}` as any });
@@ -296,7 +386,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
         return pcmResponse();
       };
       try {
-        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 0 });
+        const result = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1, maxRetries: 0 });
         assert.equal(result.lastErrorCode, "lease-lost"); assert.equal(result.lastErrorStage, "lease-renew");
         assertCalls(calls.slice(providerCalls), [scene.text]);
         const clip = await db.collection("speech_bank_prewarm").findOne({ _id: `clip:${speechSectionFingerprint(scene)}` as any });
@@ -321,7 +411,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       }) as typeof files.findOne;
       db.collection = ((collectionName, options) => collectionName === "speech_audio.files" ? files : originalCollection(collectionName, options)) as typeof db.collection;
       try {
-        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 0 });
+        const result = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1, maxRetries: 0 });
         assert.equal(intercepted, 1); assert.equal(result.lastErrorCode, "storage"); assert.equal(result.lastErrorStage, "cache-metadata");
         assert.equal(calls.length, providerCalls);
         const clip = await db.collection("speech_bank_prewarm").findOne({ _id: `clip:${speechSectionFingerprint(scene)}` as any });
@@ -350,7 +440,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       }) as typeof bank.updateOne;
       db.collection = ((collectionName, options) => collectionName === "speech_bank_prewarm" ? bank : originalCollection(collectionName, options)) as typeof db.collection;
       try {
-        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 0 });
+        const result = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1, maxRetries: 0 });
         assert.equal(transitionFailures, 1); assert.equal(calls.length, providerCalls);
         assert.equal(result.total, baseline.total + 1); assert.equal(result.ready, baseline.ready);
         assert.equal(result.failed, baseline.failed + 1); assert.equal(result.pending, baseline.pending);
@@ -383,7 +473,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       }) as typeof bank.updateOne;
       db.collection = ((collectionName, options) => collectionName === "speech_bank_prewarm" ? bank : originalCollection(collectionName, options)) as typeof db.collection;
       try {
-        const result = await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 1, maxRetries: 1 });
+        const result = await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 1, maxRetries: 1 });
         assert.equal(replacements, 1); assert.equal(result.state, "pending");
         assert.equal(result.lastErrorCode, "lease-lost"); assert.equal(result.lastErrorStage, "bank-publish");
         assert.equal(result.ready, baseline.ready + 1); assertCalls(calls.slice(providerCalls), [scene.text]);
@@ -406,7 +496,7 @@ test("native Mongo pregeneration is resumable, bounded, independent of learner s
       respond = text => text === stalled.text
         ? new Response(new ReadableStream<Uint8Array>(), { headers: { "content-type": "audio/pcm" } }) : pcmResponse();
       try {
-        await runSpeechBankPrewarm(db, { expectedDatabase, maxClips: 2, maxRetries: 3 });
+        await runSpeechBankPrewarm(db, { ...syntheticBudget, expectedDatabase, maxClips: 2, maxRetries: 3 });
         assertCalls(calls.slice(providerCalls), [stalled.text, next.text]);
         const stalledClip = await db.collection("speech_bank_prewarm").findOne({ _id: `clip:${speechSectionFingerprint(stalled)}` as any });
         assert.equal(stalledClip?.attempts, 1); assert.equal(stalledClip?.lastErrorCode, "provider-timeout");

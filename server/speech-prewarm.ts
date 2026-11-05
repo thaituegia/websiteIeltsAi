@@ -6,6 +6,7 @@ import { ApiError } from "./errors";
 import { SpeechAudioCache, SpeechCacheError, SpeechProviderError, speechCapabilities, speechSectionFingerprint, speechStorageOperation, type SpeechFailureStage } from "./speech-audio";
 import type { Database } from "./storage";
 import { DUO_EXAM_CONTENT_COLLECTION } from "./duo-exam-content";
+import { SpeechBudgetExceededError, SpeechGenerationBudget, type SpeechGenerationUsage } from "./speech-budget";
 
 const COLLECTION = "speech_bank_prewarm";
 const LEASE_MS = 90_000;
@@ -13,7 +14,7 @@ const MAX_RETRY_DELAY_MS = 5 * 60_000;
 const METADATA_TIMEOUT_MS = 20_000;
 const HEARTBEAT_TIMEOUT_MS = 10_000;
 const OWNED_TEST_DATABASE = /^ielts_prewarm_test_\d+_[a-f0-9]{32}$/;
-type ErrorCode = "auth" | "quota" | "rate-limit" | "unavailable" | "invalid" | "storage" | "interrupted" | "provider-timeout" | "lease-lost" | "claim-timeout";
+type ErrorCode = "auth" | "quota" | "rate-limit" | "unavailable" | "invalid" | "storage" | "interrupted" | "provider-timeout" | "lease-lost" | "claim-timeout" | "budget-exhausted";
 type BankState = "pending" | "running" | "complete" | "paused" | "unconfigured";
 
 interface Manifest {
@@ -30,6 +31,7 @@ interface Manifest {
   owner?: string;
   leaseExpiresAt?: Date;
   updatedAt: Date;
+  budget?: Readonly<SpeechGenerationUsage>;
 }
 
 export interface SpeechPrewarmStatus {
@@ -42,6 +44,7 @@ export interface SpeechPrewarmStatus {
   updatedAt?: string;
   lastErrorCode?: ErrorCode;
   lastErrorStage?: SpeechFailureStage;
+  budget?: Readonly<SpeechGenerationUsage>;
 }
 
 export interface SpeechPrewarmOptions {
@@ -55,6 +58,11 @@ export interface SpeechPrewarmOptions {
   onProgress?: (status: SpeechPrewarmStatus) => void;
   /** A scoped rollout can prepare exclusive papers without rescanning public clips. */
   scope?: "all" | "duo";
+  /** Paid requests default to zero. These bounds are not dollar estimates. */
+  maxProviderRequests?: number;
+  maxInputCharacters?: number;
+  /** Internal shared allowance; watch keeps one object across every pass. */
+  budget?: SpeechGenerationBudget;
 }
 
 const bankManifestId = (scope: SpeechPrewarmOptions["scope"] = "all") => scope === "duo" ? "bank:duo" : "bank";
@@ -72,6 +80,7 @@ function statusOf(manifest: Manifest | null, configured = speechCapabilities().c
     ...(manifest?.updatedAt ? { updatedAt: manifest.updatedAt.toISOString() } : {}),
     ...(manifest?.lastErrorCode ? { lastErrorCode: manifest.lastErrorCode } : {}),
     ...(manifest?.lastErrorStage ? { lastErrorStage: manifest.lastErrorStage } : {}),
+    ...(manifest?.budget ? { budget: manifest.budget } : {}),
   };
 }
 
@@ -164,6 +173,8 @@ export async function inspectSpeechBank(db: Db, options: Pick<SpeechPrewarmOptio
 }
 
 function failure(error: unknown): { code: ErrorCode; stage?: SpeechFailureStage; retryable: boolean; pause: boolean; retryAfterMs?: number } {
+  if (error instanceof SpeechBudgetExceededError)
+    return { code: "budget-exhausted", retryable: false, pause: true };
   if (error instanceof SpeechProviderError) return {
     code: error.kind, stage: error.stage, retryable: ["rate-limit", "unavailable", "provider-timeout"].includes(error.kind),
     pause: ["auth", "quota"].includes(error.kind), retryAfterMs: error.retryAfterMs,
@@ -197,6 +208,10 @@ function retryDelay(retry: number, retryAfterMs?: number): number {
 export async function runSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptions = {}): Promise<SpeechPrewarmStatus> {
   assertDatabase(db, options.expectedDatabase);
   const bankId = bankManifestId(options.scope);
+  const budget = options.budget ?? new SpeechGenerationBudget({
+    maxProviderRequests: options.maxProviderRequests ?? 0,
+    maxInputCharacters: options.maxInputCharacters ?? 0,
+  });
   const maxClips = options.maxClips ?? 32, maxRetries = options.maxRetries ?? 3;
   if (!Number.isSafeInteger(maxClips) || maxClips < 1 || maxClips > 4096 || !Number.isSafeInteger(maxRetries) || maxRetries < 0 || maxRetries > 5)
     throw new Error("Speech pregeneration bounds require 1–4096 clips and 0–5 retries per pass.");
@@ -230,10 +245,11 @@ export async function runSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptions
   heartbeat.unref();
   const publish = async (state: BankState) => {
     result.state = state; result.updatedAt = new Date().toISOString();
+    result.budget = budget.snapshot();
     result.pending = Math.max(0, result.total - result.ready - result.failed);
     const { total, ready, failed, lastErrorCode, lastErrorStage } = result;
     const saved = await speechStorageOperation("bank-publish", () => collection.updateOne({ _id: bankId, owner }, {
-      $set: { state, total, ready, failed, updatedAt: new Date(), ...(lastErrorCode ? { lastErrorCode } : {}), ...(lastErrorStage ? { lastErrorStage } : {}) },
+      $set: { state, total, ready, failed, budget: result.budget, updatedAt: new Date(), ...(lastErrorCode ? { lastErrorCode } : {}), ...(lastErrorStage ? { lastErrorStage } : {}) },
       $unset: { ...(!lastErrorCode ? { lastErrorCode: "" } : {}), ...(!lastErrorStage ? { lastErrorStage: "" } : {}) },
     }, { timeoutMS: METADATA_TIMEOUT_MS }));
     if (!saved.matchedCount) {
@@ -266,11 +282,21 @@ export async function runSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptions
         }, { timeoutMS: METADATA_TIMEOUT_MS }));
         if (retry === 0 && record.state === "failed") result.failed--;
         try {
-          await cache.get([section], signal);
+          await cache.get([section], signal, budget);
         } catch (error) {
           const classification = signal.aborted ? failure(signal.reason instanceof SpeechCacheError ? signal.reason : new SpeechCacheError("interrupted", "generation")) : failure(error);
           result.lastErrorCode = classification.code;
           result.lastErrorStage = classification.stage;
+          if (classification.code === "budget-exhausted") {
+            // The unfinished section remains retryable from its persisted turns.
+            // Exhaustion is a cost stop, not a failed or lost audio recording.
+            await speechStorageOperation("bank-metadata", () => collection.updateOne({ _id: `clip:${key}` }, {
+              $set: { state: "pending", lastErrorCode: "budget-exhausted", retryable: false, updatedAt: new Date() },
+              $unset: { lastErrorStage: "", nextAttemptAt: "" },
+            }, { timeoutMS: METADATA_TIMEOUT_MS }));
+            await publish("paused");
+            return { ...result };
+          }
           // Retry slow provider turns in a later pass so other clips can advance.
           const exhausted = retry === maxRetries || !classification.retryable || classification.pause || signal.aborted || classification.code === "provider-timeout";
           await speechStorageOperation("bank-metadata", () => collection.updateOne({ _id: `clip:${key}` }, {
@@ -310,7 +336,7 @@ export async function runSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptions
     const classification = failure(signal.aborted ? signal.reason instanceof SpeechCacheError ? signal.reason : new SpeechCacheError("interrupted", "bank-scan") : error);
     result.lastErrorCode = classification.code;
     result.lastErrorStage = classification.stage;
-    await publish("pending").catch(() => undefined);
+    await publish(classification.pause ? "paused" : "pending").catch(() => undefined);
     return { ...result };
   } finally {
     clearInterval(heartbeat);
@@ -323,8 +349,13 @@ export async function watchSpeechBankPrewarm(db: Db, options: SpeechPrewarmOptio
   const interval = options.intervalMs ?? 60_000;
   if (!Number.isSafeInteger(interval) || interval < 1000 || interval > 3_600_000) throw new Error("Speech pregeneration scan interval must be 1–3600 seconds.");
   let resume = options.resume;
+  const budget = options.budget ?? new SpeechGenerationBudget({
+    maxProviderRequests: options.maxProviderRequests ?? 0,
+    maxInputCharacters: options.maxInputCharacters ?? 0,
+  });
   while (!options.signal?.aborted) {
-    await runSpeechBankPrewarm(db, { ...options, resume });
+    const status = await runSpeechBankPrewarm(db, { ...options, resume, budget });
+    if (status.state === "paused" && status.lastErrorCode === "budget-exhausted") return;
     resume = false;
     await delay(interval, options.signal);
   }

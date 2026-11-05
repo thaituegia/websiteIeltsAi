@@ -11,7 +11,7 @@ const fixture = String.raw`
 import contextlib,copy,hashlib,importlib.util,io,json,os,pathlib,re,stat,subprocess,sys,tarfile,tempfile,types
 sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location('operator',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-scenario=sys.argv[2];prepare=scenario.startswith('duo-');upgrade=scenario.startswith('upgrade-') or scenario=='duo-upgrade-success';preserved=scenario in ('ordinary-success-previous-model-upgrade','ordinary-success-legacy-models');secret='SYNTHETIC_PRIVATE_NEVER_PRINT';commit='a'*40;archive='b'*64
+scenario=sys.argv[2];upgrade=scenario.startswith('upgrade-');preserved=scenario in ('ordinary-success-previous-model-upgrade','ordinary-success-legacy-models');secret='SYNTHETIC_PRIVATE_NEVER_PRINT';commit='a'*40;archive='b'*64
 with tempfile.TemporaryDirectory(prefix='ielts-app-only-test-') as folder:
  root=pathlib.Path(folder);m.LIVE_DIR=root/'live';private=m.LIVE_DIR/'.local/deploy';private.mkdir(parents=True,mode=0o700)
  (m.LIVE_DIR/'deploy').mkdir();(private/'tls').mkdir();(m.LIVE_DIR/'.local/releases').mkdir(mode=0o700)
@@ -24,7 +24,6 @@ with tempfile.TemporaryDirectory(prefix='ielts-app-only-test-') as folder:
  credentials={'duoId':'synthetic-test','accounts':[{'role':role,'name':'Synthetic '+role,'phone':phone,'passwordHash':'scrypt:'+'3'*32+':'+'4'*128} for role,phone in [('husband','0390000001'),('wife','0390000002')]]}
  environment={'MONGODB_URI':'mongodb://mongo:27017/ielts_ai','APP_ORIGIN':m.ORIGIN,'DUO_ENABLED':'true','DUO_CREDENTIALS_FILE':'','DUO_ACCOUNTS_JSON':json.dumps(credentials,ensure_ascii=False,separators=(',',':')),'OPENAI_API_KEY':secret}
  if scenario=='upgrade-newline-env':environment['OPENAI_API_KEY']=secret+'\nINJECTED_UNSAFE=yes'
- if scenario=='duo-newline-env':environment['OPENAI_API_KEY']=secret+'\nINJECTED_UNSAFE=yes'
  if upgrade:environment.update({'CONTENT_MODEL':'gpt-4o','SCORING_MODEL':'gpt-4o','EXTRACTOR_MODEL':'gpt-4o'})
  if preserved:
   explicit={role:'gpt-6.1-sol' for role in m.TEXT_MODEL_ROLES} if scenario=='ordinary-success-previous-model-upgrade' else {'CONTENT_MODEL':'gpt-4o','SCORING_MODEL':'gpt-4.1','EXTRACTOR_MODEL':'gpt-4.1','TRANSLATION_MODEL':'gpt-4o-mini'}
@@ -39,12 +38,6 @@ with tempfile.TemporaryDirectory(prefix='ielts-app-only-test-') as folder:
   'State':{'Running':True,'Health':{'Status':'healthy'}},'HostConfig':{'Memory':512*1048576},'NetworkSettings':{'Networks':{key:copy.deepcopy(value) for key,value in networks.items() if service=='app' or key.endswith('_'+('database' if service=='mongo' else 'web'))}}}
  state={'app':row(oldid,'app'),'mongo':row('7'*64,'mongo'),'proxy':row('8'*64,'proxy'),'worker':{'id':'9'*64,'running':False}}
  original=copy.deepcopy(state);calls=[];logs=[];budgets=[];switches=[];probe_files=[];probe_state={'id':'f'*64,'exists':False}
- duo_state={'id':'a'*64,'exists':False,'started':False,'running':False,'polls':0,'cacheReady':False};elapsed=[0]
- m.DUO_PREPARE_TIMEOUT=30
- def sleep(seconds):
-  assert seconds==15;elapsed[0]+=seconds
- m.time=types.SimpleNamespace(monotonic=lambda:elapsed[0],sleep=sleep)
- saved_signals={number:m.signal.getsignal(number) for number in (m.signal.SIGINT,m.signal.SIGTERM,m.signal.SIGHUP)}
  real_owned=m.owned
  def owned(path,directory=False,private=False):
   info=path.lstat();assert path.resolve(strict=True)==path and not stat.S_ISLNK(info.st_mode)
@@ -78,9 +71,6 @@ with tempfile.TemporaryDirectory(prefix='ielts-app-only-test-') as folder:
   calls.append(args)
   if args[:2]==['docker','ps']:
    if any(value.startswith('name=^/') for value in args):
-    if any('-duo-exam-prewarm-' in value for value in args):
-     if duo_state['exists']:assert any(value=='name=^/'+duo_state['name']+'$' for value in args)
-     return duo_state['id'] if duo_state['exists'] else ''
     assert any(value.startswith('name=^/'+project+'-model-probe-') and value.endswith('$') for value in args)
     return probe_state['id'] if probe_state['exists'] else ''
    service=next(x.split('=',2)[-1] for x in args if x.startswith('label=com.docker.compose.service='));return state[service]['Id']
@@ -114,63 +104,6 @@ with tempfile.TemporaryDirectory(prefix='ielts-app-only-test-') as folder:
     probe_state['exists']=True
     raise subprocess.TimeoutExpired(args,timeout)
    return json.dumps({'ok':True,'model':m.TEXT_MODEL})
-  if args[:2]==['docker','create']:
-   assert prepare and timeout==60 and state['app']['Id']==oldid and logs==['build']
-   assert len([x for x in calls if x[:2]==['docker','run'] and m.BANK_PROGRAM in x])==2
-   assert args[-11:]==[newimage,'--import','tsx','/app/server/speech-prewarm-cli.ts','--once','--duo-only','--max-clips','4096','--max-retries','3','--resume']
-   for value in ['--memory=512m','--memory-swap=512m','--cpus=0.25','--pids-limit=64','--read-only','--cap-drop=ALL','--user=node','--entrypoint=node','--security-opt=no-new-privileges:true']:
-    assert value in args,value
-   assert [args[i+1] for i,x in enumerate(args) if x=='--network']==[project+'_web',project+'_database']
-   assert not any(x in args for x in ('--mount','--volume','-v','--network=host','-p','--publish'))
-   assert secret not in json.dumps(args)
-   name=args[args.index('--name')+1];assert re.fullmatch(re.escape(project)+r'-duo-exam-prewarm-[a-f0-9]+',name)
-   labels=dict(args[i+1].split('=',1) for i,x in enumerate(args) if x=='--label')
-   assert labels=={'com.websiteieltsai.project':project,'com.websiteieltsai.kind':'duo-exam-prewarm','com.websiteieltsai.operation-id':name.split('-duo-exam-prewarm-',1)[1]}
-   env_path=pathlib.Path(args[args.index('--env-file')+1]);probe_files.append(env_path)
-   assert env_path.name=='duo-exam-prewarm.env' and env_path.stat().st_mode&0o777==0o600
-   private_env=dict(line.split('=',1) for line in env_path.read_text().splitlines())
-   assert private_env['MONGODB_URI']=='mongodb://mongo:27017/ielts_ai' and private_env['OPENAI_API_KEY']==secret
-   assert private_env['DUO_ACCOUNTS_JSON']==environment['DUO_ACCOUNTS_JSON'] and 'CONTENT_MODEL' not in private_env
-   duo_state.update({'exists':True,'name':name,'labels':labels})
-   if scenario=='duo-create-error':raise RuntimeError(secret)
-   if scenario=='duo-invalid-id':return 'invalid-id'
-   return duo_state['id']
-  if args[:2]==['docker','start']:
-   assert prepare and args==['docker','start',duo_state['id']] and state['app']['Id']==oldid
-   duo_state.update({'started':True,'running':True});return duo_state['id']
-  if args[:2]==['docker','stop']:
-   assert prepare and args==['docker','stop','--time','15',duo_state['id']]
-   duo_state['running']=False;return duo_state['id']
-  if args[:2]==['docker','logs']:
-   assert prepare and args==['docker','logs','--tail','64',duo_state['id']] and not duo_state['running']
-   if scenario=='duo-malformed':return secret
-   report={'configured':True,'state':'complete','total':264,'ready':264,'pending':0,'failed':0}
-   if scenario=='duo-incomplete':report.update({'state':'running','ready':263,'pending':1})
-   if scenario=='duo-unconfigured':report['configured']=False
-   if scenario=='duo-failed-status':report.update({'ready':263,'failed':1})
-   if scenario=='duo-zero-total':report.update({'total':0,'ready':0})
-   if scenario=='duo-invalid-count':report['ready']=True
-   if scenario=='duo-oversized-status':return 'x'*65537
-   if scenario in ('duo-exit-quota','duo-exit-storage','duo-exit-private-error'):
-    report.update({'state':'paused','ready':10,'pending':253,'failed':1,'lastErrorCode':secret if scenario=='duo-exit-private-error' else scenario.removeprefix('duo-exit-'),'providerDescription':secret})
-   duo_state['cacheReady']=report['ready']==264
-   return json.dumps({'state':'running'})+'\n'+json.dumps(report)+'\n'
-  if args[:2]==['docker','inspect'] and args[-1]==duo_state['id']:
-   assert prepare and timeout==20 and args[2]=='--format'
-   if duo_state['started'] and duo_state['running']:
-    duo_state['polls']+=1
-    if scenario!='duo-timeout' and duo_state['polls']>=2:duo_state['running']=False
-   actual=copy.deepcopy(networks)
-   if scenario=='duo-foreign-network':actual[project+'_web']['NetworkID']='b'*64
-   labels=copy.deepcopy(duo_state['labels'])
-   if scenario=='duo-foreign-owner':labels['com.websiteieltsai.project']='another-project'
-   return json.dumps({'Id':duo_state['id'],'Image':newimage,'Name':'/'+duo_state['name'],'Labels':labels,
-    'Networks':actual,'State':{'Running':duo_state['running'],'Status':'running' if duo_state['running'] else 'exited' if duo_state['started'] else 'created','ExitCode':1 if scenario in ('duo-exit-failed','duo-exit-quota','duo-exit-storage','duo-exit-private-error') else 0}})
-  if args[:2]==['docker','rm'] and args[-1]==duo_state['id']:
-   assert prepare and scenario!='duo-foreign-owner' and args==['docker','rm','--force',duo_state['id']]
-   duo_state['exists']=False
-   if scenario=='duo-cleanup-race':raise RuntimeError('Synthetic auto-remove race')
-   return duo_state['id']
   if args[:2]==['docker','inspect']:
    assert args[-1]==probe_state['id'] and timeout==20 and args[2]=='--format'
    if scenario=='upgrade-success-probe-auto-removed':
@@ -207,18 +140,11 @@ with tempfile.TemporaryDirectory(prefix='ielts-app-only-test-') as folder:
  def env_values(entries):return dict(x.split('=',1) for x in entries)
  def memory(budget):
   budgets.append(budget)
-  if scenario=='duo-low-memory-before-launch' and budget==512 and logs==['build'] and len([x for x in calls if x[:2]==['docker','run'] and m.BANK_PROGRAM in x])==2:raise RuntimeError('Insufficient memory before own preparation')
-  if scenario=='duo-reserve-low' and budget==0:raise RuntimeError('Reserve below 1 GiB')
-  if scenario=='duo-interrupted' and budget==0:raise KeyboardInterrupt()
-  if scenario in ('duo-sigterm','duo-ssh-hangup') and budget==0:
-   number=m.signal.SIGTERM if scenario=='duo-sigterm' else m.signal.SIGHUP
-   m.signal.getsignal(number)(number,None)
-  if scenario=='duo-final-memory-low' and budget==512 and duo_state['cacheReady']:raise RuntimeError('Insufficient memory before switch')
   if scenario=='low-memory' or scenario=='low-memory-before-switch' and len(budgets)>=5 or scenario=='upgrade-low-memory-before-probe' and len(budgets)>=2 or scenario=='upgrade-low-memory-before-switch' and len(budgets)>=6:raise RuntimeError('Insufficient memory')
  def snapshot(exclude):return {key:copy.deepcopy(value) for key,value in state.items() if key!='app' or value['Id']!=exclude}
  guards=types.SimpleNamespace(LIVE_DIR=m.LIVE_DIR,read_project=lambda path:project,command=command,inspect=inspect,verify_container=verify_container,env_values=env_values,memory_headroom=memory,running_snapshot=snapshot,listener_snapshot=lambda:[('127.0.0.1:19088','0.0.0.0:*')])
  def health(tls=False):
-  return {'ok':not(scenario in ('unhealthy-replacement','rollback-failed','upgrade-unhealthy-replacement','duo-unhealthy-replacement') and state['app']['Image']==newimage) and scenario!='unhealthy-original'}
+  return {'ok':not(scenario in ('unhealthy-replacement','rollback-failed','upgrade-unhealthy-replacement') and state['app']['Image']==newimage) and scenario!='unhealthy-original'}
  diagnostic=types.SimpleNamespace(LIVE_DIR=m.LIVE_DIR,health=health)
  def download(url,digest,path,limit):
   assert url.endswith(commit) and digest==archive
@@ -250,20 +176,17 @@ with tempfile.TemporaryDirectory(prefix='ielts-app-only-test-') as folder:
  m.shutil.disk_usage=lambda path:types.SimpleNamespace(free=20*1024**3)
  output=io.StringIO();failure=None
  with contextlib.redirect_stdout(output):
-  try:m.deploy(guards,diagnostic,commit,archive,upgrade_text_models=upgrade,prepare_duo_exams=prepare)
+  try:m.deploy(guards,diagnostic,commit,archive,upgrade_text_models=True) if upgrade else m.deploy(guards,diagnostic,commit,archive)
   except RuntimeError as error:failure=str(error)
-  except KeyboardInterrupt:failure='Interrupted by operator'
  rendered=output.getvalue()+(failure or '')
  assert secret not in rendered
  assert state['mongo']==original['mongo'] and state['proxy']==original['proxy'] and state['worker']==original['worker']
- assert all(m.signal.getsignal(number)==handler for number,handler in saved_signals.items())
- assert not any(args[0]=='docker' and args[1] in ('restart','exec','prune') for args in calls)
- assert not any(args[0]=='docker' and args[1] in ('stop','start') for args in calls) or prepare
+ assert not any(args[0]=='docker' and args[1] in ('stop','restart','start','exec','prune') for args in calls)
  assert not any('bank-upgrade' in str(args) or 'bank-reset' in str(args) for args in calls)
- assert not any(args[:2]==['docker','rm'] for args in calls) or prepare or scenario in ('upgrade-timeout-probe-cleaned','upgrade-success-probe-rm-race')
+ assert not any(args[:2]==['docker','rm'] for args in calls) or scenario in ('upgrade-timeout-probe-cleaned','upgrade-success-probe-rm-race')
  assert upgrade or not any(m.TEXT_MODEL_PROBE in args for args in calls)
  assert all(not path.exists() for path in probe_files)
- if scenario in ('success','upgrade-success','upgrade-success-probe-auto-removed','upgrade-success-probe-rm-race','ordinary-success-previous-model-upgrade','ordinary-success-legacy-models','duo-success','duo-upgrade-success','duo-cleanup-race'):
+ if scenario in ('success','upgrade-success','upgrade-success-probe-auto-removed','upgrade-success-probe-rm-race','ordinary-success-previous-model-upgrade','ordinary-success-legacy-models'):
   assert failure is None and switches==['start-app'] and state['app']['Image']==newimage
   assert release.read_bytes()!=original_override and 'HOÀN TẤT' in rendered
   receipt=json.loads(next((private/'app-updates').glob('*/complete.json')).read_text())
@@ -278,12 +201,9 @@ with tempfile.TemporaryDirectory(prefix='ielts-app-only-test-') as folder:
    assert all(actual[role]==m.TEXT_MODEL for role in m.TEXT_MODEL_ROLES)
    assert all(actual[key]==value for key,value in environment.items() if key not in m.TEXT_MODEL_ROLES)
    assert actual['OPENAI_API_KEY']==secret and 'TRANSLATION_MODEL' not in environment
-   assert all(budget==512 or prepare and budget==0 for budget in budgets)
+   assert all(budget==512 for budget in budgets)
    assert len([args for args in calls if m.TEXT_MODEL_PROBE in args])==1
-  if prepare:
-   assert receipt['duoExams']=={'scope':'duo','state':'complete','total':264,'ready':264,'pending':0,'failed':0}
-   assert not duo_state['exists'] and duo_state['cacheReady'] and 0 in budgets
- elif scenario in ('unhealthy-replacement','switch-failed','upgrade-unhealthy-replacement','upgrade-wrong-runtime-model','upgrade-wrong-runtime-provider','duo-unhealthy-replacement'):
+ elif scenario in ('unhealthy-replacement','switch-failed','upgrade-unhealthy-replacement','upgrade-wrong-runtime-model','upgrade-wrong-runtime-provider'):
   assert failure and 'đã phục hồi app cũ healthy' in failure and switches==['start-app','restore-app']
   assert state['app']['Image']==oldimage and release.read_bytes()==original_override
   if upgrade:assert env_values(state['app']['Config']['Env'])==env_values(original['app']['Config']['Env'])
@@ -297,18 +217,10 @@ with tempfile.TemporaryDirectory(prefix='ielts-app-only-test-') as folder:
  if scenario=='upgrade-timeout-probe-cleaned':assert not probe_state['exists'] and len([args for args in calls if args[:2]==['docker','rm']])==1
  if scenario in ('upgrade-success-probe-auto-removed','upgrade-success-probe-rm-race'):assert not probe_state['exists']
  if scenario=='upgrade-timeout-probe-foreign':assert probe_state['exists'] and not any(args[:2]==['docker','rm'] for args in calls)
- if prepare:
-  assert all(path.name in ('model-probe.env','duo-exam-prewarm.env') for path in probe_files)
-  if scenario=='duo-foreign-owner':assert duo_state['exists'] and not any(x[:2] in (['docker','stop'],['docker','rm']) and x[-1]==duo_state['id'] for x in calls)
-  else:assert not duo_state['exists']
-  if scenario in ('duo-reserve-low','duo-interrupted','duo-sigterm','duo-ssh-hangup','duo-timeout'):assert any(x[:2]==['docker','stop'] and x[-1]==duo_state['id'] for x in calls)
-  if scenario in ('duo-final-memory-low','duo-unhealthy-replacement'):assert duo_state['cacheReady']
-  if scenario in ('duo-exit-quota','duo-exit-storage'):assert '('+scenario.removeprefix('duo-exit-')+')' in failure
-  if scenario=='duo-exit-private-error':assert '(' not in failure and 'lastErrorCode' not in failure
  print(json.dumps({'scenario':scenario,'switches':switches,'budgets':budgets}))
 `;
 
-for (const scenario of ["success", "ordinary-success-previous-model-upgrade", "ordinary-success-legacy-models", "low-memory", "low-memory-before-switch", "unhealthy-original", "foreign-network", "build-failed", "changed-bank", "foreign-compose", "changed-credentials", "concurrent-config", "switch-failed", "unhealthy-replacement", "foreign-release-after-switch", "rollback-failed", "upgrade-success", "upgrade-success-probe-auto-removed", "upgrade-success-probe-rm-race", "upgrade-failed-probe", "upgrade-denied-probe", "upgrade-malformed-probe", "upgrade-nonjson-probe", "upgrade-oversized-probe", "upgrade-command-error", "upgrade-timeout-probe-cleaned", "upgrade-timeout-probe-foreign", "upgrade-newline-env", "upgrade-low-memory-before-probe", "upgrade-low-memory-before-switch", "upgrade-foreign-env", "upgrade-provider-env", "upgrade-audio-env", "upgrade-wrong-target", "upgrade-missing-model", "upgrade-wrong-runtime-model", "upgrade-wrong-runtime-provider", "upgrade-unhealthy-replacement", "duo-success", "duo-upgrade-success", "duo-exit-failed", "duo-exit-quota", "duo-exit-storage", "duo-exit-private-error", "duo-incomplete", "duo-malformed", "duo-unconfigured", "duo-failed-status", "duo-zero-total", "duo-invalid-count", "duo-oversized-status", "duo-low-memory-before-launch", "duo-reserve-low", "duo-interrupted", "duo-sigterm", "duo-ssh-hangup", "duo-timeout", "duo-create-error", "duo-invalid-id", "duo-foreign-owner", "duo-foreign-network", "duo-cleanup-race", "duo-unhealthy-replacement", "duo-final-memory-low", "duo-newline-env"]) {
+for (const scenario of ["success", "ordinary-success-previous-model-upgrade", "ordinary-success-legacy-models", "low-memory", "low-memory-before-switch", "unhealthy-original", "foreign-network", "build-failed", "changed-bank", "foreign-compose", "changed-credentials", "concurrent-config", "switch-failed", "unhealthy-replacement", "foreign-release-after-switch", "rollback-failed", "upgrade-success", "upgrade-success-probe-auto-removed", "upgrade-success-probe-rm-race", "upgrade-failed-probe", "upgrade-denied-probe", "upgrade-malformed-probe", "upgrade-nonjson-probe", "upgrade-oversized-probe", "upgrade-command-error", "upgrade-timeout-probe-cleaned", "upgrade-timeout-probe-foreign", "upgrade-newline-env", "upgrade-low-memory-before-probe", "upgrade-low-memory-before-switch", "upgrade-foreign-env", "upgrade-provider-env", "upgrade-audio-env", "upgrade-wrong-target", "upgrade-missing-model", "upgrade-wrong-runtime-model", "upgrade-wrong-runtime-provider", "upgrade-unhealthy-replacement"]) {
   test(`app-only deployment: ${scenario}`, () => {
     const result = spawnSync("python3", ["-c", fixture, script, scenario], { encoding: "utf8", timeout: 20_000 });
     assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -398,7 +310,7 @@ changed=copy.deepcopy(proposed);del changed['services']['app']['environment']['O
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
-test("model and private Duo preparation CLI accept only explicit unique flags", () => {
+test("cached-only updates cannot start bulk audio, budget flags or model probes", () => {
   const check = String.raw`
 import importlib.util,sys
 sys.dont_write_bytecode=True
@@ -407,20 +319,21 @@ commit='a'*40;archive='b'*64;calls=[];downloads=[]
 m.os.geteuid=lambda:0
 m.download=lambda *args:downloads.append(args)
 m.checked_module=lambda path,name:('synthetic-module',name)
-def deploy(guards,diagnostic,selected,checksum,upgrade_text_models=False,prepare_duo_exams=False):
+def deploy(guards,diagnostic,selected,checksum,upgrade_text_models=False):
  assert selected==commit and checksum==archive
- calls.append((upgrade_text_models,prepare_duo_exams))
+ calls.append(upgrade_text_models)
 m.deploy=deploy
-for extra,expected in [([],(False,False)),(['--upgrade-text-models'],(True,False)),(['--prepare-duo-exams'],(False,True)),(['--upgrade-text-models','--prepare-duo-exams'],(True,True)),(['--prepare-duo-exams','--upgrade-text-models'],(True,True))]:
+assert not hasattr(m,'prepare_duo_exams')
+for extra,expected in [([],False),(['--cached-audio-only'],False),(['--upgrade-text-models'],True)]:
  m.sys.argv=['update-app.py',commit,archive]+extra;m.main()
- assert calls[-1]==expected
-assert len(downloads)==10
-for extra in [['--force'],['--upgrade-text-models=gpt-6.1-sol'],['--upgrade-text-models','--force'],['--upgrade-text-models','--upgrade-text-models'],['--prepare-duo-exams','--prepare-duo-exams'],['--prepare-duo-exams=all'],['--prepare-duo-exams','--upgrade-text-models','--force']]:
+ assert calls[-1] is expected
+assert len(downloads)==6
+for extra in [['--prepare-duo-exams'],['--max-provider-requests','1000'],['--cached-audio-only','--upgrade-text-models'],['--force'],['--upgrade-text-models=gpt-6.1-sol'],['--upgrade-text-models','--force'],['--upgrade-text-models','--upgrade-text-models']]:
  before=len(downloads);m.sys.argv=['update-app.py',commit,archive]+extra
  try:m.main()
  except RuntimeError:pass
  else:raise AssertionError('Unapproved option accepted')
- assert len(downloads)==before and len(calls)==5
+ assert len(downloads)==before and len(calls)==3
 `;
   const result = spawnSync("python3", ["-c", check, script], { encoding: "utf8", timeout: 20_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);

@@ -18,7 +18,15 @@ Mỗi tiến trình chỉ tổng hợp một phần cùng lúc, tối đa hai y�
 
 Worker phân biệt `provider-timeout`, `lease-lost`, `claim-timeout` và `storage`, kèm giai đoạn lỗi đã lọc. Mã `storage` ở bản trước từng gộp cả timeout nên không chứng minh MongoDB hoặc ổ đĩa bị lỗi. Timeout nhà cung cấp được lên lịch thử lại ở lượt quét sau để các đoạn khác tiếp tục; không giữ cả kho chờ bốn lần timeout của một đoạn. Đồng hồ yêu cầu nhà cung cấp kết thúc trước khi lưu GridFS. Metadata worker có giới hạn 20 giây, các stream GridFS 30 giây, heartbeat 10 giây; giới hạn đọc của người học vẫn là 5/20 giây như dưới đây. Lỗi cập nhật tiến độ không tạo lại audio đã hoàn tất hoặc đếm một đoạn hai lần. File hoàn chỉnh được giữ khi kết quả ghi trạng thái chưa rõ, để lượt sau xác minh và dùng lại. Lượt quét bị ngắt không thay tổng ngân hàng bằng số đã quét một phần.
 
-Chạy `--inspect` chỉ đọc trạng thái; `--once --max-clips 32` chuẩn bị một lượt; `--watch --max-clips 32 --max-retries 3 --interval-seconds 60` tiếp tục quét. Chỉ dùng `--resume` sau khi xử lý lỗi quyền/hạn mức. CLI yêu cầu đúng origin production và cấu hình hai tài khoản riêng để mở key đã mã hóa; không seed hoặc ghi vào dữ liệu người học.
+Chạy `--inspect` chỉ đọc trạng thái. Pregeneration mặc định có ngân sách 0,
+nên `--once`/`--watch`/`--resume` không tự cho phép phát sinh request trả phí.
+Muốn cấp ngân sách phải nêu đồng thời `--max-provider-requests` và
+`--max-input-characters`; bộ đếm áp dụng ngay trước fetch, sau cache lookup,
+tính cả retry và request lỗi. Ký tự là độ dài JSON gửi đi gồm lời thoại và
+instructions, không phải số USD hay token thanh toán. Watch giữ chung ngân
+sách qua các lượt quét và kết thúc khi hết. Cache clip/turn sẵn có vẫn được
+dùng không tốn ngân sách. CLI yêu cầu đúng origin production và cấu hình hai
+tài khoản riêng để mở key đã mã hóa; không sửa dữ liệu người học.
 
 ## Quyền truy cập và lượt nghe
 

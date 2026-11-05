@@ -48,12 +48,18 @@ model bằng key hiện tại cùng hai yêu cầu JSON tổng hợp nhỏ (obje
 schema) trong container riêng có giới hạn tài nguyên. Xem
 [phạm vi và cách xác minh nâng model](openai-model-upgrade.md).
 
-Cờ `--prepare-duo-exams` tạo ngân hàng và audio Duo riêng trong image mới
-trước khi thay app. Cờ này có thể dùng cùng `--upgrade-text-models`. Job giữ
-app cũ chạy, có giới hạn RAM/CPU, kiểm tra dự phòng mỗi 15 giây và chỉ xác
-nhận sẵn sàng khi toàn bộ audio riêng đã tạo xong. Nếu bị ngắt, cache riêng
-đã tạo được giữ để tiếp tục; chỉ container job đúng sở hữu bị dừng/xóa. Xem
+Cờ `--cached-audio-only` cập nhật app và giữ audio có sẵn, không gọi TTS hoặc
+thử model AI. Không thể kết hợp với `--upgrade-text-models`. Bước tạo hàng
+loạt `--prepare-duo-exams` đã bị loại bỏ; helper từ chối cờ cũ trước khi tải
+module/build. Audio còn thiếu tiếp tục chặn phần thi đó trước khi chạy đồng
+hồ, không được tự tạo trong request của người học. Xem
 [phạm vi đề riêng và chấm đáp án](private-duo-exams.md).
+
+`deploy/inspect-exam-audio.py` kiểm tra từng bài Listening công khai, bài Duo
+riêng và câu đầu vào bằng cache metadata. Helper không gọi provider, không
+seed/repair và không tạo audio; báo cáo phân biệt bài đủ toàn bộ phần nghe
+với bài còn thiếu, theo band/format. Job kiểm tra riêng có giới hạn tài nguyên
+và không chạy bên trong cgroup của app đang phục vụ.
 
 Kiểm tra helper trong cloud:
 

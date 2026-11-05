@@ -3,6 +3,7 @@ import { GridFSBucket, MongoGridFSChunkError, type Collection, type GridFSFile, 
 import type { ContentSection } from "../shared/types";
 import { buildSpeechScript, chunkSpeechTurns, type SpeechTurn } from "../shared/speech-script";
 import { ApiError } from "./errors";
+import type { SpeechGenerationBudget } from "./speech-budget";
 import type { Database } from "./storage";
 
 type Provider = "openai" | "elevenlabs";
@@ -286,7 +287,7 @@ interface SegmentStore {
   write(plan: Plan, result: SpeechAudioResult): Promise<void>;
 }
 
-async function synthesizePlan(plan: Plan, externalSignal?: AbortSignal, segments?: SegmentStore): Promise<SpeechAudioResult> {
+async function synthesizePlan(plan: Plan, externalSignal?: AbortSignal, segments?: SegmentStore, budget?: SpeechGenerationBudget): Promise<SpeechAudioResult> {
   return withGenerationSlot(async () => {
     // Queuing behind another job must not consume this job's provider deadline.
     const deadline = Date.now() + GENERATION_TIMEOUT_MS;
@@ -325,10 +326,14 @@ async function synthesizePlan(plan: Plan, externalSignal?: AbortSignal, segments
       let buffer: Buffer;
       try {
         if (externalSignal?.aborted) abort();
+        const body = JSON.stringify(inputs[index].body);
+        // Already cached paid turns returned above. Reserve synchronously only
+        // for a real provider attempt, including failed attempts and retries.
+        budget?.consume(body.length);
         const response = await fetch(provider === "openai" ? "https://api.openai.com/v1/audio/speech" : "https://api.elevenlabs.io/v1/text-to-dialogue?output_format=pcm_24000", {
           method: "POST", signal: controller.signal,
           headers: { "Content-Type": "application/json", Accept: "application/octet-stream", ...(provider === "openai" ? { Authorization: `Bearer ${key}` } : { "xi-api-key": key }) },
-          body: JSON.stringify(inputs[index].body),
+          body,
         });
         stage = "provider-response";
         if (!response.ok) throw await responseError(provider, response, controller.signal);
@@ -374,8 +379,8 @@ async function synthesizePlan(plan: Plan, externalSignal?: AbortSignal, segments
   });
 }
 
-export async function synthesizeSpeechAudio(sections: ContentSection[]): Promise<SpeechAudioResult> {
-  return synthesizePlan(makePlan(sections));
+export async function synthesizeSpeechAudio(sections: ContentSection[], budget?: SpeechGenerationBudget): Promise<SpeechAudioResult> {
+  return synthesizePlan(makePlan(sections), undefined, undefined, budget);
 }
 
 interface AudioJob {
@@ -413,12 +418,12 @@ export class SpeechAudioCache {
   }
 
   /** Background workers only: this entry point may make paid provider calls. */
-  async get(sections: ContentSection[], signal?: AbortSignal): Promise<CachedResult> {
+  async get(sections: ContentSection[], signal?: AbortSignal, budget?: SpeechGenerationBudget): Promise<CachedResult> {
     const plans = makePlans(sections), results: CachedResult[] = [];
     let bytes = 44;
     for (const plan of plans) {
       if (signal?.aborted) throw interrupted(signal);
-      const result = await this.getSection(plan, signal);
+      const result = await this.getSection(plan, signal, budget);
       bytes += result.buffer.length - 44 + (results.length ? TURN_GAP_BYTES : 0);
       if (bytes > MAX_AUDIO_BYTES) throw new ApiError(400, "Audio vượt giới hạn dung lượng.");
       results.push(result);
@@ -426,10 +431,10 @@ export class SpeechAudioCache {
     return this.combine(plans, results);
   }
 
-  private async getSection(plan: Plan, signal?: AbortSignal): Promise<CachedResult> {
+  private async getSection(plan: Plan, signal?: AbortSignal, budget?: SpeechGenerationBudget): Promise<CachedResult> {
     const existing = this.inflight.get(plan.fingerprint);
     if (existing) return { ...await existing, cached: true };
-    const promise = this.getShared(plan, signal);
+    const promise = this.getShared(plan, signal, budget);
     this.inflight.set(plan.fingerprint, promise);
     try { return await promise; } finally { this.inflight.delete(plan.fingerprint); }
   }
@@ -532,7 +537,7 @@ export class SpeechAudioCache {
     return { buffer, mimetype: "audio/wav", provider: plan.configuration.provider, voiceCount: plan.voiceCount, cached: true };
   }
 
-  private async getShared(plan: Plan, signal?: AbortSignal): Promise<CachedResult> {
+  private async getShared(plan: Plan, signal?: AbortSignal, budget?: SpeechGenerationBudget): Promise<CachedResult> {
     await this.initialize();
     const deadline = Date.now() + GENERATION_TIMEOUT_MS + LEASE_MS;
     while (Date.now() < deadline) {
@@ -555,7 +560,7 @@ export class SpeechAudioCache {
         catch (error) { if (!(typeof error === "object" && error && "code" in error && error.code === 11000)) throw new SpeechCacheError("storage", "cache-metadata"); }
       }
       if (!acquired) acquired = Boolean(await speechStorageOperation("cache-metadata", () => this.jobs.findOneAndUpdate({ _id: plan.fingerprint, state: { $ne: "ready" }, $or: [{ leaseExpiresAt: { $lte: now } }, { leaseExpiresAt: { $exists: false } }] }, { $set: { state: "generating", owner, leaseExpiresAt } }, { returnDocument: "after", timeoutMS: WORKER_METADATA_TIMEOUT_MS })));
-      if (acquired) return this.generateClaimed(plan, owner, signal);
+      if (acquired) return this.generateClaimed(plan, owner, signal, budget);
       await new Promise<void>(resolve => setTimeout(resolve, POLL_MS));
     }
     throw new SpeechCacheError("claim-timeout", "claim-wait");
@@ -573,7 +578,7 @@ export class SpeechAudioCache {
     } catch { await upload.abort().catch(() => undefined); throw new SpeechCacheError("storage", "cache-write"); }
   }
 
-  private async generateClaimed(plan: Plan, owner: string, signal?: AbortSignal): Promise<CachedResult> {
+  private async generateClaimed(plan: Plan, owner: string, signal?: AbortSignal, budget?: SpeechGenerationBudget): Promise<CachedResult> {
     const controller = new AbortController();
     const abort = () => controller.abort(interrupted(signal));
     signal?.addEventListener("abort", abort, { once: true });
@@ -623,7 +628,7 @@ export class SpeechAudioCache {
           await renew();
           await this.upload(segment, result, "turn");
         },
-      });
+      }, budget);
       await renew();
       uploadedId = await this.upload(plan, result, "section");
       await renew();

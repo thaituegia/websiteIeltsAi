@@ -8,6 +8,7 @@ import { ensureExclusiveDuoBank } from "./duo-exam-content";
 
 export function parseSpeechPrewarmArguments(args: string[]) {
   let mode: "inspect" | "once" | "watch" = "inspect", selected = false, maxClips = 32, maxRetries = 3, intervalMs = 60_000, resume = false, duoOnly = false;
+  let maxProviderRequests: number | undefined, maxInputCharacters: number | undefined;
   const number = (value: string | undefined, min: number, max: number) => {
     if (!value || !/^\d+$/u.test(value) || Number(value) < min || Number(value) > max) throw new Error("Invalid speech pregeneration bound.");
     return Number(value);
@@ -22,10 +23,17 @@ export function parseSpeechPrewarmArguments(args: string[]) {
     else if (arg === "--interval-seconds") intervalMs = number(args[++index], 1, 3600) * 1000;
     else if (arg === "--resume") resume = true;
     else if (arg === "--duo-only" && !duoOnly) duoOnly = true;
-    else throw new Error("Usage: speech-prewarm-cli.ts --inspect | --once | --watch [--max-clips 32] [--max-retries 3] [--interval-seconds 60] [--resume] [--duo-only]");
+    else if (arg === "--max-provider-requests" && maxProviderRequests === undefined) maxProviderRequests = number(args[++index], 0, 10_000);
+    else if (arg === "--max-input-characters" && maxInputCharacters === undefined) maxInputCharacters = number(args[++index], 0, 10_000_000);
+    else throw new Error("Usage: speech-prewarm-cli.ts --inspect | --once | --watch [--max-clips 32] [--max-retries 3] [--interval-seconds 60] [--resume] [--duo-only] [--max-provider-requests N --max-input-characters N]");
   }
   if (mode === "inspect" && resume) throw new Error("Read-only inspection cannot resume a paused worker.");
-  return { mode, maxClips, maxRetries, intervalMs, resume, ...(duoOnly ? { scope: "duo" as const } : {}) };
+  if ((maxProviderRequests === undefined) !== (maxInputCharacters === undefined))
+    throw new Error("Both provider-request and input-character bounds are required together.");
+  if (mode === "inspect" && maxProviderRequests !== undefined)
+    throw new Error("Read-only inspection does not accept a paid-generation allowance.");
+  return { mode, maxClips, maxRetries, intervalMs, resume, ...(duoOnly ? { scope: "duo" as const } : {}),
+    ...(maxProviderRequests !== undefined ? { maxProviderRequests, maxInputCharacters: maxInputCharacters! } : {}) };
 }
 
 export async function speechPrewarmMain(args = process.argv.slice(2)): Promise<void> {

@@ -33,20 +33,22 @@ thường. Chỉ lượt thi thuộc người học và assessment đã giao m�
 Đáp án vẫn bị ẩn trước khi nộp; xem lại, nghe audio và lưu/dịch từ dùng ngữ
 cảnh của đúng lượt thuộc người học. Biết trước một ID không cho phép đọc đề.
 
-264 bản audio riêng được tạo trước qua `speech-prewarm-cli.ts --once
---duo-only --max-clips 4096 --max-retries 3 --resume`. Manifest `bank:duo`
+Ngân hàng riêng có 264 nguồn audio. Manifest `bank:duo`
 tách khỏi manifest `bank` của audio cũ; bộ nhớ đệm audio dùng chung tiếp tục
 bỏ qua file đã có. `--inspect --duo-only` chỉ đọc và không khởi tạo ngân hàng.
 Đồng hồ thi chỉ bắt đầu sau khi audio của bộ đề được chọn đã sẵn sàng.
 
-Deploy riêng app dùng thêm `--prepare-duo-exams`. Sau build và kiểm tra hash
-ngân hàng công khai, helper chạy image mới để tạo audio trong container riêng,
-trước khi thay app đang chạy. Job tối đa 512 MiB RAM, không thêm swap, 0,25
-CPU, chỉ hai mạng của IELTS và không có port/mount. Helper kiểm tra 1 GiB RAM
-dự phòng mỗi 15 giây, dừng đúng job đã xác minh nếu thiếu RAM/bị ngắt/quá bốn
-giờ; app cũ và cache đã tạo được giữ lại. Thành công cần manifest complete,
-ready bằng total, pending và failed bằng 0. Tạo audio mới phát sinh phí TTS;
-không tạo lại các clip công khai đã có và không gọi TTS khi người học bấm nghe.
+Deploy riêng app dùng `--cached-audio-only`, không tạo thêm audio. Cờ tạo toàn
+bộ kho `--prepare-duo-exams` đã bị gỡ để tránh phát sinh chi phí ngoài ý muốn.
+Các file và turn đã tạo được giữ nguyên, kể cả khi lần chuẩn bị cũ bị ngắt.
+Đề còn thiếu audio không bắt đầu tính giờ và không tự gọi TTS.
+
+Pregeneration mặc định có ngân sách 0 request/0 ký tự. Nếu chủ website muốn
+tạo thêm trong tương lai, CLI yêu cầu khai báo đồng thời trần request provider
+và ký tự JSON gửi lên; retry/lỗi vẫn trừ trần, cache không trừ. Watch dùng cùng
+một ngân sách suốt tiến trình và dừng khi hết, không tự cấp ngân sách mới ở
+lượt quét sau. Đây là giới hạn kỹ thuật theo lần chạy, không phải trần USD.
+Không thay fingerprint/giọng/model của cache để giữ khả năng tái sử dụng.
 
 # Chấm đáp án ngắn
 
