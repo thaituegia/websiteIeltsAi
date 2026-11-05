@@ -2,6 +2,7 @@ import { createDecipheriv, hkdfSync } from "node:crypto";
 import { z } from "zod";
 import type { DuoCredentialSettings } from "./duo-auth";
 import { sealedProviderConfig } from "./provider-sealed";
+import { OPENAI_TEXT_MODEL_ROLES, resolveOpenAITextModel } from "./openai-text-model";
 
 const sealedSchema = z.object({
   version: z.literal(1),
@@ -45,14 +46,16 @@ export function unlockProviderConfig(settings: DuoCredentialSettings, input: unk
 }
 export function activateProviderConfig(settings: DuoCredentialSettings, env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.IELTS_OPENAI_API_KEY?.trim() || env.OPENAI_API_KEY?.trim()) {
+    for (const role of OPENAI_TEXT_MODEL_ROLES) env[role] = resolveOpenAITextModel(role, env);
     env.SPEAKING_AUDIO_MODEL ||= "gpt-audio";
     return true;
   }
   const payload = unlockProviderConfig(settings);
   if (!payload || (env.NODE_ENV === "production" && env.APP_ORIGIN !== sealedProviderConfig.origin)) return false;
   env.IELTS_OPENAI_API_KEY = payload.key;
-  env.SCORING_MODEL ||= payload.scoringModel;
-  env.EXTRACTOR_MODEL ||= payload.scoringModel;
+  // Legacy sealed metadata remains decryptable; current public defaults are
+  // independent of the historical model packaged with the private key.
+  for (const role of OPENAI_TEXT_MODEL_ROLES) env[role] = resolveOpenAITextModel(role, env);
   env.TRANSCRIPTION_MODEL ||= payload.transcriptionModel;
   env.SPEAKING_AUDIO_MODEL ||= payload.speakingAudioModel;
   return true;

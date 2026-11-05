@@ -28,6 +28,70 @@ DIAGNOSTIC_SHA = '8ba0383c4c02303e27bd92591d6b58ea5c5987d7d3a88f5f99b30d0e79d067
 LIVE_DIR = pathlib.Path('/opt/websiteIeltsAi-20261007T172235Z-7D7gnc')
 PROJECT = 'website-ielts-ai-20261007172235-7d7gnc'
 ORIGIN = 'https://sutonghanyu.vn'
+TEXT_MODEL = 'gpt-6.1-sol'
+TEXT_MODEL_ROLES = ('CONTENT_MODEL', 'EXTRACTOR_MODEL', 'SCORING_MODEL', 'TRANSLATION_MODEL')
+TEXT_MODEL_PROBE = r'''
+const model = "gpt-6.1-sol";
+const result = {ok:false, model, code:"probe-unavailable"};
+const failure = status => status === 401 || status === 403 ? "access-denied" : status === 404 ? "model-unavailable" : status === 429 ? "rate-or-quota" : "probe-rejected";
+async function boundedJson(response) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("missing-response");
+  const chunks = []; let size = 0;
+  for (;;) {
+    const item = await reader.read();
+    if (item.done) break;
+    size += item.value.byteLength;
+    if (size > 65536) { await reader.cancel(); throw new Error("oversized-response"); }
+    chunks.push(item.value);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+try {
+  const {loadDuoCredentials} = await import("/app/server/duo-auth.ts");
+  const {activateProviderConfig} = await import("/app/server/provider-config.ts");
+  activateProviderConfig(loadDuoCredentials());
+  const key = process.env.IELTS_OPENAI_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
+  if (!key) result.code = "missing-key";
+  else {
+    const lookup = await fetch("https://api.openai.com/v1/models/" + model, {
+      method:"GET", redirect:"error", headers:{Authorization:"Bearer " + key}, signal:AbortSignal.timeout(20000)
+    });
+    await lookup.body?.cancel();
+    if (!lookup.ok) result.code = failure(lookup.status);
+    else {
+      const formats = [{type:"json_object"}, {type:"json_schema",json_schema:{name:"ielts_model_probe",strict:true,
+        schema:{type:"object",properties:{ok:{type:"boolean"}},required:["ok"],additionalProperties:false}}}];
+      result.ok = true;
+      for (const response_format of formats) {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method:"POST", redirect:"error", headers:{Authorization:"Bearer " + key,"Content-Type":"application/json"},
+          signal:AbortSignal.timeout(90000),
+          body:JSON.stringify({model,max_completion_tokens:2048,response_format,messages:[
+            {role:"system",content:"Return only the JSON object {\"ok\":true}. This is a synthetic API compatibility check."},
+            {role:"user",content:"Return the requested JSON object."}
+          ]})
+        });
+        if (!response.ok) { result.code = failure(response.status); await response.body?.cancel(); result.ok = false; break; }
+        const envelope = await boundedJson(response);
+        const choice = envelope?.choices?.[0];
+        if (choice?.finish_reason === "length") result.code = "probe-incomplete";
+        else if (choice?.finish_reason !== "stop" || typeof choice?.message?.content !== "string") result.code = "probe-invalid";
+        else {
+          const value = JSON.parse(choice.message.content);
+          if (!value || Array.isArray(value) || value.ok !== true || Object.keys(value).length !== 1) result.code = "probe-invalid";
+          else result.code = "ready";
+        }
+        if (result.code !== "ready") { result.ok = false; break; }
+      }
+    }
+  }
+} catch (error) {
+  result.ok = false;
+  result.code = error?.name === "TimeoutError" || error?.name === "AbortError" ? "probe-timeout" : "probe-unavailable";
+}
+console.log(JSON.stringify(result));
+'''
 BANK_PROGRAM = '''import{createHash}from"node:crypto";
 const{contentBank,vocabularyBank,placementBank}=await import("/app/server/data/index.ts");
 console.log(createHash("sha256").update(JSON.stringify([contentBank,vocabularyBank,placementBank])).digest("hex"));'''
@@ -167,12 +231,15 @@ def compose_config(guards, base, override, unresolved=False):
                                     ['config', '--format', 'json'] + (['--no-env-resolution'] if unresolved else [])))
 
 
-def comparable_config(config):
+def comparable_config(config, upgrade_text_models=False):
     result = copy.deepcopy(config)
     app = result['services']['app']
     app.pop('image', None)
     app['build'].pop('context', None)
     app['build'].pop('dockerfile', None)
+    if upgrade_text_models:
+        for role in TEXT_MODEL_ROLES:
+            app['environment'].pop(role, None)
     return result
 
 
@@ -180,18 +247,121 @@ def config_environment(config):
     return {key: str(value).replace('$$', '$') for key, value in config['services']['app']['environment'].items()}
 
 
-def validate_config(current, proposed, values, app_memory):
-    if comparable_config(current) != comparable_config(proposed):
+def validate_config(current, proposed, values, app_memory, upgrade_text_models=False):
+    if comparable_config(current, upgrade_text_models) != comparable_config(proposed, upgrade_text_models):
         raise RuntimeError('Compose mới thay đổi cấu hình ngoài image/source; chưa thay app.')
     if (int(current['services']['app'].get('mem_limit', 0)) != app_memory or
             int(proposed['services']['app'].get('mem_limit', 0)) != app_memory or app_memory <= 0):
         raise RuntimeError('Giới hạn RAM app không khớp bản đang chạy.')
+    current_environment = config_environment(current)
+    if any(values.get(key) != value for key, value in current_environment.items()):
+        raise RuntimeError('Cấu hình Compose khác app đang chạy; chưa thay app.')
+    expected = dict(current_environment)
+    if upgrade_text_models:
+        expected.update({role: TEXT_MODEL for role in TEXT_MODEL_ROLES})
+    if config_environment(proposed) != expected:
+        raise RuntimeError('Cấu hình model mới nằm ngoài thay đổi cho phép; chưa thay app.')
     for config in (current, proposed):
         environment = config_environment(config)
-        if any(values.get(key) != value for key, value in environment.items()):
-            raise RuntimeError('Cấu hình Compose khác app đang chạy; chưa thay app.')
         if credentials(environment.get('DUO_ACCOUNTS_JSON')) != credentials(values.get('DUO_ACCOUNTS_JSON')):
             raise RuntimeError('Tài khoản khác app đang chạy; chưa thay app.')
+
+
+def cleanup_model_probe(guards, name, image, operation):
+    # A timed-out Docker client must never leave its private probe running.
+    # Resolve the exact ephemeral name, then verify every ownership field before
+    # removing only that immutable container ID. No broad cleanup is permitted.
+    query = ['docker', 'ps', '-aq', '--no-trunc', '--filter', 'name=^/' + name + '$']
+    identifiers = guards.command(query, timeout=20).split()
+    if not identifiers:
+        return
+    if len(identifiers) != 1 or not re.fullmatch(r'[a-f0-9]{64}', identifiers[0]):
+        raise RuntimeError('Không xác minh được container kiểm tra model; giữ app hiện tại.')
+    identifier = identifiers[0]
+    template = ('{"Id":{{json .Id}},"Image":{{json .Image}},"Name":{{json .Name}},'
+                '"Labels":{{json .Config.Labels}}}')
+    try:
+        row = json.loads(guards.command(['docker', 'inspect', '--format', template, identifier], timeout=20))
+    except Exception:
+        if not guards.command(query, timeout=20).split():
+            return
+        raise RuntimeError('Không xác minh được container kiểm tra model; giữ app hiện tại.') from None
+    labels = row.get('Labels') or {}
+    if (row.get('Id') != identifier or row.get('Image') != image or row.get('Name') != '/' + name or
+            labels.get('com.websiteieltsai.project') != PROJECT or
+            labels.get('com.websiteieltsai.kind') != 'model-probe' or
+            labels.get('com.websiteieltsai.operation-id') != operation):
+        raise RuntimeError('Quyền sở hữu container kiểm tra model không khớp; giữ app hiện tại.')
+    try:
+        guards.command(['docker', 'rm', '--force', identifier], timeout=30)
+    except Exception:
+        # --rm may win the race after inspection. Missing is the only safe
+        # success condition; never retry against an unverified replacement.
+        if not guards.command(query, timeout=20).split():
+            return
+        raise RuntimeError('Chưa xác nhận dọn container kiểm tra model; giữ app hiện tại.') from None
+    if guards.command(query, timeout=20).split():
+        raise RuntimeError('Chưa xác nhận dọn container kiểm tra model; giữ app hiện tại.')
+
+
+def check_text_model(guards, original, values, audit):
+    # Reuse the old image's private provider bootstrap inside a separate,
+    # resource-bounded container. A probe must not consume the running app's
+    # cgroup allowance. It receives no database network, mounts or learner data.
+    guards.memory_headroom(512)
+    roles = ('IELTS_OPENAI_API_KEY', 'OPENAI_API_KEY', 'APP_ORIGIN', 'NODE_ENV',
+             'DUO_ENABLED', 'DUO_CREDENTIALS_FILE', 'DUO_ACCOUNTS_JSON')
+    private_values = {key: values[key] for key in roles if key in values}
+    if any(not isinstance(value, str) or re.search(r'[\x00\r\n]', value) for value in private_values.values()):
+        raise RuntimeError('Cấu hình provider không phù hợp cho kiểm tra riêng; giữ app hiện tại.')
+    path = audit / 'model-probe.env'
+    operation = os.urandom(6).hex()
+    name = PROJECT + '-model-probe-' + operation
+    raw = None
+    created, started = False, False
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        created = True
+        with os.fdopen(descriptor, 'w') as output:
+            output.write(''.join(key + '=' + value + '\n' for key, value in private_values.items()))
+        started = True
+        raw = guards.command(['docker', 'run', '--rm', '--name', name,
+                              '--label', 'com.websiteieltsai.project=' + PROJECT,
+                              '--label', 'com.websiteieltsai.kind=model-probe',
+                              '--label', 'com.websiteieltsai.operation-id=' + operation,
+                              '--env-file', str(path), '--network', PROJECT + '_web',
+                              '--memory=512m', '--memory-swap=512m', '--cpus=0.5', '--pids-limit=64',
+                              '--read-only', '--cap-drop=ALL', '--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=32m',
+                              '--security-opt=no-new-privileges:true', '--user=node', '--entrypoint=node',
+                              original['Image'], '--import', 'tsx', '--input-type=module', '-e', TEXT_MODEL_PROBE], timeout=240)
+    except Exception:
+        pass
+    finally:
+        if created:
+            path.unlink(missing_ok=True)
+        if started:
+            try:
+                cleanup_model_probe(guards, name, original['Image'], operation)
+            except Exception:
+                raise RuntimeError('Chưa xác nhận dọn container kiểm tra model; app hiện tại được giữ nguyên.') from None
+    try:
+        if not isinstance(raw, str):
+            raise ValueError('unavailable-probe')
+        if len(raw) > 4096:
+            raise ValueError('oversized-probe')
+        result = json.loads(raw)
+        if (isinstance(result, dict) and set(result).issubset({'ok', 'model', 'code'}) and
+                result.get('ok') is True and result.get('model') == TEXT_MODEL and
+                result.get('code', 'ready') == 'ready'):
+            return {'ok': True, 'model': TEXT_MODEL}
+        code = result.get('code') if isinstance(result, dict) else None
+    except Exception:
+        code = None
+    allowed = {'access-denied', 'model-unavailable', 'rate-or-quota', 'probe-rejected', 'missing-key',
+               'probe-incomplete', 'probe-invalid', 'probe-timeout', 'probe-unavailable'}
+    code = code if isinstance(code, str) and code in allowed else 'probe-unavailable'
+    raise RuntimeError('Model ' + TEXT_MODEL + ' chưa sẵn sàng (' + code +
+                       '). App cũ vẫn chạy; chưa build hoặc thay cấu hình.')
 
 
 def file_snapshot(paths):
@@ -231,7 +401,7 @@ def healthy(guards, diagnostic, expected_image=None):
     return app
 
 
-def deploy(guards, diagnostic, commit, archive_sha):
+def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False):
     owned(LIVE_DIR, directory=True)
     private = LIVE_DIR / '.local/deploy'
     owned(private, directory=True, private=True)
@@ -245,10 +415,10 @@ def deploy(guards, diagnostic, commit, archive_sha):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('Project này đang có lượt cập nhật khác.') from None
-        update_locked(guards, diagnostic, commit, archive_sha, private)
+        update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models)
 
 
-def update_locked(guards, diagnostic, commit, archive_sha, private):
+def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models=False):
     base_file, domain, release = LIVE_DIR / 'deploy/compose.yaml', private / 'domain.compose.yaml', private / 'release.compose.yaml'
     protected = [private / 'deploy.env', private / 'app.env', base_file, domain, LIVE_DIR / 'deploy/compose.sh',
                  LIVE_DIR / 'deploy/nginx.conf', private / 'tls/site.crt']
@@ -264,6 +434,7 @@ def update_locked(guards, diagnostic, commit, archive_sha, private):
     networks = network_identity(guards, rows)
     values = guards.env_values(original['Config']['Env'])
     settings = credentials(values['DUO_ACCOUNTS_JSON'])
+    validate_config(current, current, values, original['HostConfig']['Memory'])
     old_image_ref = current['services']['app'].get('image')
     if not old_image_ref or guards.command(['docker', 'image', 'inspect', '--format', '{{.Id}}', old_image_ref]).strip() != original['Image']:
         raise RuntimeError('Image Compose hiện tại không khớp app đang chạy.')
@@ -312,6 +483,10 @@ def update_locked(guards, diagnostic, commit, archive_sha, private):
     source = release_dir / 'source'
     source.mkdir(mode=0o700)
     (audit / 'release.compose.before').write_bytes(release_bytes)
+    if upgrade_text_models:
+        print('Đang kiểm tra quyền truy cập và JSON của model ' + TEXT_MODEL + '; app hiện tại vẫn chạy.', flush=True)
+        probe = check_text_model(guards, original, values, audit)
+        (audit / 'model-probe.json').write_text(json.dumps(probe) + '\n')
     print('Đang tải và build app mới; app hiện tại vẫn phục vụ. Log riêng: ' + str(audit), flush=True)
     archive = audit / 'source.tar.gz'
     download('https://codeload.github.com/thaituegia/websiteIeltsAi/tar.gz/' + commit, archive_sha, archive, 128 * 1024 * 1024)
@@ -335,8 +510,15 @@ def update_locked(guards, diagnostic, commit, archive_sha, private):
     candidate = audit / 'release.compose.new'
     candidate.write_text('services:\n  app:\n    image: ' + image + '\n    build:\n      context: ' + str(source) +
                          '\n      dockerfile: deploy/Dockerfile.release\n    env_file:\n      - ' + json.dumps(str(duo_env)) + '\n')
+    model_values = ({role: TEXT_MODEL for role in TEXT_MODEL_ROLES} if upgrade_text_models else
+                    {role: config_environment(current)[role] for role in TEXT_MODEL_ROLES
+                     if role in config_environment(current)})
+    if model_values:
+        with candidate.open('a') as output:
+            output.write('    environment:\n' + ''.join('      ' + role + ': ' + json.dumps(value.replace('$', '$$')) + '\n'
+                                                       for role, value in model_values.items()))
     proposed = compose_config(guards, base, candidate)
-    validate_config(current, proposed, values, original['HostConfig']['Memory'])
+    validate_config(current, proposed, values, original['HostConfig']['Memory'], upgrade_text_models)
 
     def unchanged(app_id):
         if (guards.running_snapshot(app_id) != before_other or not listeners.issubset(set(guards.listener_snapshot())) or
@@ -360,12 +542,11 @@ def update_locked(guards, diagnostic, commit, archive_sha, private):
         replacement = healthy(guards, diagnostic, image_id)
         if network_identity(guards, {**rows, 'app': replacement}) != networks:
             raise RuntimeError('Mạng app mới không khớp mạng ban đầu.')
-        if guards.env_values(replacement['Config']['Env']) != values:
-            # Base image metadata variables may change; only application-owned
-            # resolved settings are authoritative, and must remain identical.
-            new_values = guards.env_values(replacement['Config']['Env'])
-            if any(new_values.get(key) != value for key, value in config_environment(current).items()):
-                raise RuntimeError('Cấu hình app mới khác cấu hình cũ.')
+        # Base image metadata may change. Every application-owned value must
+        # match the validated proposal, including each explicitly migrated role.
+        new_values = guards.env_values(replacement['Config']['Env'])
+        if any(new_values.get(key) != value for key, value in config_environment(proposed).items()):
+            raise RuntimeError('Cấu hình app mới khác cấu hình đã xác minh.')
         unchanged(replacement['Id'])
     except BaseException:
         # This path performs no data migration. Restore the actual immutable old
@@ -382,15 +563,22 @@ def update_locked(guards, diagnostic, commit, archive_sha, private):
         except BaseException:
             raise RuntimeError('Cập nhật chưa đạt và chưa xác nhận phục hồi app cũ. Giữ log riêng: ' + str(audit)) from None
         raise RuntimeError('Cập nhật chưa đạt; đã phục hồi app cũ healthy. Log riêng: ' + str(audit)) from None
-    (audit / 'complete.json').write_text(json.dumps({'status': 'verified', 'commit': commit, 'image': image_id,
-                                                   'bankUnchanged': True, 'onlyAppReplaced': True}) + '\n')
+    receipt = {'status': 'verified', 'commit': commit, 'image': image_id,
+               'bankUnchanged': True, 'onlyAppReplaced': True}
+    if upgrade_text_models:
+        receipt['textModels'] = {role: TEXT_MODEL for role in TEXT_MODEL_ROLES}
+    (audit / 'complete.json').write_text(json.dumps(receipt) + '\n')
     print('HOÀN TẤT: ' + ORIGIN + ' — app mới healthy; không chạy migration/reset hoặc tạo lại audio.', flush=True)
+    if upgrade_text_models:
+        print('Model text đã cập nhật: ' + TEXT_MODEL + ' (' + ', '.join(TEXT_MODEL_ROLES) + ').', flush=True)
 
 
 def main():
-    if (os.geteuid() != 0 or len(sys.argv) != 3 or not re.fullmatch(r'[a-f0-9]{40}', sys.argv[1]) or
-            not re.fullmatch(r'[a-f0-9]{64}', sys.argv[2])):
-        raise RuntimeError('Chạy bằng root với commit đầy đủ và SHA256 archive.')
+    if (os.geteuid() != 0 or len(sys.argv) not in (3, 4) or not re.fullmatch(r'[a-f0-9]{40}', sys.argv[1]) or
+            not re.fullmatch(r'[a-f0-9]{64}', sys.argv[2]) or
+            (len(sys.argv) == 4 and sys.argv[3] != '--upgrade-text-models')):
+        raise RuntimeError('Chạy bằng root với commit đầy đủ, SHA256 archive và tùy chọn --upgrade-text-models nếu cần.')
+    upgrade_text_models = len(sys.argv) == 4
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix='ielts-app-update-', dir='/tmp') as folder:
         folder = pathlib.Path(folder)
@@ -400,7 +588,7 @@ def main():
             download('https://raw.githubusercontent.com/thaituegia/websiteIeltsAi/' + sys.argv[1] + '/deploy/' + name,
                      digest, path, 1024 * 1024)
             modules.append(checked_module(path, 'ielts_app_update_' + name.replace('-', '_').replace('.', '_')))
-        deploy(*modules, *sys.argv[1:])
+        deploy(*modules, *sys.argv[1:3], upgrade_text_models=upgrade_text_models)
 
 
 if __name__ == '__main__':

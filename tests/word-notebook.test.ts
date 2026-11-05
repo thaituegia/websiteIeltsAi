@@ -131,7 +131,7 @@ test("native HTTP word notebook saves privately and translates only completed, a
     assert.equal(init?.method, "POST");
     assert.equal(typeof init?.body, "string");
     const body = JSON.parse(init!.body as string);
-    assert.equal(body.model, "gpt-4o-mini");
+    assert.equal(body.model, "gpt-6.1-sol");
     providerCalls.push({ body, signal: init?.signal });
     if (providerMode === "held") {
       assert.ok(heldProvider);

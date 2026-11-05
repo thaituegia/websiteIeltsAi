@@ -108,7 +108,8 @@ Không commit credentials hoặc dùng `VITE_*` cho secrets. `.env.example` có 
 | `DUO_SESSIONS_PER_BAND`, `DUO_SESSIONS_BY_BAND` | Mặc định 20 buổi; override số buổi theo band bằng JSON server-owned. |
 | `DUO_PASS_PERCENT`, `DUO_STRICT_RETAKE_MODE` | Mặc định 70 và false; không nhận ngưỡng từ client. |
 | `IELTS_OPENAI_API_KEY` | OpenAI Writing/Speaking/content/STT và Listening nhiều giọng (`gpt-4o-mini-tts`); `OPENAI_API_KEY` là alias local. |
-| `CONTENT_MODEL`, `EXTRACTOR_MODEL`, `SCORING_MODEL`, `TRANSCRIPTION_MODEL`, `SPEAKING_AUDIO_MODEL` | Models server; bản cài đích dùng gpt-4o, whisper-1 và gpt-audio. |
+| `CONTENT_MODEL`, `EXTRACTOR_MODEL`, `SCORING_MODEL`, `TRANSLATION_MODEL` | Models văn bản phía server, mặc định `gpt-6.1-sol`; xem [cập nhật model OpenAI](docs/openai-model-upgrade.md). |
+| `TRANSCRIPTION_MODEL`, `SPEAKING_AUDIO_MODEL` | Models chuyên âm thanh: `whisper-1` nhận dạng, `gpt-audio` chấm bản ghi thực tế. |
 | `ELEVENLABS_API_KEY`, ba biến `ELEVENLABS_VOICE_*`, `ELEVENLABS_MODEL` | TTS nhiều nhân vật bằng voice IDs thực; mặc định model eleven_v3. |
 | `IELTS_AZURE_SPEECH_KEY`, `IELTS_AZURE_SPEECH_REGION` | Phân tích âm học; aliases local Azure được hỗ trợ. |
 | `APP_ORIGIN`, `TRUST_PROXY` | HTTPS origin chính xác và proxy tin cậy; bắt buộc origin khi production. |

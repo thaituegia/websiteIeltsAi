@@ -70,7 +70,7 @@ Kết quả cụ thể/giới hạn phải đọc [validation.md](validation.md)
 
 ## Providers và hosting
 
-Luyện thường, Gate khách quan và lưu bài hoạt động không cần provider. OpenAI chấm Writing bằng `gpt-4o`, nhận dạng bằng `whisper-1` và chấm Speaking trực tiếp từ WAV bằng `gpt-audio`; Azure/ElevenLabs là lựa chọn bổ sung. Tất cả credentials nằm phía server. Speaking promotion cần âm thanh và đánh giá âm học hợp lệ; chỉ có transcript thì không xác định được phát âm/full band. Writing/Speaking chưa có band hợp lệ tiếp tục `pending-ai` và chưa nâng band; regrade dùng lại bài/bản ghi của owner sau khi provider sẵn sàng.
+Luyện thường, Gate khách quan và lưu bài hoạt động không cần provider. OpenAI mặc định dùng `gpt-6.1-sol` cho chấm văn bản, trích xuất, tạo nội dung và dịch từ; nhận dạng bằng `whisper-1` và chấm Speaking trực tiếp từ WAV bằng `gpt-audio`; Azure/ElevenLabs là lựa chọn bổ sung. Tất cả credentials nằm phía server. Speaking promotion cần âm thanh và đánh giá âm học hợp lệ; chỉ có transcript thì không xác định được phát âm/full band. Writing/Speaking chưa có band hợp lệ tiếp tục `pending-ai` và chưa nâng band; regrade dùng lại bài/bản ghi của owner sau khi provider sẵn sàng. Xem [cách nâng model cho bản cài đang có](openai-model-upgrade.md); biến môi trường ghi đè mặc định và API key hiện tại vẫn được giữ.
 
 Trong cloud secrets dùng `IELTS_OPENAI_API_KEY`; `OPENAI_API_KEY` là alias local. Azure cần region đã chọn và hostname speech đúng trong network policy; MongoDB ngoài cần hostname/mạng thực. Không tự đặt region, voice ID, URI hay key giả.
 

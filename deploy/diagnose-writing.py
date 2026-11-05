@@ -33,7 +33,7 @@ try {
   const key = process.env.IELTS_OPENAI_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
   output.configured = Boolean(key);
   output.configuration = key ? "available" : "missing-key";
-  const models = [process.env.EXTRACTOR_MODEL?.trim() || "gpt-4o", process.env.SCORING_MODEL?.trim() || "gpt-4o"];
+  const models = [process.env.EXTRACTOR_MODEL?.trim() || "gpt-6.1-sol", process.env.SCORING_MODEL?.trim() || "gpt-6.1-sol"];
   if (models.some(model => !/^(?:gpt-|chatgpt-|o[1-9])[a-zA-Z0-9._:-]{1,96}$/.test(model))) {
     output.configuration = "invalid-model-name";
   } else if (key) for (const model of [...new Set(models)]) {

@@ -39,6 +39,15 @@ Audit riêng nằm trong `.local/deploy/app-updates/`. Chỉ khi có
 SSH ngắt hoặc helper chưa báo hoàn tất, kiểm tra trạng thái app và audit trước
 khi chạy một lượt khác; không tự chạy lại updater ngân hàng học liệu.
 
+Riêng yêu cầu nâng model OpenAI dùng thêm cờ `--upgrade-text-models`.
+Chế độ này chỉ cho phép đổi `CONTENT_MODEL`, `EXTRACTOR_MODEL`,
+`SCORING_MODEL`, `TRANSLATION_MODEL` thành `gpt-6.1-sol` trong override mới.
+Các cấu hình khác, key, tài khoản và dữ liệu vẫn phải giữ nguyên; rollback
+khôi phục override trước đó, gồm model cũ. Trước khi build, helper kiểm tra
+model bằng key hiện tại cùng hai yêu cầu JSON tổng hợp nhỏ (object và strict
+schema) trong container riêng có giới hạn tài nguyên. Xem
+[phạm vi và cách xác minh nâng model](openai-model-upgrade.md).
+
 Kiểm tra helper trong cloud:
 
 ```bash

@@ -10,6 +10,7 @@ import type {
   TestType,
 } from "../shared/types";
 import { ApiError } from "./errors";
+import { openAITextCompletionParameters } from "./openai-text-model";
 import { createWritingEvidenceSource } from "./writing-evidence";
 import { parseSpeakingAudioResponse, speakingAudioEvidenceSchema, SpeakingAudioResponseError } from "./speaking-audio-response";
 import { createSpeakingEvidenceSource, SpeakingEvidenceError } from "./speaking-evidence-source";
@@ -315,10 +316,8 @@ async function structured<T>(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: process.env[role]?.trim() || "gpt-4o",
-        temperature: 0.2,
+        ...openAITextCompletionParameters(role),
         response_format: { type: "json_object" },
-        max_tokens: role === "CONTENT_MODEL" ? 12_000 : 7_000,
         messages: [
           {
             role: "system",

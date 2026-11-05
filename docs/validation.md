@@ -1,5 +1,37 @@
 # Kết quả kiểm tra
 
+## Nâng model văn bản OpenAI — 2026-11-05
+
+Model mặc định cho content/extraction/scoring/translation là `gpt-6.1-sol`,
+được đối chiếu với SDK OpenAI chính thức ở commit
+`738695092f2d8e9e092de7bd19f0994e0ba68e25`. Text requests dùng
+`max_completion_tokens`, không ép temperature/reasoning effort chưa xác minh.
+Key và sealed payload cũ vẫn tương thích; override model rõ ràng vẫn có hiệu
+lực. Audio grading, STT, TTS và fingerprint/cache audio giữ nguyên.
+
+Full TypeScript, release build và diff checks đạt. **314 kiểm thử native đạt**:
+272 hồi quy Writing/Speaking/evidence/retry/cache/regrade/audio review,
+content/word notebook/provider/diagnostic (gồm tám kiểm thử cấu hình/request
+model mới), cùng 42 kiểm thử updater app-only. Mock cũ của word notebook đã
+được đồng bộ với model mới; kiểm tra quyền, cache/ngữ cảnh từ, FSRS và bảo toàn
+dữ liệu tiếp tục đạt. Không lặp browser suite vì không đổi client hoặc public
+API response.
+
+Updater có cờ nâng model cố định, chỉ cho bốn vai trò sang target xác định;
+key/tài khoản/cấu hình khác không được thay. Container probe riêng chỉ nhận
+whitelist cấu hình provider/unlock qua env file 0600, dùng image cũ bất biến,
+mạng web riêng, RAM 512 MiB không thêm swap và 0,5 CPU. Env file luôn được dọn;
+container còn sót chỉ bị xóa sau khi kiểm tra đúng ID/image/name/nhãn sở hữu.
+Kiểm thử bao phủ timeout, tên trùng/nhãn sai, auto-remove race, từ chối quyền,
+response riêng không được in, CRLF trong env, khác target, model runtime sai,
+rollback và lần cập nhật thường sau nâng model. Guard 1 GiB RAM dự phòng và
+so sánh hash ngân hàng trước khi thay app giữ nguyên.
+
+Fixtures đều tổng hợp; chưa gọi model trả phí, chưa chấm bài người dùng và
+chưa triển khai trên VPS. Quyền model và hai định dạng JSON được thử bằng
+key hiện có trên VPS trước bước build; thử thành công không thay thế việc
+kiểm tra một bài Writing/Speaking thực tế sau triển khai.
+
 ## Speaking: chọn nguồn dẫn chứng thay vì chép lại câu — 2026-11-03
 
 Ảnh mới cho thấy bước cấu trúc đã qua nhưng đối chiếu trích dẫn bị `AI_EVIDENCE_INVALID`; ảnh không xác định câu nào hoặc carrier nào sai. Luồng chấm audio hiện gửi catalog đoạn nguyên văn có mã gắn với transcript hiện tại, và schema mỗi request giới hạn mã được chọn cho evidence tiêu chí, quote quan sát âm học và original của correction. Máy chủ phân giải cả ba thành đúng chuỗi gốc trước các gate cũ. Mã lạ/cũ/nguồn khác bị từ chối; không lấy một câu bất kỳ để bù dẫn chứng. Literal tương thích cũ chỉ được khôi phục NFC/khoảng trắng/dấu nháy, không chấp nhận sửa ngữ pháp, đổi hoa/thường hay diễn giải lại.
