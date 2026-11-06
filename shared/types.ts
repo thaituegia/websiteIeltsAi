@@ -386,6 +386,8 @@ export interface Attempt {
   integrity?: import("./exam-integrity").ExamIntegrityState;
   startedAt: string;
   deadlineAt: string | null;
+  /** Response-only authoritative clock sample; never trust the device clock for expiry. */
+  serverNow?: string;
   submittedAt: string | null;
   durationSeconds: number;
   responses: Record<string, string>;

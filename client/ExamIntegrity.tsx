@@ -31,6 +31,10 @@ let lastRoomHeartbeat = 0;
 const listeners = new Set<() => void>();
 const opening = new Map<string, Promise<ExamIntegritySession>>();
 const storageKey = "ielts-exam-tab-event";
+// A hung transport must release the in-flight slot before the server's 25s
+// lease expires, so a recovered connection gets another chance to acknowledge.
+const heartbeatTimeoutMs = 8000;
+const heartbeatNow = () => performance.now();
 
 function publish(next: Partial<MonitorState>) {
   monitor = { ...monitor, ...next };
@@ -134,7 +138,8 @@ export function initializeExamIntegrity(userId: string) {
       if (document.visibilityState === "hidden") violate("hidden");
     });
     window.addEventListener("pagehide", () => violate("page-exit"));
-    window.addEventListener("beforeunload", () => violate("page-exit"));
+    // beforeunload only signals an attempted navigation: a prompt can cancel
+    // it while this document remains visible. pagehide confirms real departure.
     window.setInterval(() => { void heartbeat(); void roomHeartbeat(); }, 5000);
   }
   announce("hello");
@@ -150,7 +155,7 @@ export function updateSharedRoom(room: DuoRoomView, assessmentId?: string, attem
   if (monitor.room?.id === room.id && Date.parse(monitor.room.serverNow) > Date.parse(room.serverNow)) return;
   if (monitor.room?.id === room.id && monitor.room.invalidated && !authoritative && !isExamInvalidated(room)) return;
   const activated = room.requiresPresence && (!monitor.room?.requiresPresence || monitor.room.id !== room.id);
-  if (heartbeatAck || activated || monitor.room?.id !== room.id) lastRoomHeartbeat = Date.now();
+  if (heartbeatAck || activated || monitor.room?.id !== room.id) lastRoomHeartbeat = heartbeatNow();
   publish({ room: {
     id: room.id, status: room.status, requiresPresence: !!room.requiresPresence,
     invalidated: isExamInvalidated(room), reason: room.integrityReason, serverNow: room.serverNow,
@@ -173,13 +178,13 @@ async function roomHeartbeat() {
   const room = monitor.room;
   if (!room || room.invalidated || ["completed", "cancelled", "invalidated"].includes(room.status) ||
       document.visibilityState === "hidden" || !roomRouteAllowed(room.id, currentRoute)) return;
-  if (room.requiresPresence && Date.now() - lastRoomHeartbeat >= 25_000) { violateRoom("heartbeat-lost"); return; }
+  if (room.requiresPresence && heartbeatNow() - lastRoomHeartbeat >= 25_000) { violateRoom("heartbeat-lost"); return; }
   // Visible members retain presence during grading, so a provider failure can
   // restore answering without treating that legitimate wait as a departure.
   if (roomHeartbeatPending === room.id) return;
   roomHeartbeatPending = room.id;
   try {
-    const result = await api<{ room: DuoRoomView }>(`/duo/rooms/${encodeURIComponent(room.id)}/heartbeat`, { method: "POST" });
+    const result = await api<{ room: DuoRoomView }>(`/duo/rooms/${encodeURIComponent(room.id)}/heartbeat`, { method: "POST", timeoutMs: heartbeatTimeoutMs });
     if (monitor.room?.id !== room.id || monitor.room.invalidated) return;
     updateSharedRoom(result.room, undefined, undefined, false, true);
   } catch { /* The presence watchdog also covers a request that never returns. */ }
@@ -199,7 +204,7 @@ export function useSharedRoomIntegrity(roomId?: string | null, assessmentId?: st
 async function heartbeat() {
   const session = monitor.session;
   if (!session || session.status !== "active" || submitting) return;
-  if (session.phase !== "grading" && Date.now() - lastHeartbeat >= session.leaseSeconds * 1000) {
+  if (session.phase !== "grading" && heartbeatNow() - lastHeartbeat >= session.leaseSeconds * 1000) {
     violate("heartbeat-lost");
     return;
   }
@@ -207,17 +212,17 @@ async function heartbeat() {
   heartbeatPendingSession = session.id;
   try {
     const result = await api<{ session: ExamIntegritySession }>(`/exam-integrity/${encodeURIComponent(session.id)}/heartbeat`, {
-      method: "POST", body: json({ tabId }),
+      method: "POST", body: json({ tabId }), timeoutMs: heartbeatTimeoutMs,
     });
     if (monitor.session?.id !== session.id || monitor.session.status !== "active") return;
-    lastHeartbeat = Date.now();
+    lastHeartbeat = heartbeatNow();
     publish({ session: result.session, error: "" });
     if (result.session.status === "active" && result.session.phase !== "grading") {
       if (document.visibilityState === "hidden") violate("hidden");
       else if (!routeAllowed(result.session, currentRoute)) violate("navigation");
     }
   } catch {
-    if (session.phase !== "grading" && Date.now() - lastHeartbeat >= session.leaseSeconds * 1000) violate("heartbeat-lost");
+    if (session.phase !== "grading" && heartbeatNow() - lastHeartbeat >= session.leaseSeconds * 1000) violate("heartbeat-lost");
   } finally {
     if (heartbeatPendingSession === session.id) heartbeatPendingSession = null;
   }
@@ -240,7 +245,7 @@ export async function openExamIntegrity(kind: ExamKind, resourceId: string, atte
       publish({ openingKey: "", error: "" });
       throw new Error("Giám sát bài thi chưa được bật.");
     }
-    lastHeartbeat = Date.now();
+    lastHeartbeat = heartbeatNow();
     submitting = false;
     publish({ session: result.session, openingKey: "", error: "" });
     if (document.visibilityState === "hidden") violate("hidden");
@@ -280,7 +285,7 @@ export async function resumeExamSubmission() {
           publish({ session: result.session });
       } catch { /* Restore monitoring below if the server cannot confirm completion. */ }
     }
-    lastHeartbeat = Date.now();
+    lastHeartbeat = heartbeatNow();
   }
   submitting = false;
   if (!wasSubmitting) await heartbeat();
@@ -324,10 +329,19 @@ export function ExamStartDialog({ onStart, onClose, busy = false }: { onStart: (
     <div className="row wrap"><Button disabled={busy} onClick={onStart}>Tôi hiểu, bắt đầu bài thi</Button><Button className="secondary" disabled={busy} onClick={onClose}>Quay lại</Button></div>
   </Modal>;
 }
-export function InvalidatedExam({ onRestart, href, busy = false }: { onRestart?: () => void; href?: string; busy?: boolean }) {
+export function InvalidatedExam({ onRestart, href, busy = false, reason }: { onRestart?: () => void; href?: string; busy?: boolean; reason?: string }) {
+  const explanation = reason === "heartbeat-lost"
+    ? "Kết nối giám sát giữa trình duyệt và máy chủ bị gián đoạn quá lâu nên phiên thi đã kết thúc."
+    : reason === "duplicate-tab"
+      ? "Hệ thống nhận được một trang khác đang mở cùng tài khoản trong lúc thi."
+      : reason === "hidden"
+        ? "Trình duyệt báo trang làm bài đã chuyển sang trạng thái không hiển thị."
+        : reason === "page-exit" || reason === "navigation"
+          ? "Trang làm bài đã bị đóng, tải lại hoặc chuyển sang trang khác."
+          : "Phiên thi đã kết thúc theo quy định giám sát. Nguyên nhân cụ thể chưa được xác nhận.";
   return <Card className="exam-integrity-invalidated">
     <AlertTriangle size={34} aria-hidden="true" /><h2>Bài thi đã bị hủy</h2>
-    <p>Phiên thi đã kết thúc vì rời trang, đổi tab, mở thêm trang hoặc mất kết nối giám sát. Toàn bộ câu trả lời đã bị xóa. Bài bị hủy không có điểm, đáp án hoặc phản hồi.</p>
+    <p>{explanation} Lượt bị hủy được đặt lại và không có điểm, đáp án hoặc phản hồi.</p>
     <p>Bắt đầu lượt mới để nhận bộ câu hỏi khác.</p>
     {onRestart && <Button disabled={busy} onClick={onRestart}>Bắt đầu lượt mới</Button>}
     {href && <a className="button" href={href}>Bắt đầu lượt mới</a>}

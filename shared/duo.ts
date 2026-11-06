@@ -57,6 +57,8 @@ export interface DuoAssessmentPart {
 }
 export interface DuoAssessmentView {
   id: string;
+  /** Shared Gate paper round; absent on historical assessments. */
+  paperRevision?: number;
   kind: "gate" | "promotion";
   band: number;
   gateId: string | null;

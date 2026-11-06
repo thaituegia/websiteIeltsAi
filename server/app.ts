@@ -890,6 +890,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
     const content = await contentOf(record.contentId);
     return {
       ...view,
+      serverNow: new Date(clockNow()).toISOString(),
       ...(session ? { integrity: { sessionId: session.id, status: session.status, phase: session.phase, ...(session.reason ? { reason: session.reason } : {}), ...(session.replacementResourceId ? { replacementResourceId: session.replacementResourceId } : {}) } } : {}),
       feedback: completedAttemptFeedback(record, content),
       content: sanitizeContent(
@@ -1505,6 +1506,14 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         idOf(request),
         false,
       );
+      const input = z.object({ timedOut: z.boolean().optional() }).parse(request.body ?? {});
+      if (input.timedOut && record.status === "in-progress" &&
+          (!record.deadlineAt || Date.parse(record.deadlineAt) > clockNow())) {
+        // A fast/wrong device clock may request timeout before the authoritative
+        // deadline. Confirm it is still live without claiming a grading lease.
+        response.json({ attempt: await attemptView(record), deadlinePending: true });
+        return;
+      }
       response.json({
         attempt: await attemptView(await submitAttempt(record)),
       });

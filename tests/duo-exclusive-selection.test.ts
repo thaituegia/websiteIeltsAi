@@ -6,6 +6,7 @@ import { ensureExclusiveDuoBank, isExclusiveDuoContentId } from "../server/duo-e
 import { ApiError } from "../server/errors";
 import { connectDatabase, type UserRecord } from "../server/storage";
 import type { ContentKind, StoredContent } from "../shared/types";
+import type { DuoRole } from "../shared/duo";
 
 interface BandFixture {
   lessons: { contentId: string | null }[];
@@ -116,4 +117,202 @@ test("Duo paper allocation stays private and never reuses ordinary failed or com
     assert.match(database.db.databaseName, /^ielts_duo_exclusive_test_[a-f0-9]{32}$/);
     try { await database.db.dropDatabase(); } finally { await database.client.close(); }
   }
+});
+
+interface SharedAssessment {
+  _id: string; userId: string; role: DuoRole; status: string; active: boolean; paperRevision?: number;
+  parts: { contentId: string; attemptId: string | null }[];
+}
+interface SharedGate {
+  id: string; contentIds: string[]; paperRevision?: number;
+  results: Record<DuoRole, { status: string; assessmentId: string; at: string } | null>;
+  paperReservations?: Partial<Record<DuoRole, { assessmentId: string; contentIds: string[]; paperRevision: number; reservedAt: string }>>;
+}
+interface SharedBand {
+  unlockedAt: string | null;
+  lessons: { number: number; completion: Record<DuoRole, unknown> }[];
+  gates: SharedGate[];
+}
+interface SharedPath {
+  _id: string; duoId: string; bands: Record<string, SharedBand>;
+}
+
+async function sharedGateFixture() {
+  const name = "ielts_gate_pair_test_" + randomUUID().replaceAll("-", "");
+  const database = await connectDatabase("mongodb://127.0.0.1:27017", name);
+  let clock = Date.parse("2026-11-06T12:00:00.000Z");
+  const iso = () => new Date(clock).toISOString();
+  const duoId = "synthetic-shared-" + randomUUID();
+  const users = Object.fromEntries((["husband", "wife"] as DuoRole[]).map(role => {
+    const id = duoId + ":" + role;
+    return [role, { _id: id, id, name: "Synthetic " + role, duoId, duoRole: role, email: role + "@fixture.invalid",
+      passwordHash: null, currentBand: 3, targetBand: 8, testType: "academic", examDate: null,
+      weeklyMinutes: 300, dailyMinutes: 45, cefr: "A2", createdAt: iso() } as UserRecord];
+  })) as Record<DuoRole, UserRecord>;
+  await database.users.insertMany(Object.values(users));
+  const lessons = skills.map(publicLesson);
+  await database.content.insertMany(lessons.map(content => ({ ...content, _id: content.id })));
+  let readiness: (() => Promise<void>) | undefined;
+  const service = createDuoService(database, { now: () => clock, ensureAudioReady: async () => { await readiness?.(); } });
+  await service.initialize();
+  const adapter = service as unknown as SelectionAdapter & {
+    startGate(user: UserRecord, gateId: string): Promise<SharedAssessment>;
+  };
+  const band = await adapter.buildBand(3, duoId, "academic") as unknown as SharedBand;
+  band.unlockedAt = iso();
+  for (const lesson of band.lessons.filter(lesson => lesson.number <= 5))
+    for (const role of ["husband", "wife"] as DuoRole[])
+      lesson.completion[role] = { at: iso(), proofIds: ["synthetic-earned-proof"], kind: "attempt" };
+  const paths = database.db.collection<SharedPath>("duo_learning_paths");
+  await paths.insertOne({ _id: duoId, duoId, members: { husband: users.husband.id, wife: users.wife.id }, startingBand: 3,
+    currentBand: 3, targetBand: 8, gateInterval: 5, sessionsPerBand: 20, passPercent: 70, strictRetakeMode: false,
+    revision: 0, startedAt: iso(), updatedAt: iso(), bands: { b6: band } } as SharedPath);
+  const gateId = band.gates[0]!.id;
+  const records = database.db.collection<SharedAssessment>("duo_assessments");
+  return { database, records, paths, users, duoId, gateId, iso,
+    setReadiness(callback: (() => Promise<void>) | undefined) { readiness = callback; },
+    advance(ms: number) { clock += ms; },
+    start(role: DuoRole) { return adapter.startGate(users[role], gateId); },
+    async settle(record: SharedAssessment, status: "failed" | "passed") {
+      await records.updateOne({ _id: record._id }, { $set: { status, active: false } });
+      await paths.updateOne({ _id: duoId }, { $set: { [`bands.b6.gates.0.results.${record.role}`]: {
+        status, assessmentId: record._id, at: iso(),
+      } } });
+    },
+    async close() { await database.db.dropDatabase(); await database.client.close(); },
+  };
+}
+
+test("partners receive one shared private Gate paper and coordinated fresh retry rounds", async t => {
+  const cases = async (action: (fixture: Awaited<ReturnType<typeof sharedGateFixture>>) => Promise<void>) => {
+    const fixture = await sharedGateFixture();
+    try { await action(fixture); } finally { await fixture.close(); }
+  };
+  const ids = (record: SharedAssessment) => record.parts.map(part => part.contentId);
+
+  await t.test("sequential first starts use the exact same paper but retain separate answers", () => cases(async f => {
+    const husband = await f.start("husband"), wife = await f.start("wife");
+    assert.notEqual(husband._id, wife._id);
+    assert.deepEqual(ids(husband), ids(wife));
+    assert.ok(ids(husband).every(isExclusiveDuoContentId));
+    assert.equal(husband.paperRevision, 1); assert.equal(wife.paperRevision, 1);
+    assert.equal(await f.records.countDocuments(), 2);
+  }));
+
+  await t.test("concurrent partner starts and duplicate clicks cannot allocate separate paper sets", () => cases(async f => {
+    const [first, second, wife] = await Promise.all([f.start("husband"), f.start("husband"), f.start("wife")]);
+    assert.equal(first._id, second._id);
+    assert.deepEqual(ids(first), ids(wife));
+    assert.equal(await f.records.countDocuments(), 2);
+  }));
+
+  await t.test("both ordinary failed partners join the same fresh round even when retries race", () => cases(async f => {
+    const first = await f.start("husband"), other = await f.start("wife");
+    await f.settle(first, "failed"); await f.settle(other, "failed");
+    const [husband, wife] = await Promise.all([f.start("husband"), f.start("wife")]);
+    assert.deepEqual(ids(husband), ids(wife));
+    assert.ok(ids(husband).every(id => !ids(first).includes(id)));
+    assert.equal(husband.paperRevision, 2); assert.equal(wife.paperRevision, 2);
+  }));
+
+  await t.test("retry waits for an active partner and never invalidates their draft", () => cases(async f => {
+    const husband = await f.start("husband"), wife = await f.start("wife");
+    await f.settle(husband, "failed");
+    await assert.rejects(f.start("husband"), /Người còn lại đang làm/u);
+    assert.equal((await f.records.findOne({ _id: wife._id }))?.active, true);
+    assert.equal(await f.records.countDocuments(), 2);
+    await f.settle(wife, "failed");
+    const replacement = await f.start("husband");
+    assert.ok(ids(replacement).every(id => !ids(husband).includes(id)));
+  }));
+
+  await t.test("a passed partner keeps the earned receipt while the failed partner retries fresh", () => cases(async f => {
+    const husband = await f.start("husband"), wife = await f.start("wife");
+    await f.settle(husband, "failed"); await f.settle(wife, "passed");
+    const replacement = await f.start("husband");
+    assert.ok(ids(replacement).every(id => !ids(husband).includes(id)));
+    assert.equal((await f.start("wife"))._id, wife._id);
+    assert.equal((await f.paths.findOne({ _id: f.duoId }))?.bands.b6.gates[0]?.results.wife?.assessmentId, wife._id);
+  }));
+
+  await t.test("a pending first start fences an overlapping retry before its assessment insert", () => cases(async f => {
+    const husband = await f.start("husband"); await f.settle(husband, "failed");
+    let release!: () => void, entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const inside = new Promise<void>(resolve => { entered = resolve; });
+    let calls = 0;
+    f.setReadiness(async () => { if (++calls === 2) { entered(); await held; } });
+    const starting = f.start("wife"); await inside;
+    try { await assert.rejects(f.start("husband"), /Người còn lại đang làm/u); }
+    finally { release(); }
+    const wife = await starting;
+    assert.deepEqual(ids(wife), ids(husband));
+  }));
+
+  await t.test("missing audio leaves no reservation and a stale pending ticket can recover", () => cases(async f => {
+    f.setReadiness(async () => { throw new ApiError(409, "Synthetic missing cached audio"); });
+    await assert.rejects(f.start("husband"), /missing cached audio/u);
+    let path = await f.paths.findOne({ _id: f.duoId });
+    assert.equal(path?.bands.b6.gates[0]?.paperReservations?.husband, undefined);
+    f.setReadiness(undefined);
+    const gate = path!.bands.b6.gates[0]!;
+    await f.paths.updateOne({ _id: path!._id }, { $set: { "bands.b6.gates.0.paperReservations.husband": {
+      assessmentId: "synthetic-crashed-start", contentIds: gate.contentIds, paperRevision: 1,
+      reservedAt: new Date(Date.parse(f.iso()) - 61_000).toISOString(),
+    } } });
+    const assessment = await f.start("husband");
+    assert.notEqual(assessment._id, "synthetic-crashed-start");
+    path = await f.paths.findOne({ _id: path!._id });
+    assert.equal(path?.bands.b6.gates[0]?.paperReservations?.husband, undefined);
+  }));
+
+  await t.test("a second readiness failure releases the pending start without resetting its partner", () => cases(async f => {
+    let checks = 0;
+    f.setReadiness(async () => { if (++checks === 2) throw new ApiError(409, "Synthetic transient cache lookup"); });
+    await assert.rejects(f.start("husband"), /transient cache lookup/u);
+    const path = await f.paths.findOne({ _id: f.duoId });
+    assert.equal(path?.bands.b6.gates[0]?.paperReservations?.husband, undefined);
+    assert.equal(await f.records.countDocuments(), 0);
+    f.setReadiness(undefined);
+    const wife = await f.start("wife"), husband = await f.start("husband");
+    assert.deepEqual(ids(husband), ids(wife));
+  }));
+
+  await t.test("already active legacy partners keep different saved papers and their owned answers", () => cases(async f => {
+    const husband = await f.start("husband"), wife = await f.start("wife");
+    const path = await f.paths.findOne({ _id: f.duoId });
+    const legacyIds = path!.bands.b6.gates[1]!.contentIds;
+    const draftId = randomUUID();
+    const parts = wife.parts.map((part, index) => ({ ...part, contentId: legacyIds[index]!,
+      attemptId: index === 0 ? draftId : null }));
+    await f.records.updateOne({ _id: wife._id }, { $set: { parts }, $unset: { paperRevision: "" } });
+    const draft = { _id: draftId, id: draftId, userId: f.users.wife.id, duoAssessmentId: wife._id,
+      contentId: legacyIds[0]!, skill: "reading", mode: "exam", status: "in-progress",
+      responses: { "synthetic-owned-answer": "Keep this saved answer" }, startedAt: f.iso(),
+      deadlineAt: new Date(Date.parse(f.iso()) + 60_000).toISOString(), feedback: null, submittedAt: null };
+    const attempts = f.database.db.collection<typeof draft>("attempts");
+    await attempts.insertOne(draft);
+    const resumedWife = await f.start("wife"), resumedHusband = await f.start("husband");
+    assert.equal(resumedWife._id, wife._id); assert.equal(resumedHusband._id, husband._id);
+    assert.deepEqual(ids(resumedWife), legacyIds);
+    assert.deepEqual(ids(resumedHusband), ids(husband));
+    assert.equal(resumedWife.paperRevision, undefined);
+    assert.deepEqual(await attempts.findOne({ _id: draftId }), draft);
+    assert.equal(await f.records.countDocuments(), 2);
+  }));
+
+  await t.test("legacy failed partners get a fresh shared paper instead of a stale canonical variant", () => cases(async f => {
+    const husband = await f.start("husband"), wife = await f.start("wife");
+    const prior = ids(husband);
+    const legacyOtherIds = prior.map(id => id.replace(/-0$/u, "-3"));
+    assert.ok(legacyOtherIds.every((id, index) => id !== prior[index]));
+    await f.records.updateOne({ _id: wife._id }, { $set: { parts: wife.parts.map((part, index) => ({ ...part, contentId: legacyOtherIds[index]! })) } });
+    await f.settle(husband, "failed"); await f.settle(wife, "failed");
+    await f.paths.updateOne({ _id: f.duoId }, { $unset: { "bands.b6.gates.0.paperRevision": "", "bands.b6.gates.0.paperReservations": "" } });
+    const nextWife = await f.start("wife"), nextHusband = await f.start("husband");
+    assert.deepEqual(ids(nextWife), ids(nextHusband));
+    assert.ok(ids(nextWife).every(id => ![...prior, ...legacyOtherIds].includes(id)));
+    assert.equal(nextWife.paperRevision, 1);
+    assert.equal(nextHusband.paperRevision, 1);
+  }));
 });

@@ -1072,7 +1072,7 @@ export function DuoRoomPage() {
     );
   const mine = room.members[duo.role];
   if (room.status === "invalidated" || isExamInvalidated(room) || roomIntegrity.invalidated)
-    return <div className="stack page-stack duo-room"><InvalidatedExam href="/plan" /></div>;
+    return <div className="stack page-stack duo-room"><InvalidatedExam href="/plan" reason={roomIntegrity.room?.reason ?? room.integrityReason} /></div>;
   const retained =
     duo.bands.find((band) => band.band === room.band)?.promotionResults[
       duo.role
@@ -1296,7 +1296,7 @@ export function DuoAssessmentPage() {
         retry={() => void state.reload()}
       />
     );
-  if (invalidated || roomIntegrity.invalidated) return <div className="stack page-stack duo-assessment"><InvalidatedExam href="/plan" /></div>;
+  if (invalidated || roomIntegrity.invalidated) return <div className="stack page-stack duo-assessment"><InvalidatedExam href="/plan" reason={integrity.session?.reason ?? roomIntegrity.room?.reason ?? assessment.integrityReason} /></div>;
   const active = assessment.status === "in-progress";
   const canStart = (index: number) =>
     new Date(assessment.parts[index].startsAt).getTime() <=
@@ -1312,7 +1312,9 @@ export function DuoAssessmentPage() {
         title={`${assessment.kind === "gate" ? "Duo Gate" : "Bài thi nâng band"} · Band ${assessment.band.toFixed(1)}`}
         description={
           assessment.kind === "gate"
-            ? "Bạn làm bài riêng; không cần đợi người kia vào cùng lúc. Cả hai đạt mới mở chặng tiếp theo."
+            ? assessment.paperRevision
+              ? "Hai người dùng cùng bộ đề ở mốc này và làm theo thời gian riêng. Thi lại dùng đợt đề mới; kết quả đã đạt của người kia vẫn được giữ."
+              : "Bài làm và kết quả của lượt cũ được giữ nguyên. Đề chung áp dụng từ lượt mới; cả hai đạt mới mở chặng tiếp theo."
             : "Phiên thi chung đã bắt đầu. Hoàn thành các kỹ năng trong bài của riêng bạn."
         }
       />
@@ -1334,13 +1336,14 @@ export function DuoAssessmentPage() {
         <div className="row wrap">
           <Clock3 size={17} />
           <span>
-            Hạn nộp chung:{" "}
+            {assessment.kind === "gate" ? "Hạn nộp của lượt này: " : "Hạn nộp chung: "}
             {new Intl.DateTimeFormat("vi-VN", {
               dateStyle: "medium",
               timeStyle: "short",
               timeZone: "Asia/Bangkok",
             }).format(new Date(assessment.deadlineAt))}
           </span>
+          {assessment.kind === "gate" && assessment.paperRevision && <span>· Đợt đề {assessment.paperRevision}</span>}
         </div>
       </Card>
       <div className="duo-assessment-parts">
@@ -1353,16 +1356,18 @@ export function DuoAssessmentPage() {
             </div>
             <h2>{part.title}</h2>
             <p className="muted tiny">
-              Lịch phần thi:{" "}
-              {new Intl.DateTimeFormat("vi-VN", {
-                timeStyle: "short",
-                timeZone: "Asia/Bangkok",
-              }).format(new Date(part.startsAt))}
-              –
-              {new Intl.DateTimeFormat("vi-VN", {
-                timeStyle: "short",
-                timeZone: "Asia/Bangkok",
-              }).format(new Date(part.deadlineAt))}
+              {assessment.kind === "gate" ? <>
+                Thời lượng phần: {Math.max(1, Math.round((Date.parse(part.deadlineAt) - Date.parse(part.startsAt)) / 60_000))} phút.
+                {!part.attemptId && " Tính giờ khi mở bài, trong hạn nộp của lượt này."}
+              </> : <>Lịch phần thi:{" "}
+                {new Intl.DateTimeFormat("vi-VN", {
+                  timeStyle: "short", timeZone: "Asia/Bangkok",
+                }).format(new Date(part.startsAt))}
+                –
+                {new Intl.DateTimeFormat("vi-VN", {
+                  timeStyle: "short", timeZone: "Asia/Bangkok",
+                }).format(new Date(part.deadlineAt))}
+              </>}
             </p>
             <p className="muted">
               {part.scorePercent !== null

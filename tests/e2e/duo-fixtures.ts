@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import { createApp } from "../../server/app";
 import { hashPassword } from "../../server/auth";
+import { duoAssessmentContents } from "../../server/duo-exam-content";
 import {
   parseDuoCredentials,
   provisionDuoAccounts,
@@ -180,7 +181,7 @@ export async function objectiveAttempt(
   correct = true,
   assessmentId?: string,
 ): Promise<Attempt> {
-  const content = await server.database.content.findOne({ _id: contentId });
+  const [content] = await duoAssessmentContents(server.database, [contentId]);
   if (!content) throw new Error("Missing lesson seed");
   let response = await page.request.post("/api/attempts", {
     data: {

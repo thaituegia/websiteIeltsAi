@@ -68,6 +68,12 @@ interface ResultRecord {
   assessmentId: string;
   at: string;
 }
+interface GatePaperReservation {
+  assessmentId: string;
+  contentIds: string[];
+  paperRevision: number;
+  reservedAt: string;
+}
 interface GateRecord {
   id: string;
   number: number;
@@ -75,6 +81,10 @@ interface GateRecord {
   afterLesson: number;
   contentIds: string[];
   results: Record<DuoRole, ResultRecord | null>;
+  /** One paper per shared sitting; reservations fence concurrent first starts
+   * and retries without changing any already active assessment. */
+  paperRevision?: number;
+  paperReservations?: Partial<Record<DuoRole, GatePaperReservation>>;
 }
 interface BandRecord {
   band: number;
@@ -134,6 +144,7 @@ interface AssessmentRecord {
   createdAt: string;
   completedAt: string | null;
   revision: number;
+  paperRevision?: number;
   invalidatedAt?: string;
   integrityReason?: string;
 }
@@ -814,6 +825,7 @@ export class DuoService {
       deadlineAt: record.deadlineAt,
       createdAt: record.createdAt,
       completedAt: record.completedAt,
+      ...(record.paperRevision !== undefined ? { paperRevision: record.paperRevision } : {}),
       ...(record.invalidatedAt ? {
         invalidatedAt: record.invalidatedAt, integrityReason: record.integrityReason,
         integrity: { status: "invalidated" as const, reason: record.integrityReason },
@@ -988,14 +1000,15 @@ export class DuoService {
     });
     return this.cancelAssessments(assessmentIds, reason, room._id);
   }
-  /** New sittings draw only from the private bank. An ordinary failed/timed-out
-   * paper is just as exposed as one cancelled by the integrity guard. */
+  /** Fresh rounds exclude exposed papers and never draw from public practice.
+   * The second partner may join the current Gate round's shared paper. */
   private async exclusiveAssessmentSet(
     path: PathRecord,
     kind: "gate" | "promotion",
     canonicalIds: string[],
     testType: "academic" | "general",
     gateId?: string,
+    shareCurrentGatePaper = false,
   ): Promise<string[]> {
     const [assessments, rooms, canonical] = await Promise.all([
       this.assessments.find({ duoId: path.duoId }).toArray(),
@@ -1003,7 +1016,8 @@ export class DuoService {
       duoAssessmentContents(this.database, canonicalIds),
     ]);
     const exposed = new Set([
-      ...assessments.flatMap(record => record.parts.map(part => part.contentId)),
+      ...assessments.filter(record => !(shareCurrentGatePaper && kind === "gate" && record.kind === "gate" &&
+        record.gateId === gateId && record.band === path.currentBand)).flatMap(record => record.parts.map(part => part.contentId)),
       ...rooms.flatMap(room => room.contentIds ?? []),
     ]);
     const objectiveKinds = canonical
@@ -1026,6 +1040,94 @@ export class DuoService {
       excludeIds: [...exposed, ...reservedElsewhere],
     });
   }
+  private async reserveGatePaper(
+    member: DuoUser & { duoRole: DuoRole; duoId: string },
+    gateId: string,
+  ): Promise<{ path: PathRecord; reservation: GatePaperReservation; existing?: AssessmentRecord }> {
+    const samePaper = (left: string[], right: string[]) => left.length === right.length && left.every((id, index) => id === right[index]);
+    for (let retry = 0; retry < 30; retry++) {
+      const path = await this.path(member);
+      const band = path.bands[bandKey(path.currentBand)];
+      const gate = band.gates.find(entry => entry.id === gateId);
+      if (!gate || !this.gateEligible(band, gate)) throw new ApiError(403, "Cả hai cần hoàn tất các buổi học trước Duo Gate.");
+      const result = gate.results[member.duoRole];
+      if (result?.status === "passed") {
+        const existing = await this.assessment(member, result.assessmentId);
+        return { path, existing, reservation: { assessmentId: existing._id, contentIds: existing.parts.map(part => part.contentId),
+          paperRevision: gate.paperRevision ?? 1, reservedAt: existing.createdAt } };
+      }
+      const histories = await this.assessments.find({ duoId: path.duoId, band: path.currentBand, kind: "gate", gateId }).toArray();
+      const ownActive = histories.find(record => record.userId === member.id && record.active && !this.deniedAssessment(path, record));
+      if (ownActive) {
+        const existing = await this.reconcileAssessment(ownActive);
+        if (existing.active || existing.status === "passed")
+          return { path, existing, reservation: { assessmentId: existing._id, contentIds: existing.parts.map(part => part.contentId),
+            paperRevision: gate.paperRevision ?? 1, reservedAt: existing.createdAt } };
+        continue;
+      }
+      const ownReservation = gate.paperReservations?.[member.duoRole];
+      const liveReservation = (reservation: GatePaperReservation | undefined) => Boolean(reservation &&
+        Number.isFinite(millis(reservation.reservedAt)) && this.now() - millis(reservation.reservedAt) >= 0 && this.now() - millis(reservation.reservedAt) < 60_000 &&
+        samePaper(reservation.contentIds, gate.contentIds) && reservation.paperRevision === (gate.paperRevision ?? 1));
+      if (liveReservation(ownReservation) && !histories.some(record => record._id === ownReservation!.assessmentId))
+        return { path, reservation: structuredClone(ownReservation!) };
+      const usedCurrent = histories.some(record => record.userId === member.id &&
+        samePaper(record.parts.map(part => part.contentId), gate.contentIds));
+      const partner = member.duoRole === "husband" ? "wife" : "husband";
+      if (usedCurrent) {
+        const partnerActive = histories.some(record => record.role === partner && record.active &&
+          !this.deniedAssessment(path, record) && this.now() < millis(record.deadlineAt) &&
+          samePaper(record.parts.map(part => part.contentId), gate.contentIds));
+        if (partnerActive || liveReservation(gate.paperReservations?.[partner]))
+          throw new ApiError(409, "Người còn lại đang làm bộ đề này. Hãy đợi người đó nộp bài rồi mới mở lượt thi lại; bài đang làm vẫn được giữ.");
+      }
+      let canonicalIds = gate.contentIds;
+      let needsFreshPaper = usedCurrent;
+      if (gate.paperRevision === undefined && histories.length) {
+        // The earlier per-person allocator left canonical IDs pointing at an
+        // old sitting. Do not reuse such a paper merely because this partner
+        // personally received a different variant. An active private peer can
+        // still be joined when its actual paper is new to this learner.
+        const activePeer = histories.find(record => record.role === partner && record.active &&
+          !this.deniedAssessment(path, record) && this.now() < millis(record.deadlineAt) &&
+          record.parts.every(part => isExclusiveDuoContentId(part.contentId)) &&
+          !histories.some(own => own.userId === member.id && samePaper(own.parts.map(part => part.contentId), record.parts.map(part => part.contentId))));
+        canonicalIds = activePeer ? activePeer.parts.map(part => part.contentId) : gate.contentIds;
+        needsFreshPaper = !activePeer;
+      }
+      const contentIds = await this.exclusiveAssessmentSet(path, "gate", canonicalIds, member.testType, gateId, !needsFreshPaper);
+      const contents = await duoAssessmentContents(this.database, contentIds);
+      if (contents.length !== contentIds.length) throw new ApiError(409, "Học liệu của bài đánh giá chưa đầy đủ.");
+      // Readiness runs before a reservation, so a missing clip cannot leave a
+      // pending start which blocks the partner or starts either exam clock.
+      await this.config.ensureAudioReady(contents);
+      const modified = structuredClone(path);
+      const target = modified.bands[bandKey(path.currentBand)].gates.find(entry => entry.id === gateId)!;
+      const paperRevision = gate.paperRevision === undefined ? 1 : gate.paperRevision + (samePaper(contentIds, gate.contentIds) ? 0 : 1);
+      const reservation: GatePaperReservation = { assessmentId: randomUUID(), contentIds: [...contentIds],
+        paperRevision, reservedAt: this.iso() };
+      target.contentIds = [...contentIds];
+      target.paperRevision = paperRevision;
+      target.paperReservations ??= {};
+      target.paperReservations[member.duoRole] = reservation;
+      // Reservations for another paper cannot fence the new shared round.
+      const previousPartnerReservation = target.paperReservations[partner];
+      if (previousPartnerReservation && !samePaper(previousPartnerReservation.contentIds, contentIds))
+        delete target.paperReservations[partner];
+      modified.revision++;
+      modified.updatedAt = this.iso();
+      const changed = await this.paths.replaceOne({ _id: path._id, revision: path.revision }, modified);
+      if (changed.modifiedCount) return { path: modified, reservation };
+    }
+    throw new ApiError(409, "Bộ đề chung đang được cập nhật. Vui lòng tải lại Duo Gate.");
+  }
+  private async releaseGateReservation(path: PathRecord, gateId: string, role: DuoRole, reservation: GatePaperReservation): Promise<void> {
+    await this.changePath(path.duoId, latest => {
+      const gate = latest.bands[bandKey(path.currentBand)]?.gates.find(entry => entry.id === gateId);
+      if (gate?.paperReservations?.[role]?.assessmentId !== reservation.assessmentId) return false;
+      delete gate.paperReservations[role];
+    });
+  }
   private async makeAssessment(
     path: PathRecord,
     user: DuoUser,
@@ -1033,6 +1135,8 @@ export class DuoService {
     contentIds: string[],
     gateId: string | null,
     room: RoomRecord | null,
+    reservedAssessmentId?: string,
+    reservedPaperRevision?: number,
   ): Promise<AssessmentRecord> {
     if (room) {
       const currentPath = await this.paths.findOne({ _id: path.duoId });
@@ -1070,7 +1174,7 @@ export class DuoService {
       0,
     );
     const record: AssessmentRecord = {
-      _id: room ? `${room._id}:${user.duoRole}` : randomUUID(),
+      _id: room ? `${room._id}:${user.duoRole}` : reservedAssessmentId ?? randomUUID(),
       duoId: path.duoId,
       userId: user.id,
       role: user.duoRole!,
@@ -1089,6 +1193,7 @@ export class DuoService {
       createdAt: this.iso(),
       completedAt: null,
       revision: 0,
+      ...(reservedPaperRevision !== undefined ? { paperRevision: reservedPaperRevision } : {}),
     };
     let created: AssessmentRecord;
     try {
@@ -1145,40 +1250,37 @@ export class DuoService {
       const reconciled = await this.reconcileAssessment(active);
       if (!reconciled.invalidatedAt && (reconciled.active || reconciled.status === "passed")) return reconciled;
     }
-    const contentIds = await this.exclusiveAssessmentSet(path, "gate", gate.contentIds, member.testType, gateId);
-    if (gate.contentIds.some(id => !isExclusiveDuoContentId(id))) {
+    const allocation = await this.reserveGatePaper(member, gateId);
+    if (allocation.existing) return allocation.existing;
+    const { reservation } = allocation;
+    let created: AssessmentRecord | undefined;
+    let accepted = false;
+    try {
+      created = await this.makeAssessment(allocation.path, member, "gate", reservation.contentIds, gate.id, null, reservation.assessmentId, reservation.paperRevision);
       await this.changePath(path.duoId, latest => {
-        if (latest.currentBand !== path.currentBand) return false;
-        const currentBand = latest.bands[bandKey(path.currentBand)];
-        const currentGate = currentBand.gates.find(entry => entry.id === gateId);
-        if (!currentGate || currentBand.completedAt || currentGate.contentIds.every(isExclusiveDuoContentId)) return false;
-        // Only the future paper allocation changes. Results, proofs and any
-        // already active/passed legacy assessment remain their own receipts.
-        currentGate.contentIds = [...contentIds];
+        accepted = false;
+        if (latest.currentBand !== allocation.path.currentBand || this.deniedAssessment(latest, created!)) return false;
+        const target = latest.bands[bandKey(allocation.path.currentBand)].gates.find(entry => entry.id === gateId);
+        if (!target || target.results[member.duoRole]?.status === "passed") return false;
+        const ticket = target.paperReservations?.[member.duoRole];
+        if (ticket?.assessmentId !== reservation.assessmentId || ticket.paperRevision !== target.paperRevision) return false;
+        target.results[member.duoRole] = { status: created!.status, assessmentId: created!._id, at: this.iso() };
+        accepted = true;
       });
+      if (!accepted) {
+        // A concurrent identical start may already have published this receipt.
+        const latest = await this.path(member);
+        const current = latest.bands[bandKey(allocation.path.currentBand)]?.gates.find(entry => entry.id === gateId);
+        accepted = current?.results[member.duoRole]?.assessmentId === created._id && !this.deniedAssessment(latest, created);
+      }
+      if (!accepted) {
+        await this.cancelAssessments([created._id], "gate-paper-changed-before-start", null);
+        throw new ApiError(409, "Bộ đề chung đã đổi trước khi mở lượt. Hãy tải lại Duo Gate; bài làm trước vẫn được giữ.");
+      }
+      return created;
+    } finally {
+      await this.releaseGateReservation(allocation.path, gateId, member.duoRole, reservation);
     }
-    const created = await this.makeAssessment(
-      path,
-      member,
-      "gate",
-      contentIds,
-      gate.id,
-      null,
-    );
-    await this.changePath(path.duoId, (latest) => {
-      if (latest.currentBand !== path.currentBand) return false;
-      if (this.deniedAssessment(latest, created)) return false;
-      const target = latest.bands[bandKey(path.currentBand)].gates.find(
-        (entry) => entry.id === gateId,
-      )!;
-      if (target.results[member.duoRole]?.status === "passed") return false;
-      target.results[member.duoRole] = {
-        status: created.status,
-        assessmentId: created._id,
-        at: this.iso(),
-      };
-    });
-    return created;
   }
   async beforeAttempt(
     user: UserRecord,

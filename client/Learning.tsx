@@ -51,6 +51,7 @@ import type {
   VocabularyEntry,
 } from "../shared/types";
 import { api, ApiError, json } from "./api";
+import { attemptClockNow, sampleAttemptClock, type AttemptClock } from "./attempt-clock";
 import { useApi, useSession } from "./hooks";
 import {
   Badge,
@@ -1036,7 +1037,7 @@ export function PlacementPage() {
           <ArrowLeft size={16} /> Quay lại lịch sử học
         </Link>
       )}
-      {invalidated && <InvalidatedExam onRestart={() => { setPlacement(null); setAnswer(""); if (reviewId) setParams({}); }} />}
+      {invalidated && <InvalidatedExam reason={integrity.session?.reason ?? placement?.integrity?.reason} onRestart={() => { setPlacement(null); setAnswer(""); if (reviewId) setParams({}); }} />}
       {!placement && !reviewId && (
         <>
           <section className="placement-hero">
@@ -1310,6 +1311,13 @@ function LearningAttempt({ id }: { id: string }) {
     [busy, setBusy] = useState(false),
     [confirm, setConfirm] = useState(false),
     [progress, setProgress] = useState("");
+  const attemptClock = useRef<AttemptClock | null>(null);
+  const synchronizeAttemptClock = useCallback((value: Attempt, deadlinePending = false) => {
+    const monotonicNow = performance.now();
+    attemptClock.current = sampleAttemptClock(attemptClock.current, value.id, value.serverNow,
+      monotonicNow, Date.now(), deadlinePending);
+    setNow(attemptClockNow(attemptClock.current, monotonicNow, Date.now()));
+  }, []);
   const [retakeProgress, setRetakeProgress] = useState<ContentProgress | null>(null);
   const [retakeBusy, setRetakeBusy] = useState(false);
   const [retakeError, setRetakeError] = useState("");
@@ -1385,6 +1393,7 @@ function LearningAttempt({ id }: { id: string }) {
         `/attempts/${encodeURIComponent(id)}`,
       );
       if (generation !== loadGeneration.current || !mounted.current) return;
+      synchronizeAttemptClock(result.attempt);
       setAttempt(result.attempt);
       setResponses(result.attempt.responses);
       setEssays(result.attempt.essays);
@@ -1409,7 +1418,7 @@ function LearningAttempt({ id }: { id: string }) {
       if (generation === loadGeneration.current && mounted.current)
         setLoading(false);
     }
-  }, [id, clearListeningPlayback]);
+  }, [id, clearListeningPlayback, synchronizeAttemptClock]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -1427,6 +1436,7 @@ function LearningAttempt({ id }: { id: string }) {
       try {
         const result = await api<{ attempt: Attempt }>(`/attempts/${encodeURIComponent(attempt.id)}`);
         if (cancelled) return;
+        synchronizeAttemptClock(result.attempt);
         setAttempt(result.attempt);
         if (result.attempt.status === "submitted") {
           setResponses(result.attempt.responses); setEssays(result.attempt.essays); setTranscript(result.attempt.transcript);
@@ -1441,7 +1451,7 @@ function LearningAttempt({ id }: { id: string }) {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [attempt?.id, attempt?.status, grading, integrity.session?.status]);
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    const timer = window.setInterval(() => setNow(attemptClockNow(attemptClock.current, performance.now(), Date.now())), 1000);
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
@@ -1591,6 +1601,7 @@ function LearningAttempt({ id }: { id: string }) {
             },
           );
           if (generation !== loadGeneration.current || !mounted.current) return;
+          synchronizeAttemptClock(result.attempt);
           if (result.attempt.status !== "in-progress") setAttempt(result.attempt);
           setSaveState(version === draftVersion.current ? "saved" : "pending");
         } catch (cause) {
@@ -1599,6 +1610,7 @@ function LearningAttempt({ id }: { id: string }) {
             const current = await api<{ attempt: Attempt }>(
               `/attempts/${attempt.id}`,
             );
+            synchronizeAttemptClock(current.attempt);
             if (current.attempt.status !== "in-progress") {
               setAttempt(current.attempt);
               setSaveState("saved");
@@ -1697,6 +1709,30 @@ function LearningAttempt({ id }: { id: string }) {
     setError("");
     let finalSubmission = false;
     try {
+      if (timeout) {
+        // Do not stop a recording, flush a draft, upload late audio or change
+        // the monitor phase until the server confirms the real deadline.
+        const { attempt: result, deadlinePending } = await api<{ attempt: Attempt; deadlinePending?: boolean }>(
+          `/attempts/${attempt.id}/submit`, { method: "POST", body: json({ timedOut: true }) },
+        );
+        if (generation !== loadGeneration.current || !mounted.current) return;
+        synchronizeAttemptClock(result, !!deadlinePending);
+        if (result.status === "in-progress") {
+          timedOut.current = false;
+          return;
+        }
+        if (recording) await stopRecordingNow();
+        setAttempt(result); setResponses(result.responses); setEssays(result.essays); setTranscript(result.transcript);
+        setSaveState("saved"); clearListeningPlayback();
+        setPlaying(false); setPaused(false); setListenBusy(false);
+        if (protectedExam && !attempt.duoAssessmentId) completeExamIntegrity(integrityKind, integrityResource!);
+        else if (protectedExam && attempt.duoAssessmentId) {
+          const current = await api<{ assessment: { status: string } }>(`/duo/assessments/${encodeURIComponent(attempt.duoAssessmentId)}`);
+          if (!["in-progress", "pending-ai"].includes(current.assessment.status)) completeExamIntegrity("assessment", attempt.duoAssessmentId);
+        }
+        await refresh();
+        return;
+      }
       const recordingBlob = recording ? await stopRecordingNow() : audioBlob;
       // A retry can refer to the server's owned recording without downloading
       // and uploading it again. Keep the local Blob for playback, and omit it
@@ -1753,6 +1789,7 @@ function LearningAttempt({ id }: { id: string }) {
       if (finalSubmission && result.status === "submitted") completeExamIntegrity(integrityKind, integrityResource!);
       else await resumeExamSubmission();
       if (generation !== loadGeneration.current || !mounted.current) return;
+      synchronizeAttemptClock(result);
       setAttempt(result);
       setResponses(result.responses);
       setEssays(result.essays);
@@ -1770,6 +1807,7 @@ function LearningAttempt({ id }: { id: string }) {
         try {
           const recovered = await api<{ attempt: Attempt }>(`/attempts/${attempt.id}`);
           if (generation !== loadGeneration.current || !mounted.current) return;
+          synchronizeAttemptClock(recovered.attempt);
           setAttempt(recovered.attempt);
           // Submission locks the editor. Recover recognition persisted before
           // grading failed, but never replace a newer user edit.
@@ -1913,7 +1951,7 @@ function LearningAttempt({ id }: { id: string }) {
         retry={() => void load()}
       />
     );
-  if (invalidated) return <div className="stack page-stack learning-page"><InvalidatedExam href={attempt.duoAssessmentId ? "/plan" : attempt.mode === "exam" ? "/exams" : "/library"} /></div>;
+  if (invalidated) return <div className="stack page-stack learning-page"><InvalidatedExam reason={integrity.session?.reason ?? roomIntegrity.room?.reason ?? attempt.integrity?.reason} href={attempt.duoAssessmentId ? "/plan" : attempt.mode === "exam" ? "/exams" : "/library"} /></div>;
   const content = attempt.content;
   const activeSection = content.sections[section] || content.sections[0];
   const Icon = icons[attempt.skill];

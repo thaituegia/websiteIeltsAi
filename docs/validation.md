@@ -1,5 +1,38 @@
 # Kết quả kiểm tra
 
+## Chung đề Duo Gate và giữ phiên đúng — 2026-11-06
+
+Gate dùng một bộ riêng theo đợt cho cả hai người, kể cả mở đồng thời hoặc
+người kia đã nộp. Path CAS/ticket giữ cùng contentIds/revision, chặn đổi đề khi
+người kia còn làm; người đã đạt giữ kết quả. Legacy khác đề đang hoạt động
+được giữ; phân bổ legacy đã thất bại được đưa sang một bộ chung chưa dùng,
+không quay lại canonical cũ đã lộ. Thiếu audio hoặc ticket hết hạn không giữ
+khóa/start clock vĩnh viễn. Màn hình có nhãn đợt đề và phân biệt hạn của Gate
+cá nhân với lịch chung của promotion; không còn hiển thị lịch Gate như mọi
+phần đã bắt đầu đồng thời.
+
+Log được cung cấp xác nhận `heartbeat-lost` lúc 21:18:24 và `page-exit` lúc
+21:19:31 (Asia/Bangkok). Không suy từ log rằng người học chủ động đổi tab.
+Heartbeat có timeout 8 giây, tuổi lease dùng performance.now; beforeunload
+bị hủy không còn tự phát violation. Actual pagehide/hidden/reload/close,
+duplicate tab và mất kết nối thật vượt lease vẫn được bảo vệ. Thông báo UI
+phân biệt nguyên nhân thay vì gộp lỗi mạng thành hành vi rời trang.
+
+Attempt trả serverNow response-only và countdown dựa mốc server/monotonic.
+Automatic timeout đến sớm được server từ chối chấm, giữ nháp và đồng bộ lại;
+timeout đúng hạn chỉ chấm dữ liệu đã lưu. Không thay submit tay, nguồn điểm,
+ngân hàng bài hoặc cache/voice/model AI.
+
+**208/208 ca native liên quan đạt** (173 bộ chính và 35 bổ sung). **40 ca
+Chromium desktop/mobile đạt**: 20 heartbeat/recovery/cancelled unload, sáu
+clock-skew/early-timeout, hai workflow Duo thật qua Express/Mongo/React và
+12 ca departure/integrity thật, gồm reload/close, duplicate tab và điều hướng
+giữa phòng/assessment/part. Workflow xác nhận hai người cùng contentIds và
+revision, nhãn đợt đề/thời lượng đúng, thi lại giữ kết quả người đã đạt.
+TypeScript, release build và diff checks đạt. Các fixture dùng dữ liệu tổng
+hợp/database riêng; không gọi AI/TTS hoặc tác động VPS. Xem
+[cơ chế và giới hạn](exam-session-recovery.md).
+
 ## Dừng chi phí audio và kiểm tra toàn bộ đề — 2026-11-06
 
 Theo trạng thái VPS được cung cấp: worker đã dừng, 432 audio công khai đủ;

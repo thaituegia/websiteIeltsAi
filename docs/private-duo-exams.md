@@ -15,8 +15,16 @@ theo chủ đề IELTS; dữ kiện, lời thoại và câu hỏi không lấy l
 Writing có bài mẫu Task 1/Task 2 theo đúng dữ kiện đề và hướng dẫn tiếng Việt,
 chỉ mở sau khi nộp bài, giống luồng Writing trong kho luyện tập.
 
-Mỗi lượt mới chọn đúng band, loại đề và profile, loại trừ những đề đã dùng
-trong lịch sử Duo, gồm cả lượt trượt, hết giờ hoặc bị hủy. Phòng nâng band
+Mỗi đợt Duo Gate chọn đúng band, loại đề và profile, dùng chung một bộ đề cho
+hai người nhưng mỗi người bắt đầu và làm riêng. Hai lượt mở đồng thời được
+phân xử bằng CAS để giữ cùng contentIds/đợt đề. Người chưa làm được tham gia
+bộ hiện tại dù người kia đã nhận hoặc nộp bộ đó; không loại nhầm đề chỉ vì
+người kia vừa mở.
+
+Thi lại sau khi trượt/hết giờ/hủy dùng đợt đề mới, loại trừ nguồn đã dùng ở
+các đợt trước. Nếu người kia còn đang làm bộ hiện tại, người thi lại cần đợi
+người kia nộp để không thay đề giữa chừng. Kết quả đã đạt vẫn được giữ;
+người đã đạt không bị bắt làm lại cùng người chưa đạt. Phòng nâng band cũng
 dùng chung một bộ đề cho hai người tham gia. Khi hết nguồn đề riêng chưa dùng,
 hệ thống từ chối mở và yêu cầu bổ sung học liệu; không lấy lại bài luyện hoặc
 đề cũ làm phương án dự phòng. Số lượt là hữu hạn; cấu hình nhiều buổi/Gate hơn
@@ -27,6 +35,11 @@ CAS của path. Kết quả đã đạt, buổi đã hoàn thành, bài làm, b�
 đang hoạt động vẫn được giữ để tiếp tục/xem lại. Ngân hàng riêng khởi tạo
 bằng insert-only; kiểm tra hash thân bài thực tế và metadata trước khi dùng,
 không ghi đè nội dung lịch sử khi phát hiện khác biệt.
+
+Lượt Gate mới có nhãn đợt đề; lịch sử cũ có thể không có nhãn này. Thời hạn
+Gate là thời hạn của từng người, còn kỳ nâng band giữ lịch chung. Màn hình
+Gate hiển thị thời lượng phần thay vì lịch giả định mọi phần bắt đầu ngay lúc
+mở Gate; đồng hồ từng bài bắt đầu khi thực sự mở phần đó, trong hạn của lượt.
 
 ID riêng bị chặn ở GET nội dung, tiến độ, kiểm tra audio và tạo audio thông
 thường. Chỉ lượt thi thuộc người học và assessment đã giao mới được mở.

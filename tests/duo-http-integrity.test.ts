@@ -123,6 +123,19 @@ test("real Duo HTTP protects monitored Gate starts and shared promotion room doc
       assert.equal(cancelled.integrityReason, "hidden");
       assert.deepEqual(await assessments.findOne({ _id: peer.id }), peerBefore);
       const retakeTab = randomUUID();
+      await request("husband", "POST", `/duo/gates/${gateId}/start`, {}, 409, retakeTab);
+      assert.deepEqual(await assessments.findOne({ _id: peer.id }), peerBefore,
+        "An early retry must not replace or cancel the partner's shared paper");
+      const peerAttempt = (await request("wife", "POST", "/attempts", {
+        contentId: peer.parts[0].contentId, mode: "exam", duoAssessmentId: peer.id,
+      }, 201, wifeTab)).attempt as Attempt;
+      const [peerContent] = await duoAssessmentContents(database, [peerAttempt.contentId]);
+      assert.ok(peerContent);
+      await request("wife", "PATCH", `/attempts/${peerAttempt.id}`, {
+        responses: Object.fromEntries(peerContent.questions.map(question => [question.id, question.answer])),
+      }, 200, wifeTab);
+      await request("wife", "POST", `/attempts/${peerAttempt.id}/submit`, {}, 200, wifeTab);
+      assert.equal((await assessments.findOne({ _id: peer.id }))!.status, "passed");
       const retake = (await request("husband", "POST", `/duo/gates/${gateId}/start`, {}, 200, retakeTab)).assessment as DuoAssessmentView;
       assert.notEqual(retake.id, first.id);
       assert.notEqual(retake.parts[0].contentId, first.parts[0].contentId);

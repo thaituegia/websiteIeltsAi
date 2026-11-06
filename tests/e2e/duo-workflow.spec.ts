@@ -187,6 +187,9 @@ test("Duo Gate pass is retained, ordinary band8 practice stays open, and promoti
         await page.request.get(`/api/duo/assessments/${assessmentId}`)
       ).json()
     ).assessment;
+    await expect(page.locator(".duo-assessment-summary")).toContainText(`Đợt đề ${assessment.paperRevision}`);
+    await expect(page.getByText(/Thời lượng phần:/)).toBeVisible();
+    await expect(page.getByText(/Lịch phần thi:/)).toHaveCount(0);
     for (const part of assessment.parts)
       await objectiveAttempt(
         page,
@@ -214,6 +217,8 @@ test("Duo Gate pass is retained, ordinary band8 practice stays open, and promoti
     );
     expect(beginWife.ok()).toBeTruthy();
     let wifeAssessment: DuoAssessmentView = (await beginWife.json()).assessment;
+    expect(wifeAssessment.parts.map(part => part.contentId)).toEqual(assessment.parts.map(part => part.contentId));
+    expect(wifeAssessment.paperRevision).toBe(assessment.paperRevision);
     for (const part of wifeAssessment.parts)
       await objectiveAttempt(
         second,
