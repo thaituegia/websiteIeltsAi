@@ -5,14 +5,14 @@ full mock trong kho công khai. Ngân hàng mới nằm trong collection
 `duo_exam_content`, tách khỏi `content`, `contentBank`, placement và planner.
 Ngân hàng công khai hiện có không bị reset hoặc thay thế.
 
-Ngân hàng riêng có 502 bài thuộc 11 mức band 3.0–8.0: 138 Reading, 138
-Listening, 94 Grammar, 88 Writing (Academic/General riêng) và 44 Speaking.
-Ngày 10/11/2026 bổ sung hai đợt, mỗi đợt đúng ba bộ Gate band 3.0. Mỗi bộ
-có tám câu Reading, tám câu Listening và mười câu Grammar. Đợt hai dùng
-ID hậu tố 4–6 và provenance `duo-gate-20261110-v2`; toàn bộ 493 bài của đợt
-trước giữ nguyên ID, nội dung và cache. Đoạn đọc, thông báo và câu hỏi mới
-được biên soạn riêng.
-Gate có 14 biến thể cho mỗi kỹ năng khách quan ở band 3.0 và tám biến thể ở
+Ngân hàng riêng có 517 bài thuộc 11 mức band 3.0–8.0: 143 Reading, 143
+Listening, 99 Grammar, 88 Writing (Academic/General riêng) và 44 Speaking.
+Ngày 10/11/2026 có ba đợt bổ sung Gate band 3.0: ba bộ đầu, ba bộ tiếp theo
+và năm bộ đợt ba. Mỗi bộ có tám câu Reading, tám câu Listening và mười câu
+Grammar. Đợt ba dùng ID hậu tố 7–11 và provenance `duo-gate-20261110-v3`;
+toàn bộ 502 bài của đợt trước giữ nguyên ID, nội dung và cache. Đoạn đọc,
+thông báo và câu hỏi mới được biên soạn riêng.
+Gate có 19 biến thể cho mỗi kỹ năng khách quan ở band 3.0 và tám biến thể ở
 các band còn lại; nâng band có bốn biến
 thể cho mỗi kỹ năng/band/profile. Reading/Listening full mock có 40 câu;
 Listening có bốn phần hội thoại/bài nói. Những ngữ cảnh mới được biên soạn
@@ -52,7 +52,7 @@ thường. Chỉ lượt thi thuộc người học và assessment đã giao m�
 Đáp án vẫn bị ẩn trước khi nộp; xem lại, nghe audio và lưu/dịch từ dùng ngữ
 cảnh của đúng lượt thuộc người học. Biết trước một ID không cho phép đọc đề.
 
-Ngân hàng riêng có 270 nguồn audio. Manifest `bank:duo`
+Ngân hàng riêng có 275 nguồn audio. Manifest `bank:duo`
 tách khỏi manifest `bank` của audio cũ; bộ nhớ đệm audio dùng chung tiếp tục
 bỏ qua file đã có. `--inspect --duo-only` chỉ đọc và không khởi tạo ngân hàng.
 Đồng hồ thi chỉ bắt đầu sau khi audio của bộ đề được chọn đã sẵn sàng.
@@ -83,6 +83,13 @@ audio đều được xác minh sẵn sàng; chưa đủ thì giữ app hiện t
 đợt hai được chuẩn bị; ledger `duo-gate-20261110-v2` có trần riêng ba request/
 9.000 ký tự, không thay hoặc cấp lại ledger v1. Hai cờ bổ sung không được
 kết hợp. Chạy lại cùng đợt dùng audio đã có và không tự mua lại clip đã thử.
+
+Đợt năm bộ dùng cờ `--add-five-gate-papers`, CLI `--prepare-five` và ledger
+`duo-gate-20261110-v3`. Chỉ 15 bài ID 7–11 được add/verify; chỉ năm audio
+mới có ngân sách tối đa năm request/15.000 ký tự JSON, một request/3.000 ký
+tự cho mỗi clip. Deadline cả tác vụ là 300 giây, supervisor 360 giây; hai
+đợt ba bộ trước vẫn giữ giới hạn 180/240 giây. Không cấp lại ledger v1/v2,
+không mua thêm audio cũ còn thiếu. Chỉ chuyển app khi đủ năm audio v3.
 
 # Chấm đáp án ngắn
 

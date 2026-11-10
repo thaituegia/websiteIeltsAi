@@ -9,6 +9,7 @@ import { makeExclusiveListening } from "./data/duo-exclusive-listening";
 import { makeExclusiveGrammar, makeExclusiveSpeaking, makeExclusiveWriting } from "./data/duo-exclusive-support";
 import { newDuoGatePapers } from "./data/duo-gate-supplement";
 import { newAdditionalDuoGatePapers } from "./data/duo-gate-supplement-2";
+import { newFiveDuoGatePapers } from "./data/duo-gate-supplement-3";
 
 export const DUO_EXAM_CONTENT_COLLECTION = "duo_exam_content";
 export const DUO_EXAM_BANK_VERSION = "exclusive-20261105-v1";
@@ -58,6 +59,7 @@ function authoredCatalog(): PrivatePaper[] {
   // including the scripts that already have paid audio in the shared cache.
   for (const paper of newDuoGatePapers()) add(paper, "gate");
   for (const paper of newAdditionalDuoGatePapers()) add(paper, "gate");
+  for (const paper of newFiveDuoGatePapers()) add(paper, "gate");
   if (new Set(papers.map(paper => paper.id)).size !== papers.length)
     throw new Error("Private Duo paper identifiers must be unique.");
   const sources = new Set<string>();
@@ -94,10 +96,11 @@ async function appendVerifiedPapers(database: Context, papers: PrivatePaper[]): 
     throw new ApiError(409, "Ngân hàng đề riêng chưa được xác minh; chưa mở bài thi.");
 }
 
-/** Only the nine papers in the explicitly selected batch; older papers are immutable. */
-export async function ensureDuoGateSupplement(database: Context, batch: "initial" | "additional" = "initial"): Promise<void> {
-  if (batch !== "initial" && batch !== "additional") throw new Error("Unknown private Gate supplement batch.");
-  const papers = batch === "additional" ? newAdditionalDuoGatePapers() : newDuoGatePapers();
+/** Only the papers in the explicitly selected batch; older papers are immutable. */
+export async function ensureDuoGateSupplement(database: Context, batch: "initial" | "additional" | "five" = "initial"): Promise<void> {
+  const factories = { initial: newDuoGatePapers, additional: newAdditionalDuoGatePapers, five: newFiveDuoGatePapers };
+  if (!Object.hasOwn(factories, batch)) throw new Error("Unknown private Gate supplement batch.");
+  const papers = factories[batch]();
   const ids = new Set(papers.map(paper => paper.id));
   await appendVerifiedPapers(database, authoredCatalog().filter(paper => ids.has(paper.id)));
 }

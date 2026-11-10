@@ -18,7 +18,7 @@ container riêng 384 MiB/no extra swap/0,25 CPU; kiểm tra đúng project/mạn
 giữ 1 GiB RAM dự phòng, chặn `fetch` và không seed/repair/download WAV. Báo
 cáo phân nhóm công khai/riêng theo band và lesson/full-mock, kèm số bài đủ
 toàn bộ phần, số phần thiếu và ID/tên đề thiếu đã giới hạn độ dài. Toàn bộ
-138 đề Listening riêng/270 phần phải có trong inventory sau hai đợt bổ sung
+143 đề Listening riêng/275 phần phải có trong inventory sau ba đợt bổ sung
 ngày 10/11/2026; inventory trống
 không được coi là đã đủ. Đây là kiểm tra metadata giống guard trước đồng hồ
 thi, không nghe lại hoặc tải toàn bộ nhiều GB âm thanh để kiểm tra thủ công.
@@ -61,3 +61,9 @@ Khi hai tác vụ cùng chuẩn bị một clip, reservation trả phí đồng 
 claim có owner và hạn chờ. Tác vụ không có ngân sách chờ owner hoàn tất hoặc
 hết hạn trước khi phục hồi cache với ngân sách 0; không chiếm cache job trước
 owner trả phí. Hết hạn claim không hoàn hoặc cấp lại reservation đã dùng.
+
+Yêu cầu năm bộ tiếp theo dùng riêng `--add-five-gate-papers`: năm clip ID
+7–11, ledger v3 độc lập, tối đa năm request/15.000 ký tự cho cả đợt và
+300 giây. Hai đợt trước giữ nguyên ngân sách và cache; lệnh mới không tiếp
+tục clip cũ còn thiếu. Mỗi clip vẫn chỉ có một lượt đọc giọng Anh, một lần
+gọi provider được cấp và không tự thử lại sau lỗi/ngắt.

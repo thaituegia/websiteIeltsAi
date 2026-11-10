@@ -74,7 +74,7 @@ try {
     if(ready)report.placement.ready++;else {report.placement.missing++;if(report.placement.missingIds.length<256)report.placement.missingIds.push(safeId(item.id));}
   }} finally {await placement.close();}
   report.groups=[...groups.values()];
-  if(privatePapers!==138||privateSections!==270||publicPapers===0||report.placement.total===0){inspectionErrors++;report.error="inventory-incomplete";}
+  if(privatePapers!==143||privateSections!==275||publicPapers===0||report.placement.total===0){inspectionErrors++;report.error="inventory-incomplete";}
   report.inspectionErrors=inspectionErrors;
   report.inspectionComplete=inspectionErrors===0;
   report.allExamAudioReady=report.inspectionComplete&&report.groups.length>0&&report.groups.every(group=>group.missingPapers===0)&&report.placement.missing===0;

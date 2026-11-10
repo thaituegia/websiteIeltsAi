@@ -1,5 +1,37 @@
 # Kết quả kiểm tra
 
+## Năm bộ Gate tiếp theo, đợt ba — 2026-11-10
+
+Bổ sung 15 bài riêng mốc 3.0, ID 7–11 thuộc
+`duo-gate-20261110-v3`: năm Reading/tám câu, năm Listening/tám câu và năm
+Grammar/mười câu, tổng 130 câu. Có 517 bài riêng; 143 bài Listening/275
+phần. Đối chiếu toàn bộ JSON của 502 bài trước giữ nguyên. Mongo fixture
+mô phỏng đã dùng 14 biến thể cũ, xác nhận hai người nhận chung đúng năm
+đợt V3 mới, câu trả lời trống, lịch sử và các kết quả cũ được giữ; đợt thứ
+sáu bị từ chối theo quy tắc không lặp đề.
+
+Đáp án canonical/biến thể và giới hạn từ đều đạt; năm bài đọc có
+281/292/298/298/301 từ, đủ dạng lựa chọn, trả lời ngắn và TRUE/FALSE/NOT
+GIVEN. Năm bài nghe có 249–260 từ, đúng một turn Narrator British, tám chi
+tiết theo thứ tự, không đưa đáp án vào tiêu đề. Script dài 1.356–1.410 ký
+tự, đủ headroom trong giới hạn một request/3.000 ký tự JSON mỗi clip.
+
+Cờ mới `--add-five-gate-papers` chỉ chọn `--prepare-five`, ledger v3 riêng,
+tối đa năm request/15.000 ký tự/300 giây; supervisor 360 giây. V1/V2 giữ
+trần 3/9.000/180 giây và supervisor 240 giây. Đã kiểm tra cả OpenAI và
+ElevenLabs với provider giả, cache replay 0 request, không mua thêm clip cũ
+còn thiếu, lỗi/ngắt không hoàn ngân sách, concurrent/paused-owner gap
+không vượt trần năm. Ledger, file và job cache của hai đợt trước giữ nguyên.
+Updater từ chối receipt sai phiên bản, thiếu audio, vượt số clip/request/
+ký tự, bool/extra fields và kết hợp cờ; kiểm tra RAM trước worker/trước đổi
+app, cleanup chỉ đúng container thuộc operation.
+
+**175/175 kiểm thử native liên quan đạt**, không skip; TypeScript, release
+build, Python AST và diff checks đạt. Fixture dùng Mongo riêng và provider
+giả; không gọi AI/TTS thật hoặc triển khai VPS từ cloud. Người vận hành đã
+xác nhận đợt hai hiện HOÀN TẤT; năm audio đợt ba trên VPS chỉ được xác nhận
+sau receipt của lệnh mới.
+
 ## Ba bộ Gate tiếp theo, đợt hai — 2026-11-10
 
 Bổ sung chín bài riêng mới ở mốc 3.0, ID 4–6 của đợt

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { createDuoService } from "../server/duo";
 import { ensureExclusiveDuoBank, exclusiveDuoBank, isExclusiveDuoContentId } from "../server/duo-exam-content";
-import { newAdditionalDuoGatePapers } from "../server/data/duo-gate-supplement-2";
+import { newFiveDuoGatePapers } from "../server/data/duo-gate-supplement-3";
 import { ApiError } from "../server/errors";
 import { connectDatabase, type UserRecord } from "../server/storage";
 import type { ContentKind, StoredContent } from "../shared/types";
@@ -191,11 +191,11 @@ test("partners receive one shared private Gate paper and coordinated fresh retry
   };
   const ids = (record: SharedAssessment) => record.parts.map(part => part.contentId);
 
-  await t.test("three additional sets recover all eleven consumed Gate variants with fresh shared rounds and preserve every earlier result", () => cases(async f => {
-    const newIds = new Set(newAdditionalDuoGatePapers().map(paper => paper.id));
+  await t.test("five additional sets recover all fourteen consumed Gate variants with fresh shared rounds and preserve every earlier result", () => cases(async f => {
+    const newIds = new Set(newFiveDuoGatePapers().map(paper => paper.id));
     const oldPapers = exclusiveDuoBank().filter(paper => paper.band === 3 && paper.format === "lesson" && !newIds.has(paper.id));
-    assert.equal(oldPapers.length, 33);
-    const history = Array.from({ length: 11 }, (_unused, index) => ({
+    assert.equal(oldPapers.length, 42);
+    const history = Array.from({ length: 14 }, (_unused, index) => ({
       _id: "synthetic-prior-" + index, userId: f.users.husband.id, role: "husband" as const,
       duoId: f.duoId, gateId: f.gateId, kind: "gate", band: 3, status: "failed", active: false,
       createdAt: f.iso(), deadlineAt: f.iso(),
@@ -205,7 +205,7 @@ test("partners receive one shared private Gate paper and coordinated fresh retry
     }));
     await f.records.insertMany(history);
     const consumed = new Set<string>();
-    for (let round = 0; round < 3; round++) {
+    for (let round = 0; round < 5; round++) {
       const husband = await f.start("husband"), wife = await f.start("wife");
       assert.deepEqual(ids(husband), ids(wife));
       assert.equal(ids(husband).length, 3);
@@ -214,9 +214,9 @@ test("partners receive one shared private Gate paper and coordinated fresh retry
       ids(husband).forEach(id => consumed.add(id));
       await f.settle(husband, "failed"); await f.settle(wife, "failed");
     }
-    assert.equal(consumed.size, 9);
+    assert.equal(consumed.size, 15);
     await assert.rejects(f.start("husband"), error => error instanceof ApiError && error.code === "DUO_GATE_PAPERS_EXHAUSTED");
-    assert.equal(await f.records.countDocuments(), 17);
+    assert.equal(await f.records.countDocuments(), 24);
     for (const previous of history) assert.deepEqual(await f.records.findOne({ _id: previous._id }), previous);
     assert.equal(await f.database.db.collection("speech_audio.files").countDocuments(), 0);
   }));

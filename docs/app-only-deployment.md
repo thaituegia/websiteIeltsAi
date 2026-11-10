@@ -74,6 +74,14 @@ nâng model. Giới hạn tài nguyên, deadline, xác minh ba audio trước kh
 app, cleanup và rollback giữ nguyên. Nhà vận hành đã xác nhận đợt đầu hoàn
 tất. Toàn bộ 493 bài trước đợt hai và kết quả học được giữ nguyên.
 
+Đợt năm bộ tiếp theo dùng `--add-five-gate-papers`, CLI `--prepare-five` và
+receipt `duo-gate-20261110-v3`. Chỉ add/verify 15 bài ID 7–11; tối đa năm
+request/15.000 ký tự cho đúng năm audio mới. CLI có hạn 300 giây và
+supervisor 360 giây, vẫn 384 MiB/không thêm swap/0,25 CPU và 1 GiB dự phòng.
+Giữ nguyên giới hạn 180/240 giây của hai đợt ba bộ. Không kết hợp với bất kỳ
+chế độ cập nhật khác. Chưa đủ năm audio thì app cũ tiếp tục phục vụ; 502 bài
+trước đợt ba, bài làm và audio cũ không bị thay thế.
+
 `deploy/inspect-exam-audio.py` kiểm tra từng bài Listening công khai, bài Duo
 riêng và câu đầu vào bằng cache metadata. Helper không gọi provider, không
 seed/repair và không tạo audio; báo cáo phân biệt bài đủ toàn bộ phần nghe
