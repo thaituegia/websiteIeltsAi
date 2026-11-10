@@ -52,6 +52,7 @@ const fixture = existing.slice(start, end)
    if scenario=='supplement-wrong-version':report['version']='other-version'
    if scenario=='supplement-previous-version':report['version']='duo-gate-20261110-v1'
    if scenario=='supplement-previous-additional-version':report['version']='duo-gate-20261110-v2'
+   if scenario=='supplement-previous-five-version':report['version']='duo-gate-20261110-v3'
    if scenario=='supplement-command-error':raise RuntimeError(secret)
    return json.dumps(report)
   if args[:2]==['docker','ps'] and any(x.startswith('name=^/'+project+'-gate-supplement-') for x in args):
@@ -83,6 +84,7 @@ for (const mode of [
   { name: "initial", option: "add_three_gate_papers", version: "GATE_SUPPLEMENT_VERSION", total: 3, cli: "--prepare", timeout: 240 },
   { name: "additional", option: "add_three_more_gate_papers", version: "ADDITIONAL_GATE_SUPPLEMENT_VERSION", total: 3, cli: "--prepare-additional", timeout: 240 },
   { name: "five", option: "add_five_gate_papers", version: "FIVE_GATE_SUPPLEMENT_VERSION", total: 5, cli: "--prepare-five", timeout: 360 },
+  { name: "ten", option: "add_ten_gate_papers", version: "TEN_GATE_SUPPLEMENT_VERSION", total: 10, cli: "--prepare-ten", timeout: 720 },
 ]) {
   const selectedFixture = fixture
     .replace("add_three_gate_papers=True", `${mode.option}=True`)
@@ -90,7 +92,8 @@ for (const mode of [
       `selected_version=m.${mode.version};selected_total=${mode.total};selected_cli='${mode.cli}';selected_timeout=${mode.timeout}`);
   const scenarios = ["success", "supplement-pending", "supplement-bad-counts", "supplement-counts-under", "supplement-counts-over", "supplement-input-over", "supplement-bool-count", "supplement-extra-field", "supplement-wrong-version", "supplement-command-error", "supplement-timeout", "supplement-timeout-foreign", "supplement-low-memory", "supplement-low-memory-before-switch",
     ...(mode.name !== "initial" ? ["supplement-previous-version"] : []),
-    ...(mode.name === "five" ? ["supplement-previous-additional-version"] : [])];
+    ...(["five", "ten"].includes(mode.name) ? ["supplement-previous-additional-version"] : []),
+    ...(mode.name === "ten" ? ["supplement-previous-five-version"] : [])];
   for (const scenario of scenarios) {
     test(`opt-in ${mode.name} Gate supplement rollout: ${scenario}`, () => {
       const result = spawnSync("python3", ["-c", selectedFixture, script, scenario], { encoding: "utf8", timeout: 20_000 });
@@ -109,7 +112,7 @@ m.os.geteuid=lambda:0;calls=[];downloads=[]
 m.download=lambda *args:downloads.append(args)
 m.checked_module=lambda path,name:('synthetic-module',name)
 real_deploy=m.deploy
-paid_options=['upgrade_text_models','add_three_gate_papers','add_three_more_gate_papers','add_five_gate_papers']
+paid_options=['upgrade_text_models','add_three_gate_papers','add_three_more_gate_papers','add_five_gate_papers','add_ten_gate_papers']
 for pair in itertools.combinations(paid_options,2):
  options=dict.fromkeys(pair,True)
  try:real_deploy(None,None,'a'*40,'b'*64,**options)
@@ -123,12 +126,19 @@ m.sys.argv=['update-app.py','a'*40,'b'*64,'--add-three-more-gate-papers'];m.main
 assert calls[-1]=={'upgrade_text_models':False,'add_three_more_gate_papers':True} and len(downloads)==4
 m.sys.argv=['update-app.py','a'*40,'b'*64,'--add-five-gate-papers'];m.main()
 assert calls[-1]=={'upgrade_text_models':False,'add_five_gate_papers':True} and len(downloads)==6
-for extra in [['--add-three-gate-papers','--cached-audio-only'],['--add-three-gate-papers','--upgrade-text-models'],['--add-three-gate-papers','--add-three-gate-papers'],['--add-three-gate-papers=3'],['--max-provider-requests','3'],['--add-three-more-gate-papers','--cached-audio-only'],['--add-three-more-gate-papers','--upgrade-text-models'],['--add-three-more-gate-papers','--add-three-gate-papers'],['--add-three-more-gate-papers','--add-three-more-gate-papers'],['--add-three-more-gate-papers=3'],['--add-five-gate-papers','--cached-audio-only'],['--add-five-gate-papers','--upgrade-text-models'],['--add-five-gate-papers','--add-three-gate-papers'],['--add-five-gate-papers','--add-three-more-gate-papers'],['--add-five-gate-papers','--add-five-gate-papers'],['--add-five-gate-papers=5'],['--add-five-gate-papers','--watch']]:
+m.sys.argv=['update-app.py','a'*40,'b'*64,'--add-ten-gate-papers'];m.main()
+assert calls[-1]=={'upgrade_text_models':False,'add_ten_gate_papers':True} and len(downloads)==8
+paid_flags=['--upgrade-text-models','--add-three-gate-papers','--add-three-more-gate-papers','--add-five-gate-papers','--add-ten-gate-papers']
+invalid=[['--max-provider-requests','10']]
+for mode in paid_flags:
+ invalid.extend([[mode,mode],[mode,'--watch'],[mode+'=10'],[mode,'--max-provider-requests','10']])
+invalid.extend([list(pair) for pair in itertools.combinations(paid_flags+['--cached-audio-only'],2)])
+for extra in invalid:
  m.sys.argv=['update-app.py','a'*40,'b'*64]+extra
  try:m.main()
  except RuntimeError:pass
  else:raise AssertionError('Unapproved audio allowance accepted')
-assert len(calls)==3 and len(downloads)==6
+assert len(calls)==4 and len(downloads)==8
 `;
   const result = spawnSync("python3", ["-c", program, script], { encoding: "utf8", timeout: 20_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);

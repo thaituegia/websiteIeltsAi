@@ -33,6 +33,7 @@ TEXT_MODEL_ROLES = ('CONTENT_MODEL', 'EXTRACTOR_MODEL', 'SCORING_MODEL', 'TRANSL
 GATE_SUPPLEMENT_VERSION = 'duo-gate-20261110-v1'
 ADDITIONAL_GATE_SUPPLEMENT_VERSION = 'duo-gate-20261110-v2'
 FIVE_GATE_SUPPLEMENT_VERSION = 'duo-gate-20261110-v3'
+TEN_GATE_SUPPLEMENT_VERSION = 'duo-gate-20261110-v4'
 TEXT_MODEL_PROBE = r'''
 const model = "gpt-6.1-sol";
 const result = {ok:false, model, code:"probe-unavailable"};
@@ -367,15 +368,18 @@ def check_text_model(guards, original, values, audit):
                        '). App cũ vẫn chạy; chưa build hoặc thay cấu hình.')
 
 
-def prepare_three_gate_papers(guards, image, values, audit, additional=False, five=False):
+def prepare_three_gate_papers(guards, image, values, audit, additional=False, five=False, ten=False):
     # This one-off candidate process prepares only the selected finite batch.
     # Its durable version ledger owns the lifetime allowance, including failed
     # requests, so invoking the updater again never creates a fresh allowance.
-    if additional and five:
+    if sum(bool(value) for value in (additional, five, ten)) > 1:
         raise RuntimeError('Chỉ chọn một đợt bổ sung đề Gate.')
-    version = FIVE_GATE_SUPPLEMENT_VERSION if five else ADDITIONAL_GATE_SUPPLEMENT_VERSION if additional else GATE_SUPPLEMENT_VERSION
-    prepare_mode = '--prepare-five' if five else '--prepare-additional' if additional else '--prepare'
-    total = 5 if five else 3
+    version, prepare_mode, total, supervisor_timeout = (
+        (TEN_GATE_SUPPLEMENT_VERSION, '--prepare-ten', 10, 720) if ten else
+        (FIVE_GATE_SUPPLEMENT_VERSION, '--prepare-five', 5, 360) if five else
+        (ADDITIONAL_GATE_SUPPLEMENT_VERSION, '--prepare-additional', 3, 240) if additional else
+        (GATE_SUPPLEMENT_VERSION, '--prepare', 3, 240)
+    )
     max_input_characters = total * 3000
     guards.memory_headroom(384)
     if (values.get('MONGODB_URI') != 'mongodb://mongo:27017/ielts_ai' or
@@ -407,7 +411,7 @@ def prepare_three_gate_papers(guards, image, values, audit, additional=False, fi
                               '--memory=384m', '--memory-swap=384m', '--cpus=0.25', '--pids-limit=64',
                               '--read-only', '--cap-drop=ALL', '--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=32m',
                               '--security-opt=no-new-privileges:true', '--user=node', '--entrypoint=node',
-                              image, '--import', 'tsx', '/app/server/duo-gate-supplement-cli.ts', prepare_mode], timeout=360 if five else 240)
+                              image, '--import', 'tsx', '/app/server/duo-gate-supplement-cli.ts', prepare_mode], timeout=supervisor_timeout)
     except Exception:
         pass
     finally:
@@ -474,8 +478,8 @@ def healthy(guards, diagnostic, expected_image=None):
     return app
 
 
-def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False, add_three_gate_papers=False, add_three_more_gate_papers=False, add_five_gate_papers=False):
-    if sum(bool(value) for value in (upgrade_text_models, add_three_gate_papers, add_three_more_gate_papers, add_five_gate_papers)) > 1:
+def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False, add_three_gate_papers=False, add_three_more_gate_papers=False, add_five_gate_papers=False, add_ten_gate_papers=False):
+    if sum(bool(value) for value in (upgrade_text_models, add_three_gate_papers, add_three_more_gate_papers, add_five_gate_papers, add_ten_gate_papers)) > 1:
         raise RuntimeError('Chỉ chọn một chế độ cập nhật; mỗi đợt đề Gate dùng ngân sách riêng.')
     owned(LIVE_DIR, directory=True)
     private = LIVE_DIR / '.local/deploy'
@@ -490,10 +494,10 @@ def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False, a
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('Project này đang có lượt cập nhật khác.') from None
-        update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models, add_three_gate_papers, add_three_more_gate_papers, add_five_gate_papers)
+        update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models, add_three_gate_papers, add_three_more_gate_papers, add_five_gate_papers, add_ten_gate_papers)
 
 
-def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models=False, add_three_gate_papers=False, add_three_more_gate_papers=False, add_five_gate_papers=False):
+def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models=False, add_three_gate_papers=False, add_three_more_gate_papers=False, add_five_gate_papers=False, add_ten_gate_papers=False):
     base_file, domain, release = LIVE_DIR / 'deploy/compose.yaml', private / 'domain.compose.yaml', private / 'release.compose.yaml'
     protected = [private / 'deploy.env', private / 'app.env', base_file, domain, LIVE_DIR / 'deploy/compose.sh',
                  LIVE_DIR / 'deploy/nginx.conf', private / 'tls/site.crt']
@@ -603,11 +607,14 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
 
     unchanged(original['Id'])
     supplement = None
-    if add_three_gate_papers or add_three_more_gate_papers or add_five_gate_papers:
+    if add_three_gate_papers or add_three_more_gate_papers or add_five_gate_papers or add_ten_gate_papers:
         if network_identity(guards, {name: service(guards, name) for name in ('app', 'mongo', 'proxy')}) != networks:
             raise RuntimeError('Mạng IELTS thay đổi trước khi chuẩn bị audio; giữ app hiện tại.')
         healthy(guards, diagnostic, original['Image'])
-        if add_five_gate_papers:
+        if add_ten_gate_papers:
+            print('Bổ sung đúng mười audio Gate đợt 4; tối đa 10 yêu cầu và 30.000 ký tự cho đợt này, không tự thử lại.', flush=True)
+            supplement = prepare_three_gate_papers(guards, image_id, values, audit, ten=True)
+        elif add_five_gate_papers:
             print('Bổ sung đúng năm audio Gate đợt 3; tối đa 5 yêu cầu và 15.000 ký tự cho đợt này, không tự thử lại.', flush=True)
             supplement = prepare_three_gate_papers(guards, image_id, values, audit, five=True)
         elif add_three_more_gate_papers:
@@ -661,7 +668,9 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
         receipt['privateGateSupplement'] = supplement
     (audit / 'complete.json').write_text(json.dumps(receipt) + '\n')
     print('HOÀN TẤT: ' + ORIGIN + ' — app mới healthy; giữ nguyên bài làm và audio đã có.', flush=True)
-    if supplement and add_five_gate_papers:
+    if supplement and add_ten_gate_papers:
+        print('Đã bổ sung thêm mười bộ Gate riêng đợt 4; cả mười audio mới đã sẵn sàng. Giữ nguyên các bộ và audio trước.', flush=True)
+    elif supplement and add_five_gate_papers:
         print('Đã bổ sung thêm năm bộ Gate riêng đợt 3; cả năm audio mới đã sẵn sàng. Giữ nguyên các bộ và audio trước.', flush=True)
     elif supplement and add_three_more_gate_papers:
         print('Đã bổ sung thêm ba bộ Gate riêng đợt 2; cả ba audio mới đã sẵn sàng. Giữ nguyên các bộ và audio trước.', flush=True)
@@ -674,13 +683,14 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
 def main():
     if (os.geteuid() != 0 or len(sys.argv) not in (3, 4) or not re.fullmatch(r'[a-f0-9]{40}', sys.argv[1]) or
             not re.fullmatch(r'[a-f0-9]{64}', sys.argv[2]) or
-            (len(sys.argv) == 4 and sys.argv[3] not in ('--upgrade-text-models', '--cached-audio-only', '--add-three-gate-papers', '--add-three-more-gate-papers', '--add-five-gate-papers'))):
-        raise RuntimeError('Chạy bằng root với commit đầy đủ, SHA256 archive và một tùy chọn --cached-audio-only, --upgrade-text-models, --add-three-gate-papers, --add-three-more-gate-papers hoặc --add-five-gate-papers. Tạo audio hàng loạt đã bị tắt.')
+            (len(sys.argv) == 4 and sys.argv[3] not in ('--upgrade-text-models', '--cached-audio-only', '--add-three-gate-papers', '--add-three-more-gate-papers', '--add-five-gate-papers', '--add-ten-gate-papers'))):
+        raise RuntimeError('Chạy bằng root với commit đầy đủ, SHA256 archive và một tùy chọn --cached-audio-only, --upgrade-text-models, --add-three-gate-papers, --add-three-more-gate-papers, --add-five-gate-papers hoặc --add-ten-gate-papers. Tạo audio hàng loạt đã bị tắt.')
     upgrade_text_models = len(sys.argv) == 4 and sys.argv[3] == '--upgrade-text-models'
     add_three_gate_papers = len(sys.argv) == 4 and sys.argv[3] == '--add-three-gate-papers'
     add_three_more_gate_papers = len(sys.argv) == 4 and sys.argv[3] == '--add-three-more-gate-papers'
     add_five_gate_papers = len(sys.argv) == 4 and sys.argv[3] == '--add-five-gate-papers'
-    if not upgrade_text_models and not add_three_gate_papers and not add_three_more_gate_papers and not add_five_gate_papers:
+    add_ten_gate_papers = len(sys.argv) == 4 and sys.argv[3] == '--add-ten-gate-papers'
+    if not upgrade_text_models and not add_three_gate_papers and not add_three_more_gate_papers and not add_five_gate_papers and not add_ten_gate_papers:
         print('Chỉ cập nhật app và dùng audio đã có; không gọi TTS hoặc thử model AI.', flush=True)
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix='ielts-app-update-', dir='/tmp') as folder:
@@ -698,6 +708,8 @@ def main():
             options['add_three_more_gate_papers'] = True
         if add_five_gate_papers:
             options['add_five_gate_papers'] = True
+        if add_ten_gate_papers:
+            options['add_ten_gate_papers'] = True
         deploy(*modules, *sys.argv[1:3], **options)
 
 

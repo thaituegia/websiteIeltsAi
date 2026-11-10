@@ -2665,6 +2665,9 @@ function QuestionInput({
         <span className="question-number">{question.number}</span>
         <WordText text={question.prompt} sectionIndex={question.sectionIndex} />
       </legend>
+      {question.groupInstructions && (
+        <p className="question-limit"><WordText text={question.groupInstructions} sectionIndex={question.sectionIndex} /></p>
+      )}
       {question.wordLimit && (
         <p className="question-limit">
           Không quá {question.wordLimit} từ

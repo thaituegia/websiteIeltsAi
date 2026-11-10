@@ -8,6 +8,7 @@ import { duoGateSupplementMain, parseDuoGateSupplementArguments, prepareDuoGateS
 import { NEW_DUO_GATE_LISTENING_IDS, SUPPLEMENT_VERSION, newDuoGatePapers } from "../server/data/duo-gate-supplement";
 import { ADDITIONAL_DUO_GATE_LISTENING_IDS, ADDITIONAL_SUPPLEMENT_VERSION, newAdditionalDuoGatePapers } from "../server/data/duo-gate-supplement-2";
 import { FIVE_DUO_GATE_LISTENING_IDS, FIVE_SUPPLEMENT_VERSION, newFiveDuoGatePapers } from "../server/data/duo-gate-supplement-3";
+import { TEN_DUO_GATE_LISTENING_IDS, TEN_SUPPLEMENT_VERSION, newTenDuoGatePapers } from "../server/data/duo-gate-supplement-4";
 import { SpeechAudioCache, speechSectionFingerprint } from "../server/speech-audio";
 
 const environmentNames = ["IELTS_OPENAI_API_KEY", "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_BRITISH",
@@ -19,6 +20,7 @@ const batches = [
   { batch: "initial", version: SUPPLEMENT_VERSION, ids: NEW_DUO_GATE_LISTENING_IDS, papers: newDuoGatePapers, count: 3, characters: 9000, deadline: 180_000 },
   { batch: "additional", version: ADDITIONAL_SUPPLEMENT_VERSION, ids: ADDITIONAL_DUO_GATE_LISTENING_IDS, papers: newAdditionalDuoGatePapers, count: 3, characters: 9000, deadline: 180_000 },
   { batch: "five", version: FIVE_SUPPLEMENT_VERSION, ids: FIVE_DUO_GATE_LISTENING_IDS, papers: newFiveDuoGatePapers, count: 5, characters: 15000, deadline: 300_000 },
+  { batch: "ten", version: TEN_SUPPLEMENT_VERSION, ids: TEN_DUO_GATE_LISTENING_IDS, papers: newTenDuoGatePapers, count: 10, characters: 30000, deadline: 600_000 },
 ] as const;
 
 test("targeted Gate batch preparation preserves caches and enforces a durable lifetime allowance", { timeout: 45_000 }, async t => {
@@ -263,44 +265,48 @@ test("targeted Gate batch preparation preserves caches and enforces a durable li
         assert.deepEqual(await db.collection<FixtureRow>("duo_gate_audio_supplements").findOne({ _id: SUPPLEMENT_VERSION }), ledgerBefore);
       });
     });
-    await t.test("the five-paper batch leaves both older ledgers and caches untouched, including their missing clips", async () => {
-      configure();
-      await withDatabase(async (db, name) => {
-        for (const batch of ["initial", "additional"] as const)
-          assert.equal((await prepareDuoGateSupplement(db, { expectedDatabase: name, batch })).ok, true);
-        assert.equal(calls.length, 6);
-        const oldVersions = [SUPPLEMENT_VERSION, ADDITIONAL_SUPPLEMENT_VERSION];
-        const oldLedgers = await db.collection<FixtureRow>("duo_gate_audio_supplements").find({ _id: { $in: oldVersions } }).sort({ _id: 1 }).toArray();
-        for (const makePapers of [newDuoGatePapers, newAdditionalDuoGatePapers]) {
-          const paper = makePapers().find(paper => paper.skill === "listening")!;
-          const fingerprint = speechSectionFingerprint(paper.sections[0]!);
-          await db.collection("speech_audio.files").deleteOne({ "metadata.fingerprint": fingerprint });
-          await db.collection<FixtureRow>("speech_audio_jobs").updateOne({ _id: fingerprint }, { $set: { state: "failed" } });
-        }
-        const oldFiles = await db.collection("speech_audio.files").find().sort({ _id: 1 }).toArray();
-        const oldJobs = await db.collection<FixtureRow>("speech_audio_jobs").find().sort({ _id: 1 }).toArray();
-        const result = await prepareDuoGateSupplement(db, { expectedDatabase: name, batch: "five" });
-        assert.equal(result.version, FIVE_SUPPLEMENT_VERSION); assert.equal(result.ok, true);
-        assert.equal(result.total, 5); assert.equal(result.ready, 5); assert.equal(result.providerRequests, 5);
-        assert.equal(result.maxProviderRequests, 5); assert.equal(result.maxInputCharacters, 15000);
-        assert.equal(calls.length, 11);
-        const fiveTexts = new Set(newFiveDuoGatePapers().filter(paper => paper.skill === "listening")
-          .map(paper => paper.sections[0]!.dialogue![0]!.text));
-        assert.equal(calls.slice(6).every(call => fiveTexts.has(call.body.input as string)), true);
-        assert.deepEqual(await db.collection<FixtureRow>("duo_gate_audio_supplements").find({ _id: { $in: oldVersions } }).sort({ _id: 1 }).toArray(), oldLedgers);
-        assert.deepEqual(await db.collection("speech_audio.files").find({ _id: { $in: oldFiles.map(file => file._id) } }).sort({ _id: 1 }).toArray(), oldFiles);
-        assert.deepEqual(await db.collection<FixtureRow>("speech_audio_jobs").find({ _id: { $in: oldJobs.map(job => job._id) } }).sort({ _id: 1 }).toArray(), oldJobs);
-        assert.equal(await db.collection("duo_exam_content").countDocuments(), 33);
-        const ledger = await db.collection<FixtureRow>("duo_gate_audio_supplements").findOne({ _id: FIVE_SUPPLEMENT_VERSION });
-        assert.equal(ledger?.requestsReserved, 5); assert.equal(ledger?.inputCharactersReserved, 15000);
-        assert.deepEqual(ledger!.targets.map((target: { id: string }) => target.id).sort(), [...FIVE_DUO_GATE_LISTENING_IDS].sort());
-        assert.equal(await db.collection("duo_gate_audio_supplements").countDocuments(), 3);
-        const replay = await prepareDuoGateSupplement(db, { expectedDatabase: name, batch: "five" });
-        assert.equal(replay.ok, true); assert.equal(replay.providerRequests, 0); assert.equal(replay.inputCharacters, 0);
-        assert.equal(calls.length, 11);
-        assert.deepEqual(await db.collection<FixtureRow>("duo_gate_audio_supplements").find({ _id: { $in: oldVersions } }).sort({ _id: 1 }).toArray(), oldLedgers);
+    for (const index of [2, 3]) {
+      const selected = batches[index]!, previous = batches.slice(0, index);
+      const previousCount = previous.reduce((sum, batch) => sum + batch.count, 0);
+      await t.test(`the ${selected.batch} batch leaves its ${previous.length} older ledgers and caches untouched, including their missing clips`, async () => {
+        configure();
+        await withDatabase(async (db, name) => {
+          for (const { batch } of previous)
+            assert.equal((await prepareDuoGateSupplement(db, { expectedDatabase: name, batch })).ok, true);
+          assert.equal(calls.length, previousCount);
+          const oldVersions = previous.map(batch => batch.version);
+          const oldLedgers = await db.collection<FixtureRow>("duo_gate_audio_supplements").find({ _id: { $in: oldVersions } }).sort({ _id: 1 }).toArray();
+          for (const { papers: makePapers } of previous) {
+            const paper = makePapers().find(paper => paper.skill === "listening")!;
+            const fingerprint = speechSectionFingerprint(paper.sections[0]!);
+            await db.collection("speech_audio.files").deleteOne({ "metadata.fingerprint": fingerprint });
+            await db.collection<FixtureRow>("speech_audio_jobs").updateOne({ _id: fingerprint }, { $set: { state: "failed" } });
+          }
+          const oldFiles = await db.collection("speech_audio.files").find().sort({ _id: 1 }).toArray();
+          const oldJobs = await db.collection<FixtureRow>("speech_audio_jobs").find().sort({ _id: 1 }).toArray();
+          const result = await prepareDuoGateSupplement(db, { expectedDatabase: name, batch: selected.batch });
+          assert.equal(result.version, selected.version); assert.equal(result.ok, true);
+          assert.equal(result.total, selected.count); assert.equal(result.ready, selected.count); assert.equal(result.providerRequests, selected.count);
+          assert.equal(result.maxProviderRequests, selected.count); assert.equal(result.maxInputCharacters, selected.characters);
+          assert.equal(calls.length, previousCount + selected.count);
+          const selectedTexts = new Set(selected.papers().filter(paper => paper.skill === "listening")
+            .map(paper => paper.sections[0]!.dialogue![0]!.text));
+          assert.equal(calls.slice(previousCount).every(call => selectedTexts.has(call.body.input as string)), true);
+          assert.deepEqual(await db.collection<FixtureRow>("duo_gate_audio_supplements").find({ _id: { $in: oldVersions } }).sort({ _id: 1 }).toArray(), oldLedgers);
+          assert.deepEqual(await db.collection("speech_audio.files").find({ _id: { $in: oldFiles.map(file => file._id) } }).sort({ _id: 1 }).toArray(), oldFiles);
+          assert.deepEqual(await db.collection<FixtureRow>("speech_audio_jobs").find({ _id: { $in: oldJobs.map(job => job._id) } }).sort({ _id: 1 }).toArray(), oldJobs);
+          assert.equal(await db.collection("duo_exam_content").countDocuments(), (previousCount + selected.count) * 3);
+          const ledger = await db.collection<FixtureRow>("duo_gate_audio_supplements").findOne({ _id: selected.version });
+          assert.equal(ledger?.requestsReserved, selected.count); assert.equal(ledger?.inputCharactersReserved, selected.characters);
+          assert.deepEqual(ledger!.targets.map((target: { id: string }) => target.id).sort(), [...selected.ids].sort());
+          assert.equal(await db.collection("duo_gate_audio_supplements").countDocuments(), previous.length + 1);
+          const replay = await prepareDuoGateSupplement(db, { expectedDatabase: name, batch: selected.batch });
+          assert.equal(replay.ok, true); assert.equal(replay.providerRequests, 0); assert.equal(replay.inputCharacters, 0);
+          assert.equal(calls.length, previousCount + selected.count);
+          assert.deepEqual(await db.collection<FixtureRow>("duo_gate_audio_supplements").find({ _id: { $in: oldVersions } }).sort({ _id: 1 }).toArray(), oldLedgers);
+        });
       });
-    });
+    }
     await t.test("unconfigured or already aborted preparation makes no writes or provider calls", async () => {
       configure("none");
       await withDatabase(async (db, name) => {
@@ -316,15 +322,17 @@ test("targeted Gate batch preparation preserves caches and enforces a durable li
       assert.equal(parseDuoGateSupplementArguments(["--prepare"]), "initial");
       assert.equal(parseDuoGateSupplementArguments(["--prepare-additional"]), "additional");
       assert.equal(parseDuoGateSupplementArguments(["--prepare-five"]), "five");
+      assert.equal(parseDuoGateSupplementArguments(["--prepare-ten"]), "ten");
       for (const args of [[], ["--watch"], ["--prepare", "--resume"], ["--once"], ["--prepare", "--max-provider-requests", "100"],
         ["--prepare", "--prepare-additional"], ["--prepare-additional", "--resume"], ["--prepare-additional", "--max-provider-requests", "100"],
-        ["--prepare-five", "--prepare"], ["--prepare-five", "--prepare-additional"], ["--prepare-five", "--resume"], ["--prepare-five", "--max-provider-requests", "100"]])
+        ["--prepare-five", "--prepare"], ["--prepare-five", "--prepare-additional"], ["--prepare-five", "--resume"], ["--prepare-five", "--max-provider-requests", "100"],
+        ["--prepare-ten", "--prepare"], ["--prepare-ten", "--prepare-additional"], ["--prepare-ten", "--prepare-five"], ["--prepare-ten", "--resume"], ["--prepare-ten", "--max-provider-requests", "100"]])
         await assert.rejects(duoGateSupplementMain(args), /explicit bounded prepare/);
       assert.equal(calls.length, 0);
     });
     await t.test("CLI installation failures report the selected version before provider or Mongo access", () => {
       const script = fileURLToPath(new URL("../server/duo-gate-supplement-cli.ts", import.meta.url));
-      for (const [argument, version] of [["--prepare", SUPPLEMENT_VERSION], ["--prepare-additional", ADDITIONAL_SUPPLEMENT_VERSION], ["--prepare-five", FIVE_SUPPLEMENT_VERSION]]) {
+      for (const [argument, version] of [["--prepare", SUPPLEMENT_VERSION], ["--prepare-additional", ADDITIONAL_SUPPLEMENT_VERSION], ["--prepare-five", FIVE_SUPPLEMENT_VERSION], ["--prepare-ten", TEN_SUPPLEMENT_VERSION]]) {
         const result = spawnSync(process.execPath, ["--import", "tsx", script, argument!], {
           env: { ...process.env, APP_ORIGIN: "https://wrong-installation.invalid" }, encoding: "utf8", timeout: 10_000,
         });

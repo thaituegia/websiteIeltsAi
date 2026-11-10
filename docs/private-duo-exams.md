@@ -5,14 +5,14 @@ full mock trong kho công khai. Ngân hàng mới nằm trong collection
 `duo_exam_content`, tách khỏi `content`, `contentBank`, placement và planner.
 Ngân hàng công khai hiện có không bị reset hoặc thay thế.
 
-Ngân hàng riêng có 517 bài thuộc 11 mức band 3.0–8.0: 143 Reading, 143
-Listening, 99 Grammar, 88 Writing (Academic/General riêng) và 44 Speaking.
-Ngày 10/11/2026 có ba đợt bổ sung Gate band 3.0: ba bộ đầu, ba bộ tiếp theo
-và năm bộ đợt ba. Mỗi bộ có tám câu Reading, tám câu Listening và mười câu
-Grammar. Đợt ba dùng ID hậu tố 7–11 và provenance `duo-gate-20261110-v3`;
-toàn bộ 502 bài của đợt trước giữ nguyên ID, nội dung và cache. Đoạn đọc,
-thông báo và câu hỏi mới được biên soạn riêng.
-Gate có 19 biến thể cho mỗi kỹ năng khách quan ở band 3.0 và tám biến thể ở
+Ngân hàng riêng có 547 bài thuộc 11 mức band 3.0–8.0: 153 Reading, 153
+Listening, 109 Grammar, 88 Writing (Academic/General riêng) và 44 Speaking.
+Ngày 10/11/2026 có bốn đợt bổ sung Gate band 3.0: ba bộ đầu, ba bộ tiếp theo,
+năm bộ đợt ba và mười bộ có nhiều dạng câu hỏi ở đợt bốn. Mỗi bộ có tám câu
+Reading, tám câu Listening và mười câu Grammar. Đợt bốn dùng ID hậu tố 12–21
+và provenance `duo-gate-20261110-v4`; toàn bộ 517 bài của đợt trước giữ nguyên
+ID, nội dung và cache. Các nguồn mới được biên soạn riêng.
+Gate có 29 biến thể cho mỗi kỹ năng khách quan ở band 3.0 và tám biến thể ở
 các band còn lại; nâng band có bốn biến
 thể cho mỗi kỹ năng/band/profile. Reading/Listening full mock có 40 câu;
 Listening có bốn phần hội thoại/bài nói. Những ngữ cảnh mới được biên soạn
@@ -52,7 +52,7 @@ thường. Chỉ lượt thi thuộc người học và assessment đã giao m�
 Đáp án vẫn bị ẩn trước khi nộp; xem lại, nghe audio và lưu/dịch từ dùng ngữ
 cảnh của đúng lượt thuộc người học. Biết trước một ID không cho phép đọc đề.
 
-Ngân hàng riêng có 275 nguồn audio. Manifest `bank:duo`
+Ngân hàng riêng có 285 nguồn audio. Manifest `bank:duo`
 tách khỏi manifest `bank` của audio cũ; bộ nhớ đệm audio dùng chung tiếp tục
 bỏ qua file đã có. `--inspect --duo-only` chỉ đọc và không khởi tạo ngân hàng.
 Đồng hồ thi chỉ bắt đầu sau khi audio của bộ đề được chọn đã sẵn sàng.
@@ -90,6 +90,20 @@ mới có ngân sách tối đa năm request/15.000 ký tự JSON, một request
 tự cho mỗi clip. Deadline cả tác vụ là 300 giây, supervisor 360 giây; hai
 đợt ba bộ trước vẫn giữ giới hạn 180/240 giây. Không cấp lại ledger v1/v2,
 không mua thêm audio cũ còn thiếu. Chỉ chuyển app khi đủ năm audio v3.
+
+Đợt mười bộ dùng `--add-ten-gate-papers`, CLI `--prepare-ten` và ledger v4.
+Chỉ 30 bài ID 12–21 được add/verify; mười audio mới có trần mười request/
+30.000 ký tự và deadline 600 giây, supervisor 720 giây. Những giới hạn cũ
+và ledger v1–v3 không đổi. Chỉ chuyển app khi đủ cả mười audio mới.
+
+Mỗi Reading/Listening v4 có ít nhất ba dạng câu hỏi và ba kiểu nhập đáp án
+thực tế. Mười bài Reading dùng mười cách phối hợp riêng giữa trắc nghiệm,
+TRUE/FALSE/NOT GIVEN, nối tiêu đề/thông tin/đặc điểm, trả lời ngắn và hoàn
+thành bảng/câu/tóm tắt/quy trình. Mỗi Listening đều kết hợp trắc nghiệm,
+nối thông tin và một nhóm điền; biểu mẫu, bảng, câu, ghi chú và sơ đồ bước
+thay đổi giữa các bộ. Bảng và sơ đồ bước có rows thật để hiện đúng ô/bước/
+mũi tên, thay vì chỉ đổi nhãn. Hướng dẫn nối hiện cạnh câu hỏi. Năm bài
+Grammar phối hợp trắc nghiệm với câu điền theo dạng từ cho sẵn.
 
 # Chấm đáp án ngắn
 

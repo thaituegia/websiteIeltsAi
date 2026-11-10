@@ -18,7 +18,7 @@ container riêng 384 MiB/no extra swap/0,25 CPU; kiểm tra đúng project/mạn
 giữ 1 GiB RAM dự phòng, chặn `fetch` và không seed/repair/download WAV. Báo
 cáo phân nhóm công khai/riêng theo band và lesson/full-mock, kèm số bài đủ
 toàn bộ phần, số phần thiếu và ID/tên đề thiếu đã giới hạn độ dài. Toàn bộ
-143 đề Listening riêng/275 phần phải có trong inventory sau ba đợt bổ sung
+153 đề Listening riêng/285 phần phải có trong inventory sau bốn đợt bổ sung
 ngày 10/11/2026; inventory trống
 không được coi là đã đủ. Đây là kiểm tra metadata giống guard trước đồng hồ
 thi, không nghe lại hoặc tải toàn bộ nhiều GB âm thanh để kiểm tra thủ công.
@@ -67,3 +67,9 @@ Yêu cầu năm bộ tiếp theo dùng riêng `--add-five-gate-papers`: năm cli
 300 giây. Hai đợt trước giữ nguyên ngân sách và cache; lệnh mới không tiếp
 tục clip cũ còn thiếu. Mỗi clip vẫn chỉ có một lượt đọc giọng Anh, một lần
 gọi provider được cấp và không tự thử lại sau lỗi/ngắt.
+
+Đợt mười bộ nhiều dạng câu hỏi dùng `--add-ten-gate-papers`, mười clip ID
+12–21, ledger v4 riêng, trần mười request/30.000 ký tự và 600 giây. Nội dung
+câu hỏi thay đổi dạng nhưng mỗi clip vẫn chỉ cần một lượt Narrator British.
+Các clip đã có và ngân sách v1–v3 giữ nguyên; lỗi/ngắt/concurrent không cho
+mua lại clip đã giữ reservation. Kiểm tra đầy đủ mười clip trước khi đổi app.

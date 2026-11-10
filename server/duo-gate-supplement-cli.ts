@@ -7,6 +7,7 @@ import { ensureDuoGateSupplement } from "./duo-exam-content";
 import { newDuoGatePapers, NEW_DUO_GATE_LISTENING_IDS, SUPPLEMENT_VERSION } from "./data/duo-gate-supplement";
 import { newAdditionalDuoGatePapers, ADDITIONAL_DUO_GATE_LISTENING_IDS, ADDITIONAL_SUPPLEMENT_VERSION } from "./data/duo-gate-supplement-2";
 import { newFiveDuoGatePapers, FIVE_DUO_GATE_LISTENING_IDS, FIVE_SUPPLEMENT_VERSION } from "./data/duo-gate-supplement-3";
+import { newTenDuoGatePapers, TEN_DUO_GATE_LISTENING_IDS, TEN_SUPPLEMENT_VERSION } from "./data/duo-gate-supplement-4";
 import { activateProviderConfig } from "./provider-config";
 import { SpeechAudioCache, speechCapabilities, speechSectionFingerprint } from "./speech-audio";
 import { SpeechGenerationBudget } from "./speech-budget";
@@ -23,6 +24,8 @@ const SUPPLEMENT_BATCHES = {
     papers: newAdditionalDuoGatePapers, maxProviderRequests: 3, maxInputCharacters: 9000, deadlineMs: 180_000 },
   five: { argument: "--prepare-five", version: FIVE_SUPPLEMENT_VERSION, ids: FIVE_DUO_GATE_LISTENING_IDS,
     papers: newFiveDuoGatePapers, maxProviderRequests: 5, maxInputCharacters: 15000, deadlineMs: 300_000 },
+  ten: { argument: "--prepare-ten", version: TEN_SUPPLEMENT_VERSION, ids: TEN_DUO_GATE_LISTENING_IDS,
+    papers: newTenDuoGatePapers, maxProviderRequests: 10, maxInputCharacters: 30000, deadlineMs: 600_000 },
 } as const;
 type SupplementBatch = keyof typeof SUPPLEMENT_BATCHES;
 

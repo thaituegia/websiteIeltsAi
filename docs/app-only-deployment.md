@@ -82,6 +82,14 @@ Giữ nguyên giới hạn 180/240 giây của hai đợt ba bộ. Không kết 
 chế độ cập nhật khác. Chưa đủ năm audio thì app cũ tiếp tục phục vụ; 502 bài
 trước đợt ba, bài làm và audio cũ không bị thay thế.
 
+Đợt mười bộ nhiều dạng câu hỏi dùng `--add-ten-gate-papers`, CLI
+`--prepare-ten`, receipt `duo-gate-20261110-v4`. Chỉ add/verify 30 bài
+ID 12–21 và chuẩn bị mười audio mới, tối đa mười request/30.000 ký tự,
+CLI 600 giây/supervisor 720 giây. Giữ giới hạn 384 MiB/không thêm swap/
+0,25 CPU và 1 GiB dự phòng. Các cờ cũ giữ phạm vi, ngân sách và deadline
+cũ; không kết hợp cờ. Chỉ đổi app khi đủ mười audio, giữ nguyên 517 bài
+trước đó, lịch sử và cache cũ.
+
 `deploy/inspect-exam-audio.py` kiểm tra từng bài Listening công khai, bài Duo
 riêng và câu đầu vào bằng cache metadata. Helper không gọi provider, không
 seed/repair và không tạo audio; báo cáo phân biệt bài đủ toàn bộ phần nghe

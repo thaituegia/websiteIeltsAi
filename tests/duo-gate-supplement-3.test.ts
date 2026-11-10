@@ -8,6 +8,7 @@ import { newDuoGatePapers } from "../server/data/duo-gate-supplement";
 import { newAdditionalDuoGatePapers } from "../server/data/duo-gate-supplement-2";
 import { newFiveDuoGatePapers, FIVE_DUO_GATE_LISTENING_IDS, FIVE_SUPPLEMENT_VERSION } from "../server/data/duo-gate-supplement-3";
 import { gradeObjective } from "../server/learning";
+import { newTenDuoGatePapers } from "../server/data/duo-gate-supplement-4";
 
 const canonical = (text: string) => text.normalize("NFC").toLowerCase().replace(/\s+/gu, " ").trim();
 
@@ -16,7 +17,8 @@ test("five further Gate sets contain fifteen new private papers with valid keys 
   const newIds = new Set(papers.map(paper => paper.id));
   assert.equal(papers.length, 15);
   assert.equal(newIds.size, 15);
-  const previous = exclusiveDuoBank().filter(paper => !newIds.has(paper.id));
+  const laterIds = new Set(newTenDuoGatePapers().map(paper => paper.id));
+  const previous = exclusiveDuoBank().filter(paper => !newIds.has(paper.id) && !laterIds.has(paper.id));
   assert.equal(previous.length, 502);
   const oldIds = new Set([...contentBank, ...previous].map(paper => paper.id));
   const oldSources = new Set([

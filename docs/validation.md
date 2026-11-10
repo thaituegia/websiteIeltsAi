@@ -1,5 +1,42 @@
 # Kết quả kiểm tra
 
+## Mười bộ Gate nhiều dạng câu hỏi, đợt bốn — 2026-11-10
+
+Bổ sung 30 bài riêng mốc 3.0, ID 12–21 thuộc
+`duo-gate-20261110-v4`: mười Reading/tám câu, mười Listening/tám câu và
+mười Grammar/mười câu, tổng 260 câu. Có 547 bài riêng; 153 bài Listening/
+285 phần. Đối chiếu toàn bộ JSON của 517 bài cũ giữ nguyên. Mongo fixture
+mô phỏng đã dùng 19 biến thể, hai người nhận chung đúng mười đợt V4 mới,
+đáp án bắt đầu trống, các lịch sử/kết quả cũ giữ nguyên; đợt thứ 11 bị từ
+chối theo quy tắc không lặp đề.
+
+Mỗi Reading/Listening có ít nhất ba taxonomy và ba kiểu nhập đáp án thực.
+Reading có mười profile riêng trên mười dạng IELTS; Listening có mười
+profile riêng trên bảy dạng. Mỗi Listening kết hợp trắc nghiệm, nối thông
+tin và một nhóm hoàn thành; các nhóm form/table/sentence/flow-chart/note có
+bố cục thật. Năm Grammar kết hợp trắc nghiệm và ô nhập. Matching có hướng
+dẫn hiển thị cạnh câu; sơ đồ bước dùng rows để hiện hộp/mũi tên, ghi chú có
+bullet. Đã loại biến thể mạo từ làm sai câu điền và đổi tiêu đề tiết lộ mục
+đích được hỏi. Canonical, biến thể hợp lệ, đáp án sai, bằng chứng, giới hạn
+từ và tính khác biệt so với nguồn cũ/công khai đều được kiểm tra.
+
+CLI `--prepare-ten` chỉ chuẩn bị mười clip v4, một turn British/clip,
+trần mười request/30.000 ký tự/600 giây; supervisor 720 giây. V1–v3 giữ
+nguyên cache và trần cũ; lỗi, ngắt và concurrent không cấp lại allowance.
+Đã kiểm tra provider giả OpenAI/ElevenLabs, replay 0 request, paid-owner
+gap, giữ cả ba ledger/file/job cũ, receipt sai phiên bản/số lượng và RAM/
+timeout/cleanup chỉ đúng operation. Chỉ đổi app khi đủ mười audio mới.
+
+**201/201 kiểm thử native liên quan đạt**, không skip; **10 ca Chromium
+desktop/mobile được xác minh**. Browser đi qua API đăng nhập/Gate/lượt làm
+thật với Mongo riêng, chọn/nhập toàn bộ Reading/Listening và Grammar12,
+lưu và nộp đạt 100%; các key/transcript ẩn trước nộp, chủ khác bị từ chối,
+không tràn ngang. Đã xem ảnh bảng mobile và flow desktop; các ảnh bảng/flow
+được giữ trong ignored `.local/ten-varied-gates/browser-screenshots/`.
+TypeScript, release build, Python AST và diff checks đạt. Chỉ dùng provider
+giả; không gọi AI/TTS thật hoặc triển khai VPS từ cloud. Mười audio trên
+VPS chỉ được xác nhận sau receipt của lệnh mới.
+
 ## Năm bộ Gate tiếp theo, đợt ba — 2026-11-10
 
 Bổ sung 15 bài riêng mốc 3.0, ID 7–11 thuộc

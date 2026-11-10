@@ -10,6 +10,7 @@ import { makeExclusiveGrammar, makeExclusiveSpeaking, makeExclusiveWriting } fro
 import { newDuoGatePapers } from "./data/duo-gate-supplement";
 import { newAdditionalDuoGatePapers } from "./data/duo-gate-supplement-2";
 import { newFiveDuoGatePapers } from "./data/duo-gate-supplement-3";
+import { newTenDuoGatePapers } from "./data/duo-gate-supplement-4";
 
 export const DUO_EXAM_CONTENT_COLLECTION = "duo_exam_content";
 export const DUO_EXAM_BANK_VERSION = "exclusive-20261105-v1";
@@ -60,6 +61,7 @@ function authoredCatalog(): PrivatePaper[] {
   for (const paper of newDuoGatePapers()) add(paper, "gate");
   for (const paper of newAdditionalDuoGatePapers()) add(paper, "gate");
   for (const paper of newFiveDuoGatePapers()) add(paper, "gate");
+  for (const paper of newTenDuoGatePapers()) add(paper, "gate");
   if (new Set(papers.map(paper => paper.id)).size !== papers.length)
     throw new Error("Private Duo paper identifiers must be unique.");
   const sources = new Set<string>();
@@ -97,8 +99,8 @@ async function appendVerifiedPapers(database: Context, papers: PrivatePaper[]): 
 }
 
 /** Only the papers in the explicitly selected batch; older papers are immutable. */
-export async function ensureDuoGateSupplement(database: Context, batch: "initial" | "additional" | "five" = "initial"): Promise<void> {
-  const factories = { initial: newDuoGatePapers, additional: newAdditionalDuoGatePapers, five: newFiveDuoGatePapers };
+export async function ensureDuoGateSupplement(database: Context, batch: "initial" | "additional" | "five" | "ten" = "initial"): Promise<void> {
+  const factories = { initial: newDuoGatePapers, additional: newAdditionalDuoGatePapers, five: newFiveDuoGatePapers, ten: newTenDuoGatePapers };
   if (!Object.hasOwn(factories, batch)) throw new Error("Unknown private Gate supplement batch.");
   const papers = factories[batch]();
   const ids = new Set(papers.map(paper => paper.id));

@@ -8,6 +8,7 @@ import { DUO_EXAM_CONTENT_COLLECTION, duoAssessmentContents, ensureExclusiveDuoB
 import { newDuoGatePapers } from "../server/data/duo-gate-supplement";
 import { newAdditionalDuoGatePapers } from "../server/data/duo-gate-supplement-2";
 import { newFiveDuoGatePapers } from "../server/data/duo-gate-supplement-3";
+import { newTenDuoGatePapers } from "../server/data/duo-gate-supplement-4";
 import { connectDatabase } from "../server/storage";
 import { gradeObjective } from "../server/learning";
 
@@ -15,7 +16,7 @@ const canonical = (text: string) => text.normalize("NFC").toLowerCase().replace(
 
 test("exclusive papers are complete, new and absent from every public study source", () => {
   const papers = exclusiveDuoBank();
-  assert.equal(papers.length, 517);
+  assert.equal(papers.length, 547);
   assert.equal(new Set(papers.map(paper => paper.id)).size, papers.length);
   const publicIds = new Set(contentBank.map(content => content.id));
   const publicSources = new Set([
@@ -48,7 +49,7 @@ test("exclusive papers are complete, new and absent from every public study sour
 test("paper planning is read-only, exact-band and exhausts without reusing a practice paper", async () => {
   const database = { db: new Proxy({}, { get() { throw new Error("Planning must not touch MongoDB."); } }) } as never;
   const used: string[] = [];
-  for (let sitting = 0; sitting < 19; sitting++) {
+  for (let sitting = 0; sitting < 29; sitting++) {
     const ids = await selectExclusiveDuoContent(database, {
       band: 3, testType: "academic", kind: "gate", skills: ["reading", "listening", "grammar"], excludeIds: used,
     });
@@ -74,18 +75,18 @@ test("private seed is add-only, retryable and cannot overwrite historical conten
     await progress.insertOne(original);
     await ensureExclusiveDuoBank(database);
     await ensureExclusiveDuoBank(database);
-    assert.equal(await database.db.collection(DUO_EXAM_CONTENT_COLLECTION).countDocuments(), 517);
+    assert.equal(await database.db.collection(DUO_EXAM_CONTENT_COLLECTION).countDocuments(), 547);
     assert.equal(await database.content.countDocuments(), 0);
     assert.deepEqual(await progress.findOne({ _id: original._id }), original);
-    const supplementIds = newFiveDuoGatePapers().map(paper => paper.id);
+    const supplementIds = newTenDuoGatePapers().map(paper => paper.id);
     const privateInventory = database.db.collection(DUO_EXAM_CONTENT_COLLECTION);
     await privateInventory.deleteMany({ id: { $in: supplementIds } });
     const oldInventory = await privateInventory.find({}).sort({ id: 1 }).toArray();
-    assert.equal(oldInventory.length, 502);
-    assert.ok([...newDuoGatePapers(), ...newAdditionalDuoGatePapers()].every(paper => oldInventory.some(saved => saved.id === paper.id)), "both earlier supplements remain part of the immutable old inventory");
-    await ensureDuoGateSupplement(database, "five");
-    await ensureDuoGateSupplement(database, "five");
-    assert.equal(await privateInventory.countDocuments(), 517);
+    assert.equal(oldInventory.length, 517);
+    assert.ok([...newDuoGatePapers(), ...newAdditionalDuoGatePapers(), ...newFiveDuoGatePapers()].every(paper => oldInventory.some(saved => saved.id === paper.id)), "all three earlier supplements remain part of the immutable old inventory");
+    await ensureDuoGateSupplement(database, "ten");
+    await ensureDuoGateSupplement(database, "ten");
+    assert.equal(await privateInventory.countDocuments(), 547);
     assert.deepEqual(await privateInventory.find({ id: { $nin: supplementIds } }).sort({ id: 1 }).toArray(), oldInventory);
     assert.deepEqual(await progress.findOne({ _id: original._id }), original);
     const first = exclusiveDuoBank()[0]!;
