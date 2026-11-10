@@ -485,13 +485,14 @@ export function DuoPlanPage() {
     finally { setBusy(""); }
   }
   async function startGate(gate: DuoGateView, accepted = false) {
-    if (health?.examIntegrityEnabled !== false && !accepted) { setStartGateRules(gate); return; }
+    if (busy) return;
+    if (health?.examIntegrityEnabled !== false && !accepted) { setError(""); setStartGateRules(gate); return; }
     setBusy(gate.id);
     setError("");
     try {
       const result = await api<{ assessment: DuoAssessmentView }>(
         `/duo/gates/${encodeURIComponent(gate.id)}/start`,
-        { method: "POST" },
+        { method: "POST", timeoutMs: 20_000 },
       );
       navigate(`/duo/assessments/${result.assessment.id}`);
       setStartGateRules(null);
@@ -753,7 +754,7 @@ export function DuoPlanPage() {
           </Card>
         </>
       )}
-      {startGateRules && <ExamStartDialog busy={!!busy} onClose={() => !busy && setStartGateRules(null)} onStart={() => void startGate(startGateRules, true)} />}
+      {startGateRules && <ExamStartDialog busy={!!busy} error={actionError} onClose={() => !busy && setStartGateRules(null)} onStart={() => void startGate(startGateRules, true)} />}
       {completedLesson && <CompletedExerciseDialog
         progress={completedLesson.progress}
         title={completedLesson.lesson.title}
@@ -1028,7 +1029,7 @@ export function DuoRoomPage() {
       void begin();
   }, [room?.status, remaining, error]);
   async function ready(value: boolean, accepted = false) {
-    if (value && health?.examIntegrityEnabled !== false && !accepted) { setReadyRules(true); return; }
+    if (value && health?.examIntegrityEnabled !== false && !accepted) { setError(""); setReadyRules(true); return; }
     setBusy(true);
     setError("");
     try {
@@ -1224,7 +1225,7 @@ export function DuoRoomPage() {
           {health?.examIntegrityEnabled !== false && room.status === "in-progress" ? "Rời phiên thi sẽ hủy lượt đang làm của cả hai." : "Kết quả đã hoàn thành được giữ trong lịch sử."}
         </span>
       </div>
-      {readyRules && <ExamStartDialog busy={busy} onClose={() => !busy && setReadyRules(false)} onStart={() => void ready(true, true)} />}
+      {readyRules && <ExamStartDialog busy={busy} error={error} onClose={() => !busy && setReadyRules(false)} onStart={() => void ready(true, true)} />}
     </div>
   );
 }

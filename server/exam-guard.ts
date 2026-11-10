@@ -94,6 +94,10 @@ export class ExamGuard {
     if (previous) {
       const row = await this.settle(user, previous);
       if (row.status === "active" && row.tabId !== tabId) return this.view(await this.invalidate(user, row, "duplicate-tab"));
+      // Re-entering an active document acknowledges a fresh server lease to
+      // the client. Renew through the same phase/expiry CAS as heartbeat, so
+      // response/navigation latency cannot consume the new client's window.
+      if (row.status === "active") return this.heartbeat(user, row._id, tabId);
       return this.view(row);
     }
     if (target.finished) return { id: "", kind: target.kind, resourceId: target.resourceId, status: "completed", leaseSeconds: EXAM_LEASE_SECONDS };

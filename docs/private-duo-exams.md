@@ -5,9 +5,13 @@ full mock trong kho công khai. Ngân hàng mới nằm trong collection
 `duo_exam_content`, tách khỏi `content`, `contentBank`, placement và planner.
 Ngân hàng công khai hiện có không bị reset hoặc thay thế.
 
-Ngân hàng riêng có 484 bài thuộc 11 mức band 3.0–8.0: 132 Reading, 132
-Listening, 88 Grammar, 88 Writing (Academic/General riêng) và 44 Speaking.
-Gate có tám biến thể cho mỗi kỹ năng khách quan/band; nâng band có bốn biến
+Ngân hàng riêng có 493 bài thuộc 11 mức band 3.0–8.0: 135 Reading, 135
+Listening, 91 Grammar, 88 Writing (Academic/General riêng) và 44 Speaking.
+Ngày 10/11/2026 bổ sung đúng ba bộ Gate band 3.0, mỗi bộ có tám câu Reading,
+tám câu Listening và mười câu Grammar. Các đoạn đọc, thông báo và câu hỏi mới
+được biên soạn riêng; toàn bộ 484 bài cũ giữ nguyên ID, nội dung và cache.
+Gate có 11 biến thể cho mỗi kỹ năng khách quan ở band 3.0 và tám biến thể ở
+các band còn lại; nâng band có bốn biến
 thể cho mỗi kỹ năng/band/profile. Reading/Listening full mock có 40 câu;
 Listening có bốn phần hội thoại/bài nói. Những ngữ cảnh mới được biên soạn
 theo chủ đề IELTS; dữ kiện, lời thoại và câu hỏi không lấy lại từ kho luyện.
@@ -46,7 +50,7 @@ thường. Chỉ lượt thi thuộc người học và assessment đã giao m�
 Đáp án vẫn bị ẩn trước khi nộp; xem lại, nghe audio và lưu/dịch từ dùng ngữ
 cảnh của đúng lượt thuộc người học. Biết trước một ID không cho phép đọc đề.
 
-Ngân hàng riêng có 264 nguồn audio. Manifest `bank:duo`
+Ngân hàng riêng có 267 nguồn audio. Manifest `bank:duo`
 tách khỏi manifest `bank` của audio cũ; bộ nhớ đệm audio dùng chung tiếp tục
 bỏ qua file đã có. `--inspect --duo-only` chỉ đọc và không khởi tạo ngân hàng.
 Đồng hồ thi chỉ bắt đầu sau khi audio của bộ đề được chọn đã sẵn sàng.
@@ -62,6 +66,15 @@ và ký tự JSON gửi lên; retry/lỗi vẫn trừ trần, cache không trừ
 một ngân sách suốt tiến trình và dừng khi hết, không tự cấp ngân sách mới ở
 lượt quét sau. Đây là giới hạn kỹ thuật theo lần chạy, không phải trần USD.
 Không thay fingerprint/giọng/model của cache để giữ khả năng tái sử dụng.
+
+Riêng ba bộ bổ sung dùng cờ updater `--add-three-gate-papers`: chỉ chuẩn bị
+đúng ba thông báo mới tại band 3.0, không quét/tạo bù phần còn thiếu của kho.
+Mỗi thông báo là một lượt đọc giọng Anh, với trần một request/3.000 ký tự
+JSON gửi đi; cả phiên bản tối đa ba request/9.000 ký tự và 180 giây chạy.
+Reservation lưu trong `duo_gate_audio_supplements`, trừ cả lần lỗi/ngắt;
+chạy lại không cấp ngân sách mới cho clip đã thử. Audio đủ được dùng lại,
+turn đã trả phí có thể ghép lại với ngân sách 0. Chỉ thay app sau khi ba
+audio đều được xác minh sẵn sàng; chưa đủ thì giữ app hiện tại.
 
 # Chấm đáp án ngắn
 

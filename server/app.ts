@@ -14,7 +14,7 @@ import { z, ZodError } from "zod";
 import { resolve } from "node:path";
 import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
-import { ApiError } from "./errors";
+import { AI_ERROR_CODES, ApiError } from "./errors";
 import { setAudioRange } from "./audio-range";
 import { contentProgress } from "./content-progress";
 import { buildWritingGuides } from "./writing-guidance";
@@ -599,7 +599,10 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
       if (attempt?.mode === "practice" && !attempt.duoAssessmentId) return;
     }
     const session = await guard.open(user, kind, resourceId, requireExamTab(tabId));
-    if (session.status === "invalidated") throw new ApiError(409, "Đã phát hiện cửa sổ khác; lượt này đã bị hủy.");
+    if (session.status === "invalidated") throw new ApiError(409, session.reason === "heartbeat-lost"
+      ? "Phiên giám sát trước đã mất kết nối hoặc hết hạn. Hãy thử mở lượt mới; kết quả đã hoàn thành vẫn được giữ."
+      : session.reason === "duplicate-tab" ? "Đã phát hiện trang khác cùng tài khoản; lượt này đã bị hủy."
+        : "Phiên thi trước đã bị hủy theo quy định giám sát. Hãy thử mở lượt mới.");
     const integrity = { sessionId: session.id, status: session.status, phase: session.phase, ...(session.reason ? { reason: session.reason } : {}) };
     if (kind === "attempt") await database.attempts.updateOne({ _id: resourceId, userId: user.id, status: "in-progress" }, { $set: { integrity } });
     else if (kind === "placement") await database.placements.updateOne({ _id: resourceId, userId: user.id, currentQuestionId: { $ne: null } }, { $set: { integrity } });
@@ -2643,7 +2646,7 @@ export function createApp(database: Database, config: AppConfig = {}): Express {
         return;
       }
       if (error instanceof ApiError) {
-        if (error.code) {
+        if (error.code && (AI_ERROR_CODES as readonly string[]).includes(error.code)) {
           // Only fixed categories enter logs: never provider payloads, essays,
           // account IDs, credentials or the original request URL.
           const route = /\/attempts\/[^/]+\/submit$/.test(request.path) ? "attempt-submit"

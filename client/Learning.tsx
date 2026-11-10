@@ -1268,7 +1268,7 @@ export function PlacementPage() {
           <FeedbackView feedback={placement.result} placementWords placementId={placement.id} />
         </>
       )}
-      {startMode && <ExamStartDialog busy={busy} onClose={() => !busy && setStartMode(null)} onStart={() => void start(startMode, true)} />}
+      {startMode && <ExamStartDialog busy={busy} error={error} onClose={() => !busy && setStartMode(null)} onStart={() => void start(startMode, true)} />}
     </WordNotebook>
   );
 }

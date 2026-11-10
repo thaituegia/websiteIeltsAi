@@ -1,5 +1,36 @@
 # Kết quả kiểm tra
 
+## Ba bộ Gate mới và mở lại bài — 2026-11-10
+
+Bổ sung đúng chín bài riêng mốc 3.0: ba Reading/tám câu, ba Listening/tám
+câu và ba Grammar/mười câu. Có 493 bài riêng, 135 bài Listening/267 phần;
+484 bài cũ được đối chiếu theo ID và toàn bộ JSON, giữ nguyên nội dung.
+Kiểm tra Mongo thật mô phỏng tám bộ cũ đã dùng, mở ba đợt mới cho cả hai
+người cùng contentIds, giữ nguyên các receipt cũ và từ chối đợt thứ tư.
+Seed riêng bổ sung chín bài bằng setOnInsert, không đổi nguồn công khai.
+
+Thông báo mở Gate hiện trong hộp thoại thay vì bị che ở trang phía sau;
+nút có trạng thái đang mở, giới hạn chờ và cho thử lại. Mở lại guard cùng
+document gia hạn đúng lease đang sống qua CAS heartbeat: +22 giây mở lại,
++27 giây heartbeat vẫn hoạt động; expired/invalidated/other-tab/completed
+không được hồi sinh và grading giữ khoảng bảo vệ riêng.
+
+CLI bổ sung chỉ nhắm ba thông báo ngắn, mỗi thông báo đúng một turn giọng
+Anh. Mongo ledger giữ reservation tối đa ba request/9.000 ký tự cho cả phiên
+bản, không hoàn lượt sau lỗi/ngắt, không tự cấp lại khi chạy lại. Mocked
+OpenAI/ElevenLabs kiểm tra ba request đúng mục tiêu, cache replay không gọi
+provider, concurrent không vượt trần và saved turn có thể phục hồi với ngân
+sách 0. Updater chỉ kích hoạt app sau ba audio đủ; timeout cleanup kiểm tra
+đúng container/image/operation, không đụng container khác.
+
+**320 ca native chính và 12 ca bổ sung đạt**, một ca native triển khai tùy
+chọn không chạy. **4 ca Chromium desktop/mobile đạt**, gồm lỗi hết đề hiện
+trong modal rồi mở lượt thật có guard và lỗi người kia đang làm vẫn cho
+thử lại/quay về lộ trình. TypeScript, release build và diff checks đạt.
+Fixture dùng Mongo riêng và provider giả; không gọi AI/TTS trả phí hoặc
+triển khai VPS từ cloud. Audio mới trên VPS chỉ xác nhận sau receipt của
+lệnh bổ sung, không suy từ kết quả test hoặc cache manifest cũ.
+
 ## Chung đề Duo Gate và giữ phiên đúng — 2026-11-06
 
 Gate dùng một bộ riêng theo đợt cho cả hai người, kể cả mở đồng thời hoặc

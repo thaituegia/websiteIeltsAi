@@ -30,6 +30,7 @@ PROJECT = 'website-ielts-ai-20261007172235-7d7gnc'
 ORIGIN = 'https://sutonghanyu.vn'
 TEXT_MODEL = 'gpt-6.1-sol'
 TEXT_MODEL_ROLES = ('CONTENT_MODEL', 'EXTRACTOR_MODEL', 'SCORING_MODEL', 'TRANSLATION_MODEL')
+GATE_SUPPLEMENT_VERSION = 'duo-gate-20261110-v1'
 TEXT_MODEL_PROBE = r'''
 const model = "gpt-6.1-sol";
 const result = {ok:false, model, code:"probe-unavailable"};
@@ -267,7 +268,7 @@ def validate_config(current, proposed, values, app_memory, upgrade_text_models=F
             raise RuntimeError('Tài khoản khác app đang chạy; chưa thay app.')
 
 
-def cleanup_model_probe(guards, name, image, operation):
+def cleanup_model_probe(guards, name, image, operation, kind='model-probe'):
     # A timed-out Docker client must never leave its private probe running.
     # Resolve the exact ephemeral name, then verify every ownership field before
     # removing only that immutable container ID. No broad cleanup is permitted.
@@ -289,7 +290,7 @@ def cleanup_model_probe(guards, name, image, operation):
     labels = row.get('Labels') or {}
     if (row.get('Id') != identifier or row.get('Image') != image or row.get('Name') != '/' + name or
             labels.get('com.websiteieltsai.project') != PROJECT or
-            labels.get('com.websiteieltsai.kind') != 'model-probe' or
+            labels.get('com.websiteieltsai.kind') != kind or
             labels.get('com.websiteieltsai.operation-id') != operation):
         raise RuntimeError('Quyền sở hữu container kiểm tra model không khớp; giữ app hiện tại.')
     try:
@@ -364,6 +365,70 @@ def check_text_model(guards, original, values, audit):
                        '). App cũ vẫn chạy; chưa build hoặc thay cấu hình.')
 
 
+def prepare_three_gate_papers(guards, image, values, audit):
+    # This one-off candidate process prepares exactly the three new monologues.
+    # Its durable version ledger owns the lifetime allowance, including failed
+    # requests, so invoking the updater again never creates a fresh allowance.
+    guards.memory_headroom(384)
+    if (values.get('MONGODB_URI') != 'mongodb://mongo:27017/ielts_ai' or
+            values.get('APP_ORIGIN') != ORIGIN or values.get('DUO_CREDENTIALS_FILE')):
+        raise RuntimeError('Cấu hình đề Gate không đúng bản cài; giữ app hiện tại.')
+    roles = ('MONGODB_URI', 'APP_ORIGIN', 'NODE_ENV', 'DUO_ENABLED', 'DUO_CREDENTIALS_FILE',
+             'DUO_ACCOUNTS_JSON', 'IELTS_OPENAI_API_KEY', 'OPENAI_API_KEY', 'ELEVENLABS_API_KEY',
+             'ELEVENLABS_VOICE_BRITISH', 'ELEVENLABS_VOICE_AMERICAN',
+             'ELEVENLABS_VOICE_AUSTRALIAN', 'ELEVENLABS_MODEL')
+    private_values = {key: values[key] for key in roles if key in values}
+    if any(not isinstance(value, str) or re.search(r'[\x00\r\n]', value) for value in private_values.values()):
+        raise RuntimeError('Cấu hình provider không phù hợp cho ba đề Gate; giữ app hiện tại.')
+    path = audit / 'gate-supplement.env'
+    operation = os.urandom(6).hex()
+    name = PROJECT + '-gate-supplement-' + operation
+    raw, created, started = None, False, False
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        created = True
+        with os.fdopen(descriptor, 'w') as output:
+            output.write(''.join(key + '=' + value + '\n' for key, value in private_values.items()))
+        started = True
+        raw = guards.command(['docker', 'run', '--rm', '--name', name,
+                              '--label', 'com.websiteieltsai.project=' + PROJECT,
+                              '--label', 'com.websiteieltsai.kind=gate-supplement',
+                              '--label', 'com.websiteieltsai.operation-id=' + operation,
+                              '--env-file', str(path), '--network', PROJECT + '_web',
+                              '--network', PROJECT + '_database', '--restart=no',
+                              '--memory=384m', '--memory-swap=384m', '--cpus=0.25', '--pids-limit=64',
+                              '--read-only', '--cap-drop=ALL', '--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=32m',
+                              '--security-opt=no-new-privileges:true', '--user=node', '--entrypoint=node',
+                              image, '--import', 'tsx', '/app/server/duo-gate-supplement-cli.ts', '--prepare'], timeout=240)
+    except Exception:
+        pass
+    finally:
+        if created:
+            path.unlink(missing_ok=True)
+        if started:
+            try:
+                cleanup_model_probe(guards, name, image, operation, kind='gate-supplement')
+            except Exception:
+                raise RuntimeError('Chưa xác nhận dừng tác vụ ba đề Gate; giữ app hiện tại.') from None
+    try:
+        if not isinstance(raw, str) or len(raw) > 4096:
+            raise ValueError('unavailable-supplement')
+        result = json.loads(raw)
+        expected = {'ok', 'version', 'total', 'ready', 'providerRequests', 'maxProviderRequests',
+                    'inputCharacters', 'maxInputCharacters'}
+        if (not isinstance(result, dict) or set(result) != expected or result['ok'] is not True or
+                result['version'] != GATE_SUPPLEMENT_VERSION or
+                any(type(result[key]) is not int for key in expected - {'ok', 'version'}) or
+                result['total'] != 3 or result['ready'] != 3 or result['maxProviderRequests'] != 3 or
+                result['maxInputCharacters'] != 9000 or not 0 <= result['providerRequests'] <= 3 or
+                not 0 <= result['inputCharacters'] <= 9000):
+            raise ValueError('incomplete-supplement')
+    except Exception:
+        raise RuntimeError('Ba đề Gate chưa đủ audio trong giới hạn đã cấp; giữ app hiện tại, không tự thử lại AI.') from None
+    (audit / 'gate-supplement.json').write_text(json.dumps(result) + '\n')
+    return result
+
+
 def file_snapshot(paths):
     result = {}
     for path in paths:
@@ -401,7 +466,7 @@ def healthy(guards, diagnostic, expected_image=None):
     return app
 
 
-def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False):
+def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False, add_three_gate_papers=False):
     owned(LIVE_DIR, directory=True)
     private = LIVE_DIR / '.local/deploy'
     owned(private, directory=True, private=True)
@@ -415,10 +480,10 @@ def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('Project này đang có lượt cập nhật khác.') from None
-        update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models)
+        update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models, add_three_gate_papers)
 
 
-def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models=False):
+def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models=False, add_three_gate_papers=False):
     base_file, domain, release = LIVE_DIR / 'deploy/compose.yaml', private / 'domain.compose.yaml', private / 'release.compose.yaml'
     protected = [private / 'deploy.env', private / 'app.env', base_file, domain, LIVE_DIR / 'deploy/compose.sh',
                  LIVE_DIR / 'deploy/nginx.conf', private / 'tls/site.crt']
@@ -527,6 +592,14 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
             raise RuntimeError('Trạng thái project/cấu hình khác đã đổi đồng thời; cần kiểm tra log riêng.')
 
     unchanged(original['Id'])
+    supplement = None
+    if add_three_gate_papers:
+        if network_identity(guards, {name: service(guards, name) for name in ('app', 'mongo', 'proxy')}) != networks:
+            raise RuntimeError('Mạng IELTS thay đổi trước khi chuẩn bị audio; giữ app hiện tại.')
+        healthy(guards, diagnostic, original['Image'])
+        print('Chuẩn bị đúng ba audio Gate mới; tối đa 3 yêu cầu và 9.000 ký tự cho cả phiên bản, không tự thử lại.', flush=True)
+        supplement = prepare_three_gate_papers(guards, image_id, values, audit)
+        unchanged(original['Id'])
     if release.read_bytes() != release_bytes or service(guards, 'app')['Id'] != original['Id']:
         raise RuntimeError('App/release thay đổi đồng thời; chưa thay app.')
     network_identity(guards, {name: service(guards, name) for name in ('app', 'mongo', 'proxy')})
@@ -567,8 +640,12 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
                'bankUnchanged': True, 'onlyAppReplaced': True}
     if upgrade_text_models:
         receipt['textModels'] = {role: TEXT_MODEL for role in TEXT_MODEL_ROLES}
+    if supplement:
+        receipt['privateGateSupplement'] = supplement
     (audit / 'complete.json').write_text(json.dumps(receipt) + '\n')
-    print('HOÀN TẤT: ' + ORIGIN + ' — app mới healthy; không chạy migration/reset hoặc tạo lại audio.', flush=True)
+    print('HOÀN TẤT: ' + ORIGIN + ' — app mới healthy; giữ nguyên bài làm và audio đã có.', flush=True)
+    if supplement:
+        print('Đã bổ sung ba bộ Gate riêng mới; cả ba audio đã sẵn sàng. Không chạy tạo audio hàng loạt.', flush=True)
     if upgrade_text_models:
         print('Model text đã cập nhật: ' + TEXT_MODEL + ' (' + ', '.join(TEXT_MODEL_ROLES) + ').', flush=True)
 
@@ -576,10 +653,11 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
 def main():
     if (os.geteuid() != 0 or len(sys.argv) not in (3, 4) or not re.fullmatch(r'[a-f0-9]{40}', sys.argv[1]) or
             not re.fullmatch(r'[a-f0-9]{64}', sys.argv[2]) or
-            (len(sys.argv) == 4 and sys.argv[3] not in ('--upgrade-text-models', '--cached-audio-only'))):
-        raise RuntimeError('Chạy bằng root với commit đầy đủ, SHA256 archive và tùy chọn --cached-audio-only hoặc --upgrade-text-models. Tạo audio hàng loạt đã bị tắt.')
+            (len(sys.argv) == 4 and sys.argv[3] not in ('--upgrade-text-models', '--cached-audio-only', '--add-three-gate-papers'))):
+        raise RuntimeError('Chạy bằng root với commit đầy đủ, SHA256 archive và một tùy chọn --cached-audio-only, --upgrade-text-models hoặc --add-three-gate-papers. Tạo audio hàng loạt đã bị tắt.')
     upgrade_text_models = len(sys.argv) == 4 and sys.argv[3] == '--upgrade-text-models'
-    if not upgrade_text_models:
+    add_three_gate_papers = len(sys.argv) == 4 and sys.argv[3] == '--add-three-gate-papers'
+    if not upgrade_text_models and not add_three_gate_papers:
         print('Chỉ cập nhật app và dùng audio đã có; không gọi TTS hoặc thử model AI.', flush=True)
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix='ielts-app-update-', dir='/tmp') as folder:
@@ -590,7 +668,10 @@ def main():
             download('https://raw.githubusercontent.com/thaituegia/websiteIeltsAi/' + sys.argv[1] + '/deploy/' + name,
                      digest, path, 1024 * 1024)
             modules.append(checked_module(path, 'ielts_app_update_' + name.replace('-', '_').replace('.', '_')))
-        deploy(*modules, *sys.argv[1:3], upgrade_text_models=upgrade_text_models)
+        options = {'upgrade_text_models': upgrade_text_models}
+        if add_three_gate_papers:
+            options['add_three_gate_papers'] = True
+        deploy(*modules, *sys.argv[1:3], **options)
 
 
 if __name__ == '__main__':

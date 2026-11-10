@@ -18,7 +18,8 @@ container riêng 384 MiB/no extra swap/0,25 CPU; kiểm tra đúng project/mạn
 giữ 1 GiB RAM dự phòng, chặn `fetch` và không seed/repair/download WAV. Báo
 cáo phân nhóm công khai/riêng theo band và lesson/full-mock, kèm số bài đủ
 toàn bộ phần, số phần thiếu và ID/tên đề thiếu đã giới hạn độ dài. Toàn bộ
-132 đề Listening riêng/264 phần phải có trong inventory; inventory trống
+135 đề Listening riêng/267 phần phải có trong inventory sau bản bổ sung ngày
+10/11/2026; inventory trống
 không được coi là đã đủ. Đây là kiểm tra metadata giống guard trước đồng hồ
 thi, không nghe lại hoặc tải toàn bộ nhiều GB âm thanh để kiểm tra thủ công.
 
@@ -40,3 +41,12 @@ cung cấp; không suy từ thời gian chạy hoặc số clip hoàn tất.
 Không đổi model TTS, voice assignment, AUDIO_VERSION hoặc fingerprint. Giữ
 nguyên các clip và turn đã hoàn tất. Các đề thiếu audio vẫn chờ chuẩn bị,
 không tự gọi provider khi người học mở bài hoặc bấm nghe.
+
+Ngoại lệ hữu hạn được chủ website yêu cầu ngày 10/11/2026 là ba bộ Gate mới.
+`--add-three-gate-papers` chỉ nhắm ba ID Listening của bản bổ sung; có tối đa
+ba request/9.000 ký tự JSON cho cả phiên bản và deadline 180 giây. Ledger
+lưu bền reservation trước khi gọi provider, kể cả thất bại/abort; chạy lại
+không cấp thêm lượt. Chế độ này không tiếp tục 93 nguồn cũ đang thiếu, không
+chạy watch hoặc thử lại request lỗi, và không được ghép với cờ nâng model.
+Chỉ cập nhật app sau khi xác minh ba audio mới sẵn sàng. Đây vẫn không phải
+trần USD: giá thực tế phụ thuộc nhà cung cấp hiện tại.

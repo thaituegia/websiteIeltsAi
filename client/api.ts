@@ -24,6 +24,7 @@ const aiFailureCodes = new Set([
   "AI_RESPONSE_INVALID",
   "AI_EVIDENCE_INVALID",
 ]);
+const gateFailureCodes = new Set(["DUO_GATE_PAPERS_EXHAUSTED"]);
 function applicationAiFailure(body: unknown): { code: string; message: string } | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
   const value = body as Record<string, unknown>;
@@ -83,7 +84,7 @@ export async function api<T>(
             (response.status >= 500
               ? "Máy chủ tạm thời chưa sẵn sàng. Vui lòng thử lại."
               : `Không thể tải dữ liệu (${response.status}).`),
-        applicationFailure?.code,
+        applicationFailure?.code || (response.status === 409 && typeof body?.code === "string" && gateFailureCodes.has(body.code) ? body.code : undefined),
       );
     }
     if (response.status === 204) return undefined as T;

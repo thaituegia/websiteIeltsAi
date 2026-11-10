@@ -55,6 +55,17 @@ module/build. Audio còn thiếu tiếp tục chặn phần thi đó trước kh
 hồ, không được tự tạo trong request của người học. Xem
 [phạm vi đề riêng và chấm đáp án](private-duo-exams.md).
 
+Đợt bổ sung ba bộ Gate 3.0 ngày 10/11/2026 dùng riêng cờ
+`--add-three-gate-papers`, không kết hợp các cờ trên. Sau build/kiểm tra online,
+helper chạy candidate trong container 384 MiB, không thêm swap, 0,25 CPU và
+chỉ nối hai mạng IELTS hiện tại. Job chỉ add/verify chín bài mới và chuẩn bị
+ba thông báo nghe đã chỉ định, tối đa ba request/9.000 ký tự cho cả phiên bản;
+ledger không tự cấp lại sau lỗi. Thời gian job 180 giây, supervisor 240 giây;
+cleanup chỉ được dừng container đúng tên/image/nhãn operation của job này.
+Chưa đủ ba audio thì app cũ tiếp tục hoạt động. Kết quả đủ được lưu trong
+`gate-supplement.json` và `privateGateSupplement` của receipt cập nhật. Lịch
+sử, điểm đã đạt, 484 bài cũ và audio cũ giữ nguyên.
+
 `deploy/inspect-exam-audio.py` kiểm tra từng bài Listening công khai, bài Duo
 riêng và câu đầu vào bằng cache metadata. Helper không gọi provider, không
 seed/repair và không tạo audio; báo cáo phân biệt bài đủ toàn bộ phần nghe

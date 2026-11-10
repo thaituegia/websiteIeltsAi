@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ShieldCheck, AlertTriangle } from "lucide-react";
 import { api, json } from "./api";
-import { Button, Card, Modal } from "./components";
+import { Button, Card, ErrorNotice, Modal } from "./components";
 import { examTabId as tabId } from "./examTransport";
 import type { ExamIntegrityKind as ExamKind, ExamIntegrityReason as ViolationReason, ExamIntegritySession } from "../shared/exam-integrity";
 import type { DuoRoomView } from "../shared/duo";
@@ -323,10 +323,11 @@ export function ExamRules({ compact = false }: { compact?: boolean }) {
     </div>
   </div>;
 }
-export function ExamStartDialog({ onStart, onClose, busy = false }: { onStart: () => void; onClose: () => void; busy?: boolean }) {
+export function ExamStartDialog({ onStart, onClose, busy = false, error }: { onStart: () => void; onClose: () => void; busy?: boolean; error?: string }) {
   return <Modal title="Quy định phòng thi" onClose={onClose}>
     <ExamRules />
-    <div className="row wrap"><Button disabled={busy} onClick={onStart}>Tôi hiểu, bắt đầu bài thi</Button><Button className="secondary" disabled={busy} onClick={onClose}>Quay lại</Button></div>
+    {error && <ErrorNotice message={error} />}
+    <div className="row wrap"><Button disabled={busy} onClick={onStart}>{busy ? "Đang mở bài thi…" : error ? "Thử mở lại" : "Tôi hiểu, bắt đầu bài thi"}</Button><Button className="secondary" disabled={busy} onClick={onClose}>Quay lại</Button></div>
   </Modal>;
 }
 export function InvalidatedExam({ onRestart, href, busy = false, reason }: { onRestart?: () => void; href?: string; busy?: boolean; reason?: string }) {

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { createDuoService } from "../server/duo";
-import { ensureExclusiveDuoBank, isExclusiveDuoContentId } from "../server/duo-exam-content";
+import { ensureExclusiveDuoBank, exclusiveDuoBank, isExclusiveDuoContentId } from "../server/duo-exam-content";
+import { newDuoGatePapers } from "../server/data/duo-gate-supplement";
 import { ApiError } from "../server/errors";
 import { connectDatabase, type UserRecord } from "../server/storage";
 import type { ContentKind, StoredContent } from "../shared/types";
@@ -189,6 +190,36 @@ test("partners receive one shared private Gate paper and coordinated fresh retry
     try { await action(fixture); } finally { await fixture.close(); }
   };
   const ids = (record: SharedAssessment) => record.parts.map(part => part.contentId);
+
+  await t.test("three appended sets recover an exhausted Gate with fresh shared rounds and preserve every earlier result", () => cases(async f => {
+    const newIds = new Set(newDuoGatePapers().map(paper => paper.id));
+    const oldPapers = exclusiveDuoBank().filter(paper => paper.band === 3 && paper.format === "lesson" && !newIds.has(paper.id));
+    assert.equal(oldPapers.length, 24);
+    const history = Array.from({ length: 8 }, (_unused, index) => ({
+      _id: "synthetic-prior-" + index, userId: f.users.husband.id, role: "husband" as const,
+      duoId: f.duoId, gateId: f.gateId, kind: "gate", band: 3, status: "failed", active: false,
+      createdAt: f.iso(), deadlineAt: f.iso(),
+      parts: ["reading", "listening", "grammar"].map(skill => ({
+        contentId: oldPapers.filter(paper => paper.skill === skill)[index]!.id, attemptId: null,
+      })),
+    }));
+    await f.records.insertMany(history);
+    const consumed = new Set<string>();
+    for (let round = 0; round < 3; round++) {
+      const husband = await f.start("husband"), wife = await f.start("wife");
+      assert.deepEqual(ids(husband), ids(wife));
+      assert.equal(ids(husband).length, 3);
+      assert.ok(ids(husband).every(id => newIds.has(id) && !consumed.has(id)));
+      assert.ok([...husband.parts, ...wife.parts].every(part => part.attemptId === null));
+      ids(husband).forEach(id => consumed.add(id));
+      await f.settle(husband, "failed"); await f.settle(wife, "failed");
+    }
+    assert.equal(consumed.size, 9);
+    await assert.rejects(f.start("husband"), error => error instanceof ApiError && error.code === "DUO_GATE_PAPERS_EXHAUSTED");
+    assert.equal(await f.records.countDocuments(), 14);
+    for (const previous of history) assert.deepEqual(await f.records.findOne({ _id: previous._id }), previous);
+    assert.equal(await f.database.db.collection("speech_audio.files").countDocuments(), 0);
+  }));
 
   await t.test("sequential first starts use the exact same paper but retain separate answers", () => cases(async f => {
     const husband = await f.start("husband"), wife = await f.start("wife");

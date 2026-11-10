@@ -7,6 +7,7 @@ import type { Database } from "./storage";
 import { makeExclusiveReading } from "./data/duo-exclusive-reading";
 import { makeExclusiveListening } from "./data/duo-exclusive-listening";
 import { makeExclusiveGrammar, makeExclusiveSpeaking, makeExclusiveWriting } from "./data/duo-exclusive-support";
+import { newDuoGatePapers } from "./data/duo-gate-supplement";
 
 export const DUO_EXAM_CONTENT_COLLECTION = "duo_exam_content";
 export const DUO_EXAM_BANK_VERSION = "exclusive-20261105-v1";
@@ -52,6 +53,9 @@ function authoredCatalog(): PrivatePaper[] {
       add(makeExclusiveSpeaking(band, variant), "promotion");
     }
   }
+  // Additive supplement: keep every existing private ID and source immutable,
+  // including the scripts that already have paid audio in the shared cache.
+  for (const paper of newDuoGatePapers()) add(paper, "gate");
   if (new Set(papers.map(paper => paper.id)).size !== papers.length)
     throw new Error("Private Duo paper identifiers must be unique.");
   const sources = new Set<string>();
@@ -73,26 +77,33 @@ export function exclusiveDuoBank(): StoredContent[] {
   return authoredCatalog().map(({ _id: _, duoExam: __, ...content }) => structuredClone(content));
 }
 
+async function appendVerifiedPapers(database: Context, papers: PrivatePaper[]): Promise<void> {
+  const collection = database.db.collection<PrivatePaper>(DUO_EXAM_CONTENT_COLLECTION);
+  await collection.bulkWrite(papers.map(paper => ({ updateOne: {
+    filter: { _id: paper.id }, update: { $setOnInsert: paper }, upsert: true,
+  } })), { ordered: false });
+  const stored = await collection.find({ _id: { $in: papers.map(paper => paper.id) } }).toArray();
+  const byId = new Map(stored.map(({ _id, duoExam, ...content }) => [_id, {
+    ...duoExam, actualHash: sourceHash(content),
+  }]));
+  if (papers.some(paper => byId.get(paper.id)?.version !== DUO_EXAM_BANK_VERSION ||
+      byId.get(paper.id)?.sourceHash !== paper.duoExam.sourceHash ||
+      byId.get(paper.id)?.actualHash !== paper.duoExam.sourceHash))
+    throw new ApiError(409, "Ngân hàng đề riêng chưa được xác minh; chưa mở bài thi.");
+}
+
+/** Only the nine newly authored Gate papers; never rewrites older inventory. */
+export async function ensureDuoGateSupplement(database: Context): Promise<void> {
+  const ids = new Set(newDuoGatePapers().map(paper => paper.id));
+  await appendVerifiedPapers(database, authoredCatalog().filter(paper => ids.has(paper.id)));
+}
+
 /** Add-only initialization; historical papers, public content and learner data
  * are never overwritten. Failed initialization may safely be retried. */
 export async function ensureExclusiveDuoBank(database: Context): Promise<void> {
   const existing = seeded.get(database.db);
   if (existing) return existing;
-  const work = (async () => {
-    const papers = authoredCatalog();
-    const collection = database.db.collection<PrivatePaper>(DUO_EXAM_CONTENT_COLLECTION);
-    await collection.bulkWrite(papers.map(paper => ({ updateOne: {
-      filter: { _id: paper.id }, update: { $setOnInsert: paper }, upsert: true,
-    } })), { ordered: false });
-    const stored = await collection.find({ _id: { $in: papers.map(paper => paper.id) } }).toArray();
-    const byId = new Map(stored.map(({ _id, duoExam, ...content }) => [_id, {
-      ...duoExam, actualHash: sourceHash(content),
-    }]));
-    if (papers.some(paper => byId.get(paper.id)?.version !== DUO_EXAM_BANK_VERSION ||
-        byId.get(paper.id)?.sourceHash !== paper.duoExam.sourceHash ||
-        byId.get(paper.id)?.actualHash !== paper.duoExam.sourceHash))
-      throw new ApiError(409, "Ngân hàng đề riêng chưa được xác minh; chưa mở bài thi.");
-  })();
+  const work = appendVerifiedPapers(database, authoredCatalog());
   seeded.set(database.db, work);
   try { await work; }
   catch (error) { seeded.delete(database.db); throw error; }
@@ -127,7 +138,7 @@ export async function selectExclusiveDuoContent(_database: Context, options: {
       (paper.testType === options.testType || paper.testType === "both") &&
       !excluded.has(paper.id)).sort((a, b) => a.id.localeCompare(b.id));
     const candidate = candidates[0];
-    if (!candidate) throw new ApiError(409, "Đã dùng hết đề riêng chưa làm cho kỹ năng này. Cần bổ sung đề mới trước khi thi lại.");
+    if (!candidate) throw new ApiError(409, "Đã dùng hết đề riêng chưa làm cho kỹ năng này. Cần bổ sung đề mới trước khi thi lại.", "DUO_GATE_PAPERS_EXHAUSTED");
     excluded.add(candidate.id);
     selected.push(candidate.id);
   }

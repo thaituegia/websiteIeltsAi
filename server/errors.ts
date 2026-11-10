@@ -11,12 +11,13 @@ export const AI_ERROR_CODES = [
   "AI_EVIDENCE_INVALID",
 ] as const;
 export type AiErrorCode = typeof AI_ERROR_CODES[number];
+export type ApiErrorCode = AiErrorCode | "DUO_GATE_PAPERS_EXHAUSTED";
 
 export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
-    public code?: AiErrorCode,
+    public code?: ApiErrorCode,
   ) {
     super(message);
     this.name = "ApiError";
