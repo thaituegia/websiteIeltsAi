@@ -66,6 +66,14 @@ Chưa đủ ba audio thì app cũ tiếp tục hoạt động. Kết quả đủ
 `gate-supplement.json` và `privateGateSupplement` của receipt cập nhật. Lịch
 sử, điểm đã đạt, 484 bài cũ và audio cũ giữ nguyên.
 
+Đợt bổ sung thứ hai dùng `--add-three-more-gate-papers`, CLI
+`--prepare-additional` và receipt phiên bản `duo-gate-20261110-v2`. Đợt này
+chỉ add/verify chín bài hậu tố 4–6 và chuẩn bị ba clip mới; không tạo lại audio
+hay cấp lại ledger v1. Không kết hợp với cờ bổ sung đầu, cached-only hoặc
+nâng model. Giới hạn tài nguyên, deadline, xác minh ba audio trước khi đổi
+app, cleanup và rollback giữ nguyên. Nhà vận hành đã xác nhận đợt đầu hoàn
+tất. Toàn bộ 493 bài trước đợt hai và kết quả học được giữ nguyên.
+
 `deploy/inspect-exam-audio.py` kiểm tra từng bài Listening công khai, bài Duo
 riêng và câu đầu vào bằng cache metadata. Helper không gọi provider, không
 seed/repair và không tạo audio; báo cáo phân biệt bài đủ toàn bộ phần nghe

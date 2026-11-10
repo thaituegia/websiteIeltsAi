@@ -8,6 +8,7 @@ import { makeExclusiveReading } from "./data/duo-exclusive-reading";
 import { makeExclusiveListening } from "./data/duo-exclusive-listening";
 import { makeExclusiveGrammar, makeExclusiveSpeaking, makeExclusiveWriting } from "./data/duo-exclusive-support";
 import { newDuoGatePapers } from "./data/duo-gate-supplement";
+import { newAdditionalDuoGatePapers } from "./data/duo-gate-supplement-2";
 
 export const DUO_EXAM_CONTENT_COLLECTION = "duo_exam_content";
 export const DUO_EXAM_BANK_VERSION = "exclusive-20261105-v1";
@@ -56,6 +57,7 @@ function authoredCatalog(): PrivatePaper[] {
   // Additive supplement: keep every existing private ID and source immutable,
   // including the scripts that already have paid audio in the shared cache.
   for (const paper of newDuoGatePapers()) add(paper, "gate");
+  for (const paper of newAdditionalDuoGatePapers()) add(paper, "gate");
   if (new Set(papers.map(paper => paper.id)).size !== papers.length)
     throw new Error("Private Duo paper identifiers must be unique.");
   const sources = new Set<string>();
@@ -92,9 +94,11 @@ async function appendVerifiedPapers(database: Context, papers: PrivatePaper[]): 
     throw new ApiError(409, "Ngân hàng đề riêng chưa được xác minh; chưa mở bài thi.");
 }
 
-/** Only the nine newly authored Gate papers; never rewrites older inventory. */
-export async function ensureDuoGateSupplement(database: Context): Promise<void> {
-  const ids = new Set(newDuoGatePapers().map(paper => paper.id));
+/** Only the nine papers in the explicitly selected batch; older papers are immutable. */
+export async function ensureDuoGateSupplement(database: Context, batch: "initial" | "additional" = "initial"): Promise<void> {
+  if (batch !== "initial" && batch !== "additional") throw new Error("Unknown private Gate supplement batch.");
+  const papers = batch === "additional" ? newAdditionalDuoGatePapers() : newDuoGatePapers();
+  const ids = new Set(papers.map(paper => paper.id));
   await appendVerifiedPapers(database, authoredCatalog().filter(paper => ids.has(paper.id)));
 }
 

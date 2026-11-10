@@ -14,6 +14,7 @@ const end = existing.indexOf("`;", start);
 assert.ok(start >= prefix.length && end > start);
 const fixture = existing.slice(start, end)
   .replace("m.deploy(guards,diagnostic,commit,archive)\n", "m.deploy(guards,diagnostic,commit,archive,add_three_gate_papers=True)\n")
+  .replace("  budgets.append(budget)", "  budgets.append(budget)\n  if scenario=='supplement-low-memory' and budget==384 or scenario=='supplement-low-memory-before-switch' and budget==512 and 384 in budgets:raise RuntimeError('Insufficient memory')")
   .replace(" guards=types.SimpleNamespace", String.raw`
  base_command=command;supplement_calls=[];supplement_state={'exists':False,'id':'a1'*32}
  def command(args,timeout=60):
@@ -45,6 +46,7 @@ const fixture = existing.slice(start, end)
    if scenario=='supplement-bool-count':report['providerRequests']=True
    if scenario=='supplement-extra-field':report['private']=secret
    if scenario=='supplement-wrong-version':report['version']='other-version'
+   if scenario=='supplement-previous-version':report['version']='duo-gate-20261110-v1'
    if scenario=='supplement-command-error':raise RuntimeError(secret)
    return json.dumps(report)
   if args[:2]==['docker','ps'] and any(x.startswith('name=^/'+project+'-gate-supplement-') for x in args):
@@ -60,9 +62,10 @@ const fixture = existing.slice(start, end)
  guards=types.SimpleNamespace`)
   .replace("or scenario in ('upgrade-timeout-probe-cleaned','upgrade-success-probe-rm-race')", "or scenario in ('upgrade-timeout-probe-cleaned','upgrade-success-probe-rm-race','supplement-timeout')")
   .replace(" print(json.dumps({'scenario':scenario", String.raw`
- assert len(supplement_calls)==1
+ assert len(supplement_calls)==(0 if scenario=='supplement-low-memory' else 1)
  if scenario=='success':
   assert receipt['privateGateSupplement']['ready']==3 and receipt['privateGateSupplement']['maxProviderRequests']==3
+  assert receipt['privateGateSupplement']['version']==m.GATE_SUPPLEMENT_VERSION
   assert json.loads(next((private/'app-updates').glob('*/gate-supplement.json')).read_text())==receipt['privateGateSupplement']
  else:
   assert not switches and not list((private/'app-updates').glob('*/complete.json'))
@@ -70,12 +73,20 @@ const fixture = existing.slice(start, end)
  if scenario=='supplement-timeout-foreign':assert supplement_state['exists'] and not any(x[:2]==['docker','rm'] for x in calls)
  print(json.dumps({'scenario':scenario`);
 
-for (const scenario of ["success", "supplement-pending", "supplement-bad-counts", "supplement-bool-count", "supplement-extra-field", "supplement-wrong-version", "supplement-command-error", "supplement-timeout", "supplement-timeout-foreign"]) {
-  test(`opt-in three-paper rollout: ${scenario}`, () => {
-    const result = spawnSync("python3", ["-c", fixture, script, scenario], { encoding: "utf8", timeout: 20_000 });
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.ok(!result.stdout.includes("SYNTHETIC_PRIVATE_NEVER_PRINT"));
-  });
+for (const additional of [false, true]) {
+  const selectedFixture = additional ? fixture
+    .replace("add_three_gate_papers=True", "add_three_more_gate_papers=True")
+    .replace("'--prepare']", "'--prepare-additional']")
+    .replaceAll("m.GATE_SUPPLEMENT_VERSION", "m.ADDITIONAL_GATE_SUPPLEMENT_VERSION") : fixture;
+  const scenarios = ["success", "supplement-pending", "supplement-bad-counts", "supplement-bool-count", "supplement-extra-field", "supplement-wrong-version", "supplement-command-error", "supplement-timeout", "supplement-timeout-foreign", "supplement-low-memory", "supplement-low-memory-before-switch",
+    ...(additional ? ["supplement-previous-version"] : [])];
+  for (const scenario of scenarios) {
+    test(`opt-in ${additional ? "additional" : "initial"} three-paper rollout: ${scenario}`, () => {
+      const result = spawnSync("python3", ["-c", selectedFixture, script, scenario], { encoding: "utf8", timeout: 20_000 });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.ok(!result.stdout.includes("SYNTHETIC_PRIVATE_NEVER_PRINT"));
+    });
+  }
 }
 
 test("operator accepts only the explicit finite three-paper mode", () => {
@@ -86,16 +97,23 @@ spec=importlib.util.spec_from_file_location('operator',sys.argv[1]);m=importlib.
 m.os.geteuid=lambda:0;calls=[];downloads=[]
 m.download=lambda *args:downloads.append(args)
 m.checked_module=lambda path,name:('synthetic-module',name)
+real_deploy=m.deploy
+for options in [{'add_three_gate_papers':True,'add_three_more_gate_papers':True},{'upgrade_text_models':True,'add_three_more_gate_papers':True}]:
+ try:real_deploy(None,None,'a'*40,'b'*64,**options)
+ except RuntimeError:pass
+ else:raise AssertionError('Mixed paid operations accepted')
 def deploy(*args,**kwargs):calls.append(kwargs)
 m.deploy=deploy
 m.sys.argv=['update-app.py','a'*40,'b'*64,'--add-three-gate-papers'];m.main()
 assert calls==[{'upgrade_text_models':False,'add_three_gate_papers':True}] and len(downloads)==2
-for extra in [['--add-three-gate-papers','--cached-audio-only'],['--add-three-gate-papers','--upgrade-text-models'],['--add-three-gate-papers','--add-three-gate-papers'],['--add-three-gate-papers=3'],['--max-provider-requests','3']]:
+m.sys.argv=['update-app.py','a'*40,'b'*64,'--add-three-more-gate-papers'];m.main()
+assert calls[-1]=={'upgrade_text_models':False,'add_three_more_gate_papers':True} and len(downloads)==4
+for extra in [['--add-three-gate-papers','--cached-audio-only'],['--add-three-gate-papers','--upgrade-text-models'],['--add-three-gate-papers','--add-three-gate-papers'],['--add-three-gate-papers=3'],['--max-provider-requests','3'],['--add-three-more-gate-papers','--cached-audio-only'],['--add-three-more-gate-papers','--upgrade-text-models'],['--add-three-more-gate-papers','--add-three-gate-papers'],['--add-three-more-gate-papers','--add-three-more-gate-papers'],['--add-three-more-gate-papers=3']]:
  m.sys.argv=['update-app.py','a'*40,'b'*64]+extra
  try:m.main()
  except RuntimeError:pass
  else:raise AssertionError('Unapproved audio allowance accepted')
-assert len(calls)==1 and len(downloads)==2
+assert len(calls)==2 and len(downloads)==4
 `;
   const result = spawnSync("python3", ["-c", program, script], { encoding: "utf8", timeout: 20_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);

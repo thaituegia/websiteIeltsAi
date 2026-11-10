@@ -1,5 +1,36 @@
 # Kết quả kiểm tra
 
+## Ba bộ Gate tiếp theo, đợt hai — 2026-11-10
+
+Bổ sung chín bài riêng mới ở mốc 3.0, ID 4–6 của đợt
+`duo-gate-20261110-v2`: ba Reading/tám câu, ba Listening/tám câu và ba
+Grammar/mười câu. Tổng 502 bài riêng; 138 bài Listening/270 phần.
+Đối chiếu toàn bộ JSON của 493 bài trước cho kết quả giữ nguyên. Kiểm tra
+Mongo mô phỏng đã dùng 11 biến thể cũ, cả hai người nhận chung đúng ba đợt
+V2 mới, câu trả lời trống, lịch sử giữ nguyên và đợt thứ tư bị từ chối.
+
+Cờ `--add-three-more-gate-papers` chỉ chạy `--prepare-additional`, xác minh
+receipt v2 và ba clip ID 4–6, tối đa ba request/9.000 ký tự/180 giây. Ledger
+v1 và audio đã có không bị cấp lại hoặc ghi đè. Đã kiểm tra cả OpenAI và
+ElevenLabs bằng provider giả, replay 0 request, lỗi không hoàn ngân sách,
+hai tác vụ không vượt trần, missing clip cũ không được mua thêm.
+
+Kiểm tra đồng thời phát hiện khoảng trống giữa giữ reservation trả phí và
+tạo cache job: follower ngân sách 0 có thể chiếm cache job trước owner.
+Reservation nay đồng thời giữ claim owner/hạn chờ; follower chờ trước khi
+phục hồi với ngân sách 0. Test dừng owner đúng sau reservation và trước
+cache.get cho cả v1/v2 xác nhận hai tác vụ hoàn thành với tổng ba request.
+Ledger cũ không có claim, claim hết hạn và abort vẫn không được hoàn hoặc
+cấp lại allowance. Cleanup chỉ xóa claim của đúng owner.
+
+**144/144 kiểm thử native liên quan đạt**, không skip; TypeScript, release
+build, Python AST và diff checks đạt. Bao gồm hai chế độ updater, giới hạn
+RAM trước worker/trước đổi app, timeout cleanup, receipt sai phiên bản và
+giữ app cũ khi chưa đủ audio. Không thay giao diện trong đợt này. Chỉ dùng
+Mongo riêng/provider giả; không gọi AI/TTS thật hoặc triển khai VPS từ cloud.
+Người vận hành đã xác nhận đợt đầu hiện HOÀN TẤT; audio đợt hai trên VPS chỉ
+được xác nhận sau receipt của lệnh mới.
+
 ## Ba bộ Gate mới và mở lại bài — 2026-11-10
 
 Bổ sung đúng chín bài riêng mốc 3.0: ba Reading/tám câu, ba Listening/tám
