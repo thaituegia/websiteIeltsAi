@@ -1,5 +1,23 @@
 # Kết quả kiểm tra
 
+## Tiếp tục bản build khi thiếu RAM — 2026-11-11
+
+Thêm `--reuse-built-release STAMP` cho app updater. Giữ nguyên target/source
+`01c0831` và archive đã ghim khi helper phục hồi ở commit mới hơn. Đối chiếu
+archive/source thực, quyền và đường dẫn, log build/tag và ID image; giữ audit
+cũ và tạo audit tiếp tục riêng. Chỉ chờ lỗi RAM đã biết trong giới hạn 900
+giây, vẫn giữ dự phòng 1024 MiB và không tự chạy lại job audio. Sau lần chờ
+cuối, xác minh lại app, release, cấu hình, mạng và image trước khi thay app
+bằng ID bất biến. Không thay học liệu hay ngân sách supplement V4.
+
+165/165 kiểm thử updater đạt: 105 trường hợp triển khai cũ và 60 trường hợp
+phục hồi, gồm archive/source/log/image sai, đường dẫn/link/quyền không hợp
+lệ, cờ CLI, chờ RAM có hạn, đủ mười audio, thay đổi đồng thời ở bước RAM cuối
+và rollback. Tất cả dùng fixture tổng hợp, không gọi Docker, mạng hoặc AI.
+TypeScript typecheck và cú pháp Python 3.10 đạt. Chưa chạy helper phục hồi
+trên VPS; trạng thái do người vận hành cung cấp vẫn là app `f7f44` healthy,
+image `01c0831` đã build nhưng chưa có candidate/audio/switch/complete receipt.
+
 ## Mười bộ Gate nhiều dạng câu hỏi, đợt bốn — 2026-11-10
 
 Bổ sung 30 bài riêng mốc 3.0, ID 12–21 thuộc

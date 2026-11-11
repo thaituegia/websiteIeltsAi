@@ -39,6 +39,30 @@ Audit riêng nằm trong `.local/deploy/app-updates/`. Chỉ khi có
 SSH ngắt hoặc helper chưa báo hoàn tất, kiểm tra trạng thái app và audit trước
 khi chạy một lượt khác; không tự chạy lại updater ngân hàng học liệu.
 
+Nếu build đã thành công nhưng bước kiểm tra RAM sau đó dừng, có thể thêm
+`--reuse-built-release STAMP` sau tùy chọn cập nhật. `STAMP` phải là tên lượt
+build thuộc đúng commit đích. Helper kiểm tra audit riêng do root sở hữu,
+SHA256 archive đã ghim, toàn bộ source khớp archive, log build/tag thành công
+và ID image. Đây là xác minh bản ghi build tin cậy của bản cài, không phải
+chứng thực mật mã nội dung image. Lượt đã có log thay app/khôi phục hoặc biên
+bản hoàn tất bị từ chối; phải xác minh trạng thái riêng trước khi tiếp tục.
+
+Chế độ này giữ nguyên audit/source/image cũ, tạo audit tiếp tục riêng có
+`resume.json`, bỏ tải archive và build, rồi chạy lại đầy đủ kiểm tra học liệu,
+cấu hình, mạng và health. Image dùng khi thay app được ghim bằng ID bất biến.
+Helper chỉ chờ lỗi thiếu RAM đã biết, mỗi 15 giây, trong tối đa 15 phút tính
+từ khi bắt đầu lượt tiếp tục; vẫn cần RAM cho công việc cộng 1024 MiB dự
+phòng. Sau khi chờ, trạng thái app/release, cấu hình, mạng và image được kiểm
+tra lại trước khi thay app. Không tự chạy lại CLI audio hoặc cả lượt cập nhật.
+Không kết hợp dùng lại build với nâng model.
+
+Nếu helper phục hồi được phát hành ở commit mới hơn source/image đã build,
+tải helper theo commit/SHA của helper, nhưng vẫn truyền commit/SHA archive
+của source đích. Ví dụ phục hồi image `01c0831` vẫn có `complete.json.commit`
+là commit đầy đủ của `01c0831`; receipt ghi thêm `resumedFrom` để liên kết
+với lượt build cũ. Ngân sách audio được giữ theo phiên bản supplement trong
+database; dùng lại build không cấp lại ngân sách hay tạo lại audio đã có.
+
 Riêng yêu cầu nâng model OpenAI dùng thêm cờ `--upgrade-text-models`.
 Chế độ này chỉ cho phép đổi `CONTENT_MODEL`, `EXTRACTOR_MODEL`,
 `SCORING_MODEL`, `TRANSLATION_MODEL` thành `gpt-6.1-sol` trong override mới.

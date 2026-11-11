@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 
@@ -167,6 +168,113 @@ def extract_source(archive, destination, commit):
     for parent, directories, _ in os.walk(destination):
         for name in directories:
             pathlib.Path(parent, name).chmod(0o755)
+
+
+def stream_digest(stream):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(512 * 1024), b''):
+        digest.update(chunk)
+    return digest.digest()
+
+
+class WaitingGuards:
+    """Wait for RAM only during an explicit resume; never retry deployment jobs."""
+
+    def __init__(self, guards, deadline):
+        self.guards, self.deadline = guards, deadline
+
+    def __getattr__(self, name):
+        return getattr(self.guards, name)
+
+    def memory_headroom(self, job_mib):
+        while True:
+            try:
+                return self.guards.memory_headroom(job_mib)
+            except RuntimeError as error:
+                if str(error) != 'RAM khả dụng chưa đủ cho thao tác và 1 GiB dự phòng; không tác động project khác.':
+                    raise
+                remaining = self.deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError('Hết thời gian chờ RAM; chưa thay app. Giữ bản build và audio đã có để tiếp tục sau.') from None
+                print('Đang chờ RAM: cần ' + str(job_mib + 1024) + ' MiB, gồm 1 GiB dự phòng; giữ app hiện tại.', flush=True)
+                time.sleep(min(15, remaining))
+
+
+def verified_built_release(guards, commit, archive_sha, private, stamp, release_bytes):
+    """Recover a successful legacy build from this installation's private audit."""
+    if not isinstance(stamp, str) or not re.fullmatch(re.escape(commit[:12]) + r'-\d{8}T\d{6}Z-[a-f0-9]{6}', stamp):
+        raise RuntimeError('Bản build dùng lại không thuộc commit đã ghim.')
+    for parent in (private / 'app-updates', LIVE_DIR / '.local/releases'):
+        owned(parent, directory=True, private=True)
+    audit = private / 'app-updates' / stamp
+    release_dir = LIVE_DIR / '.local/releases' / stamp
+    source = release_dir / 'source'
+    for path in (audit, release_dir):
+        owned(path, directory=True, private=True)
+    owned(source, directory=True)
+    for name in ('start-app.log', 'restore-app.log', 'complete.json'):
+        if (audit / name).exists() or (audit / name).is_symlink():
+            raise RuntimeError('Lượt cũ đã bắt đầu thay app; cần xác minh trạng thái trước khi tiếp tục.')
+    for name in ('release.compose.new', 'gate-supplement.json'):
+        path = audit / name
+        if path.exists() or path.is_symlink():
+            owned(path, private=True)
+    before, archive, build_log = (audit / name for name in ('release.compose.before', 'source.tar.gz', 'build.log'))
+    for path in (before, archive, build_log):
+        owned(path, private=True)
+    if before.read_bytes() != release_bytes:
+        raise RuntimeError('Cấu hình app đã đổi từ lượt build cũ; không dùng lại lượt này.')
+    if archive.stat().st_size > 128 * 1024 * 1024:
+        raise RuntimeError('Archive bản build vượt giới hạn.')
+    with archive.open('rb') as stream:
+        if stream_digest(stream).hex() != archive_sha:
+            raise RuntimeError('SHA256 archive bản build không khớp nguồn đã ghim.')
+    files, directories = set(), {pathlib.Path('.')}
+    with tarfile.open(archive, 'r:gz') as bundle:
+        members = bundle.getmembers()
+        if not members or len(members) > 100000 or sum(item.size for item in members) > 512 * 1024 * 1024:
+            raise RuntimeError('Archive bản build vượt giới hạn.')
+        for item in members:
+            parts = pathlib.PurePosixPath(item.name).parts
+            if (not parts or parts[0] != 'websiteIeltsAi-' + commit or '..' in parts or
+                    pathlib.PurePosixPath(item.name).is_absolute() or not (item.isdir() or item.isfile())):
+                raise RuntimeError('Archive bản build chứa đường dẫn/link không hợp lệ.')
+            if len(parts) == 1:
+                if not item.isdir():
+                    raise RuntimeError('Gốc archive bản build không hợp lệ.')
+                continue
+            relative = pathlib.Path(*parts[1:])
+            directories.update(relative.parents)
+            target = source / relative
+            owned(target, directory=item.isdir())
+            if item.isdir():
+                directories.add(relative)
+            else:
+                if relative in files or target.stat().st_size != item.size:
+                    raise RuntimeError('Source bản build không khớp archive đã ghim.')
+                files.add(relative)
+                with bundle.extractfile(item) as archived, target.open('rb') as actual:
+                    if stream_digest(archived) != stream_digest(actual):
+                        raise RuntimeError('Source bản build không khớp archive đã ghim.')
+    actual_files, actual_directories = set(), {pathlib.Path('.')}
+    for parent, dirs, names in os.walk(source):
+        for name in dirs + names:
+            path = pathlib.Path(parent, name)
+            owned(path, directory=name in dirs)
+            (actual_directories if name in dirs else actual_files).add(path.relative_to(source))
+    if actual_files != files or actual_directories != directories or not {pathlib.Path('deploy/Dockerfile.release'), pathlib.Path('.dockerignore')}.issubset(files):
+        raise RuntimeError('Source bản build có tệp thiếu hoặc ngoài archive đã ghim.')
+    if build_log.stat().st_size > 16 * 1024 * 1024:
+        raise RuntimeError('Log bản build vượt giới hạn.')
+    log = build_log.read_text()
+    image = PROJECT + '-app:release-' + stamp
+    built = re.findall(r'^Successfully built ([a-f0-9]{12,64})\s*$', log, re.M)
+    tagged = re.findall(r'^Successfully tagged (\S+)\s*$', log, re.M)
+    image_id = guards.command(['docker', 'image', 'inspect', '--format', '{{.Id}}', image]).strip()
+    if (len(built) != 1 or tagged != [image] or not re.fullmatch(r'sha256:[a-f0-9]{64}', image_id) or
+            not image_id.removeprefix('sha256:').startswith(built[0])):
+        raise RuntimeError('Image/log không khớp lượt build đã hoàn tất; không thay app.')
+    return audit, release_dir, source, image, image_id
 
 
 def credentials(raw):
@@ -478,9 +586,14 @@ def healthy(guards, diagnostic, expected_image=None):
     return app
 
 
-def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False, add_three_gate_papers=False, add_three_more_gate_papers=False, add_five_gate_papers=False, add_ten_gate_papers=False):
+def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False, add_three_gate_papers=False, add_three_more_gate_papers=False, add_five_gate_papers=False, add_ten_gate_papers=False, reuse_built_release=None):
     if sum(bool(value) for value in (upgrade_text_models, add_three_gate_papers, add_three_more_gate_papers, add_five_gate_papers, add_ten_gate_papers)) > 1:
         raise RuntimeError('Chỉ chọn một chế độ cập nhật; mỗi đợt đề Gate dùng ngân sách riêng.')
+    if reuse_built_release is not None and (not isinstance(reuse_built_release, str) or
+            not re.fullmatch(re.escape(commit[:12]) + r'-\d{8}T\d{6}Z-[a-f0-9]{6}', reuse_built_release)):
+        raise RuntimeError('Bản build dùng lại không thuộc commit đã ghim.')
+    if reuse_built_release is not None and upgrade_text_models:
+        raise RuntimeError('Không kết hợp dùng lại bản build với nâng model.')
     owned(LIVE_DIR, directory=True)
     private = LIVE_DIR / '.local/deploy'
     owned(private, directory=True, private=True)
@@ -494,10 +607,12 @@ def deploy(guards, diagnostic, commit, archive_sha, upgrade_text_models=False, a
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('Project này đang có lượt cập nhật khác.') from None
-        update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models, add_three_gate_papers, add_three_more_gate_papers, add_five_gate_papers, add_ten_gate_papers)
+        if reuse_built_release:
+            guards = WaitingGuards(guards, time.monotonic() + 900)
+        update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models, add_three_gate_papers, add_three_more_gate_papers, add_five_gate_papers, add_ten_gate_papers, reuse_built_release)
 
 
-def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models=False, add_three_gate_papers=False, add_three_more_gate_papers=False, add_five_gate_papers=False, add_ten_gate_papers=False):
+def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text_models=False, add_three_gate_papers=False, add_three_more_gate_papers=False, add_five_gate_papers=False, add_ten_gate_papers=False, reuse_built_release=None):
     base_file, domain, release = LIVE_DIR / 'deploy/compose.yaml', private / 'domain.compose.yaml', private / 'release.compose.yaml'
     protected = [private / 'deploy.env', private / 'app.env', base_file, domain, LIVE_DIR / 'deploy/compose.sh',
                  LIVE_DIR / 'deploy/nginx.conf', private / 'tls/site.crt']
@@ -555,39 +670,56 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
         if not path.exists():
             path.mkdir(mode=0o700)
         owned(path, directory=True, private=True)
+    reused = (verified_built_release(guards, commit, archive_sha, private, reuse_built_release, release_bytes)
+              if reuse_built_release else None)
     stamp = commit[:12] + '-' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + os.urandom(3).hex()
     audit, release_dir = parents[0] / stamp, parents[1] / stamp
     audit.mkdir(mode=0o700)
-    release_dir.mkdir(mode=0o700)
-    source = release_dir / 'source'
-    source.mkdir(mode=0o700)
+    if reused:
+        _, release_dir, source, image, image_id = reused
+        (audit / 'resume.json').write_text(json.dumps({'from': reuse_built_release, 'image': image_id, 'commit': commit}) + '\n')
+    else:
+        release_dir.mkdir(mode=0o700)
+        source = release_dir / 'source'
+        source.mkdir(mode=0o700)
     (audit / 'release.compose.before').write_bytes(release_bytes)
     if upgrade_text_models:
         print('Đang kiểm tra quyền truy cập và JSON của model ' + TEXT_MODEL + '; app hiện tại vẫn chạy.', flush=True)
         probe = check_text_model(guards, original, values, audit)
         (audit / 'model-probe.json').write_text(json.dumps(probe) + '\n')
-    print('Đang tải và build app mới; app hiện tại vẫn phục vụ. Log riêng: ' + str(audit), flush=True)
-    archive = audit / 'source.tar.gz'
-    download('https://codeload.github.com/thaituegia/websiteIeltsAi/tar.gz/' + commit, archive_sha, archive, 128 * 1024 * 1024)
-    extract_source(archive, source, commit)
+    if reused:
+        print('Dùng lại bản build đã xác minh; không build lại. App hiện tại vẫn phục vụ. Log riêng: ' + str(audit), flush=True)
+    else:
+        print('Đang tải và build app mới; app hiện tại vẫn phục vụ. Log riêng: ' + str(audit), flush=True)
+        archive = audit / 'source.tar.gz'
+        download('https://codeload.github.com/thaituegia/websiteIeltsAi/tar.gz/' + commit, archive_sha, archive, 128 * 1024 * 1024)
+        extract_source(archive, source, commit)
     for path in (source / 'deploy/Dockerfile.release', source / '.dockerignore'):
         owned(path)
     duo_env = release_dir / 'duo.env'
     compact = json.dumps(settings, ensure_ascii=False, separators=(',', ':')).replace("'", "\\'")
-    duo_env.write_text("DUO_ENABLED=true\nDUO_CREDENTIALS_FILE=''\nDUO_ACCOUNTS_JSON='" + compact + "'\n")
-    image = PROJECT + '-app:release-' + stamp
-    guards.memory_headroom(512)
-    environment = dict(os.environ, DOCKER_BUILDKIT='0')
-    run_logged(['docker', 'build', '--pull', '--memory=512m', '--memory-swap=512m', '--cpu-period=100000',
-                '--cpu-quota=50000', '--cpu-shares=128', '--file', str(source / 'deploy/Dockerfile.release'),
-                '--tag', image, str(source)], audit, 'build', environment=environment)
-    image_id = guards.command(['docker', 'image', 'inspect', '--format', '{{.Id}}', image]).strip()
+    duo_bytes = ("DUO_ENABLED=true\nDUO_CREDENTIALS_FILE=''\nDUO_ACCOUNTS_JSON='" + compact + "'\n").encode()
+    if reused:
+        owned(duo_env, private=True)
+        if duo_env.read_bytes() != duo_bytes:
+            raise RuntimeError('Cấu hình tài khoản của bản build cũ không khớp app hiện tại.')
+    else:
+        duo_env.write_bytes(duo_bytes)
+        image = PROJECT + '-app:release-' + stamp
+        guards.memory_headroom(512)
+        environment = dict(os.environ, DOCKER_BUILDKIT='0')
+        run_logged(['docker', 'build', '--pull', '--memory=512m', '--memory-swap=512m', '--cpu-period=100000',
+                    '--cpu-quota=50000', '--cpu-shares=128', '--file', str(source / 'deploy/Dockerfile.release'),
+                    '--tag', image, str(source)], audit, 'build', environment=environment)
+        image_id = guards.command(['docker', 'image', 'inspect', '--format', '{{.Id}}', image]).strip()
     if not re.fullmatch(r'sha256:[a-f0-9]{64}', image_id):
         raise RuntimeError('Image mới chưa có định danh bất biến; app cũ vẫn chạy.')
+    protected.append(duo_env)
+    before_files.update(file_snapshot([duo_env]))
     if image_bank(guards, original['Image']) != image_bank(guards, image_id):
         raise RuntimeError('Học liệu khác bản đang chạy; chỉ updater học liệu mới được áp dụng, app cũ vẫn chạy.')
     candidate = audit / 'release.compose.new'
-    candidate.write_text('services:\n  app:\n    image: ' + image + '\n    build:\n      context: ' + str(source) +
+    candidate.write_text('services:\n  app:\n    image: ' + (image_id if reused else image) + '\n    build:\n      context: ' + str(source) +
                          '\n      dockerfile: deploy/Dockerfile.release\n    env_file:\n      - ' + json.dumps(str(duo_env)) + '\n')
     model_values = ({role: TEXT_MODEL for role in TEXT_MODEL_ROLES} if upgrade_text_models else
                     {role: config_environment(current)[role] for role in TEXT_MODEL_ROLES
@@ -628,9 +760,20 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
         raise RuntimeError('App/release thay đổi đồng thời; chưa thay app.')
     network_identity(guards, {name: service(guards, name) for name in ('app', 'mongo', 'proxy')})
     healthy(guards, diagnostic, original['Image'])
+    if guards.command(['docker', 'image', 'inspect', '--format', '{{.Id}}', image]).strip() != image_id:
+        raise RuntimeError('Image mới thay đổi trong lúc kiểm tra; chưa thay app.')
     # All expensive checks finish with the old app online. No RAM guard/CLI is
     # inserted after stopping it: compose replaces only the app as one action.
     guards.memory_headroom(max(512, (original['HostConfig']['Memory'] + 1048575) // 1048576))
+    # A resumed update may have waited for RAM since the checks above. Recheck
+    # all mutable inputs after that wait, before writing the active override.
+    unchanged(original['Id'])
+    if release.read_bytes() != release_bytes or service(guards, 'app')['Id'] != original['Id']:
+        raise RuntimeError('App/release thay đổi trong lúc chờ; chưa thay app.')
+    network_identity(guards, {name: service(guards, name) for name in ('app', 'mongo', 'proxy')})
+    healthy(guards, diagnostic, original['Image'])
+    if guards.command(['docker', 'image', 'inspect', '--format', '{{.Id}}', image]).strip() != image_id:
+        raise RuntimeError('Image mới thay đổi trong lúc chờ; chưa thay app.')
     print('Kiểm tra đạt. Chỉ thay app IELTS; giữ nguyên học liệu, bài làm, audio và worker.', flush=True)
     atomic_write(release, candidate.read_bytes())
     switch = base + ['-f', str(release), 'up', '-d', '--no-deps', '--no-build', '--wait', '--wait-timeout', '240', 'app']
@@ -662,6 +805,8 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
         raise RuntimeError('Cập nhật chưa đạt; đã phục hồi app cũ healthy. Log riêng: ' + str(audit)) from None
     receipt = {'status': 'verified', 'commit': commit, 'image': image_id,
                'bankUnchanged': True, 'onlyAppReplaced': True}
+    if reuse_built_release:
+        receipt['resumedFrom'] = reuse_built_release
     if upgrade_text_models:
         receipt['textModels'] = {role: TEXT_MODEL for role in TEXT_MODEL_ROLES}
     if supplement:
@@ -681,15 +826,20 @@ def update_locked(guards, diagnostic, commit, archive_sha, private, upgrade_text
 
 
 def main():
-    if (os.geteuid() != 0 or len(sys.argv) not in (3, 4) or not re.fullmatch(r'[a-f0-9]{40}', sys.argv[1]) or
-            not re.fullmatch(r'[a-f0-9]{64}', sys.argv[2]) or
-            (len(sys.argv) == 4 and sys.argv[3] not in ('--upgrade-text-models', '--cached-audio-only', '--add-three-gate-papers', '--add-three-more-gate-papers', '--add-five-gate-papers', '--add-ten-gate-papers'))):
+    tail, reuse_built_release = sys.argv[3:], None
+    if len(tail) >= 2 and tail[-2] == '--reuse-built-release':
+        reuse_built_release, tail = tail[-1], tail[:-2]
+    if (os.geteuid() != 0 or len(sys.argv) < 3 or not re.fullmatch(r'[a-f0-9]{40}', sys.argv[1]) or
+            not re.fullmatch(r'[a-f0-9]{64}', sys.argv[2]) or len(tail) > 1 or
+            (tail and tail[0] not in ('--upgrade-text-models', '--cached-audio-only', '--add-three-gate-papers', '--add-three-more-gate-papers', '--add-five-gate-papers', '--add-ten-gate-papers')) or
+            (reuse_built_release is not None and not re.fullmatch(re.escape(sys.argv[1][:12]) + r'-\d{8}T\d{6}Z-[a-f0-9]{6}', reuse_built_release)) or
+            (reuse_built_release is not None and tail == ['--upgrade-text-models'])):
         raise RuntimeError('Chạy bằng root với commit đầy đủ, SHA256 archive và một tùy chọn --cached-audio-only, --upgrade-text-models, --add-three-gate-papers, --add-three-more-gate-papers, --add-five-gate-papers hoặc --add-ten-gate-papers. Tạo audio hàng loạt đã bị tắt.')
-    upgrade_text_models = len(sys.argv) == 4 and sys.argv[3] == '--upgrade-text-models'
-    add_three_gate_papers = len(sys.argv) == 4 and sys.argv[3] == '--add-three-gate-papers'
-    add_three_more_gate_papers = len(sys.argv) == 4 and sys.argv[3] == '--add-three-more-gate-papers'
-    add_five_gate_papers = len(sys.argv) == 4 and sys.argv[3] == '--add-five-gate-papers'
-    add_ten_gate_papers = len(sys.argv) == 4 and sys.argv[3] == '--add-ten-gate-papers'
+    upgrade_text_models = tail == ['--upgrade-text-models']
+    add_three_gate_papers = tail == ['--add-three-gate-papers']
+    add_three_more_gate_papers = tail == ['--add-three-more-gate-papers']
+    add_five_gate_papers = tail == ['--add-five-gate-papers']
+    add_ten_gate_papers = tail == ['--add-ten-gate-papers']
     if not upgrade_text_models and not add_three_gate_papers and not add_three_more_gate_papers and not add_five_gate_papers and not add_ten_gate_papers:
         print('Chỉ cập nhật app và dùng audio đã có; không gọi TTS hoặc thử model AI.', flush=True)
     os.umask(0o077)
@@ -710,6 +860,8 @@ def main():
             options['add_five_gate_papers'] = True
         if add_ten_gate_papers:
             options['add_ten_gate_papers'] = True
+        if reuse_built_release is not None:
+            options['reuse_built_release'] = reuse_built_release
         deploy(*modules, *sys.argv[1:3], **options)
 
 
